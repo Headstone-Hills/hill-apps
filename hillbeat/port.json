@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "name": "HillBeat.zip",
+  "items": [
+    "HillBeat.sh",
+    "hillbeat/"
+  ],
+  "attr": {
+    "title": "HillBeat",
+    "desc": "A drum machine and sample sequencer. Program 16-step patterns for kick, snare, hat, and percussion tracks, shape them with swing, velocity, and mute controls, and layer a backing loop.",
+    "inst": "Place your drum sample folders in ports/hillbeat/samples on the SD card. On first launch HillBeat installs its Python deps (needs network once).",
+    "genres": ["music", "tools"],
+    "porter": ["you"],
+    "image": {
+      "screenshot": null,
+      "covers": ["cover.png"],
+      "thumbnail": null,
+      "video": null
+    },
+    "rtr": true,
+    "runtime": null,
+    "reqs": ["python3", "sdl2"]
+  }
+}

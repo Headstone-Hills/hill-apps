@@ -1,0 +1,24 @@
+# gptokeyb mapping for HillChord.
+# Each gamepad control is translated to a keyboard key that input/button_map.py
+# (KEYBOARD dict) maps back to a logical button. Keep these two in sync.
+
+a = a
+b = b
+x = x
+y = y
+
+l1 = q
+r1 = w
+l2 = e
+r2 = r
+
+back = o          # Select
+start = p
+guide = u         # Function / menu button (if the device exposes it)
+
+up = up
+down = down
+left = left
+right = right
+
+# Exit is handled in-app by holding Select + Start (~1.2s).

@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<game>
+  <name>HillChord</name>
+  <desc>A handheld harmony instrument. Play diatonic chords and single notes on the gamepad, transform chords with the D-pad (7ths, sus4, add9, dim/aug, major/minor flip), and shape the sound with reverb, delay, chorus, a looper and a metronome. Sounds are loaded from per-pitch WAV sample folders.</desc>
+  <genre>Music / Tools</genre>
+  <players>1</players>
+</game>

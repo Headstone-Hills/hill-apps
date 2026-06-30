@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+venv313/
+
+# Vendored runtime deps (reproducible via install_deps.sh on-device)
+pylibs/
+
+# Build artifacts
+dist/
+
+# Sample audio libraries (large, distributed separately / shared via SD card)
+samples/
+
+# Runtime caches and logs
+.render_cache/
+log.txt
+
+# Per-device save state (not source)
+*_state.json
+
+# macOS
+.DS_Store
+._*

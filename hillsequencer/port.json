@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "name": "HillSequencer.zip",
+  "items": [
+    "HillSequencer.sh",
+    "hillsequencer/"
+  ],
+  "attr": {
+    "title": "HillSequencer",
+    "desc": "An 8-track x 16-step grid sequencer that plays HillChord's pitched sample instruments. Per-track instrument, tuned note, velocity, mute/volume and baked effects (reverb/delay/chorus/bitcrush), with patterns, chaining, swing, tap tempo, sequence save/load and a backing-loop player.",
+    "inst": "Shares HillChord's sample library (ROMs/Samples on the SD card). On first launch HillSequencer installs its Python deps (needs network once).",
+    "genres": ["music", "tools"],
+    "porter": ["you"],
+    "image": {
+      "screenshot": null,
+      "covers": ["cover.png"],
+      "thumbnail": null,
+      "video": null
+    },
+    "rtr": true,
+    "runtime": null,
+    "reqs": ["python3", "sdl2"]
+  }
+}

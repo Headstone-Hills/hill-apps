@@ -1,0 +1,21 @@
+# Dev venv
+.venv/
+venv*/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# App-generated data
+hillsequencer_state.json
+.render_cache/
+sequences/
+
+# On-device vendored deps
+pylibs/
+
+# Build output
+dist/
+
+# macOS
+.DS_Store

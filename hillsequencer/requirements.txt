@@ -1,0 +1,7 @@
+# HillChord runtime dependencies.
+# On the RG35XXSP these are provided by PortMaster's bundled runtime (the
+# device's system Python 3.11.8 + /usr/lib SDL2 are also present). For local
+# development use a Python 3.11–3.13 venv (pygame's mixer is unavailable in
+# the current 3.14 wheels).
+pygame>=2.6,<3
+numpy>=1.26

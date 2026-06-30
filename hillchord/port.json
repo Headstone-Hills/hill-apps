@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "name": "HillChord.zip",
+  "items": [
+    "HillChord.sh",
+    "hillchord/"
+  ],
+  "attr": {
+    "title": "HillChord",
+    "desc": "A handheld harmony instrument. Play diatonic chords and scale notes with the gamepad, shape them with D-pad chord transformations, and layer reverb/delay/chorus, a looper, and a metronome.",
+    "inst": "Place your sample folders (one folder of per-pitch WAVs per timbre) in ROMs/Samples on the SD card. On first launch HillChord installs its Python deps (needs network once).",
+    "genres": ["music", "tools"],
+    "porter": ["you"],
+    "image": {
+      "screenshot": "mockup_play.png",
+      "covers": ["cover.png"],
+      "thumbnail": null,
+      "video": null
+    },
+    "rtr": true,
+    "runtime": null,
+    "reqs": ["python3", "sdl2"]
+  }
+}
