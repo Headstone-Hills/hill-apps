@@ -1,6 +1,7 @@
 #!/bin/bash
 # PORTMASTER: hillbeat.zip, HillBeat.sh
-# HillBeat — drum machine and sample sequencer (muOS / RG35XXSP, aarch64).
+# HillBeat — drum machine and sample sequencer.
+# Supports muOS (RG35XXSP) and Knulli (Anbernic RG-Scarab), aarch64.
 
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 
@@ -10,36 +11,55 @@ elif [ -d "/opt/tools/PortMaster/" ]; then
   controlfolder="/opt/tools/PortMaster"
 elif [ -d "$XDG_DATA_HOME/PortMaster/" ]; then
   controlfolder="$XDG_DATA_HOME/PortMaster"
-else
+elif [ -d "/userdata/roms/ports/PortMaster" ]; then
+  controlfolder="/userdata/roms/ports/PortMaster"   # Knulli / Batocera
+elif [ -d "/roms/ports/PortMaster" ]; then
   controlfolder="/roms/ports/PortMaster"
 fi
 
-source $controlfolder/control.txt
-source $controlfolder/device_info.txt
+SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
 
-[ -f "${controlfolder}/mod_${CFW_NAME}.txt" ] && source "${controlfolder}/mod_${CFW_NAME}.txt"
-get_controls
+if [ -n "$controlfolder" ] && [ -f "$controlfolder/control.txt" ]; then
+  source $controlfolder/control.txt
+  source $controlfolder/device_info.txt
 
-GAMEDIR=/$directory/ports/hillbeat
+  [ -f "${controlfolder}/mod_${CFW_NAME}.txt" ] && source "${controlfolder}/mod_${CFW_NAME}.txt"
+  get_controls
 
-> "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
+  GAMEDIR=/$directory/ports/hillbeat
+else
+  # No working PortMaster control folder — e.g. this port was copied straight
+  # into the ports folder instead of installed through PortMaster. Fall back
+  # to a self-contained launch: derive GAMEDIR from this script's own location
+  # and skip PortMaster's controller-DB / ESUDO setup.
+  echo "[HillBeat] PortMaster control folder not found; running standalone."
+  GAMEDIR="$SCRIPTDIR/hillbeat"
+fi
+
+> "$GAMEDIR/log.txt" && exec > >(stdbuf -oL -eL tee "$GAMEDIR/log.txt" 2>/dev/null || tee "$GAMEDIR/log.txt") 2>&1
 
 cd $GAMEDIR
 
-# --- Runtime: system python3 + /usr/lib SDL2 + vendored pygame/numpy ---------
+# --- Runtime: system python3 + system SDL2 + vendored pygame/numpy ----------
 export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR/libs:$LD_LIBRARY_PATH"
 export PYTHONPATH="$GAMEDIR:$GAMEDIR/pylibs"
 export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL_AUDIODRIVER=alsa
 # pygame's bundled SDL2 lacks a working display driver on this device (it falls
-# back to "offscreen"). Force-load the system SDL2 from /usr/lib (the same lib
-# the working ports use) and let it auto-pick its default video driver.
-export LD_PRELOAD="/usr/lib/libSDL2-2.0.so.0"
+# back to "offscreen"). Force-load the system SDL2 (the same lib the working
+# ports use) and let it auto-pick its default video driver. Path varies by CFW,
+# so probe the known locations rather than hardcoding one.
+for _sdl2 in /usr/lib/libSDL2-2.0.so.0 /usr/lib64/libSDL2-2.0.so.0 /lib/aarch64-linux-gnu/libSDL2-2.0.so.0; do
+  if [ -f "$_sdl2" ]; then
+    export LD_PRELOAD="$_sdl2"
+    break
+  fi
+done
 
 # First-run: build python deps on-device if not vendored yet (needs network).
 if [ ! -d "$GAMEDIR/pylibs/pygame" ] || [ ! -d "$GAMEDIR/pylibs/numpy" ]; then
   echo "[HillBeat] installing python deps into pylibs/ (first run, needs wifi)..."
-  $ESUDO bash "$GAMEDIR/install_deps.sh" "$(command -v python3)" "$GAMEDIR/pylibs"
+  $ESUDO bash "$GAMEDIR/install_deps" "$(command -v python3)" "$GAMEDIR/pylibs"
 fi
 
 # HillBeat reads the gamepad directly via pygame's joystick API (indices in

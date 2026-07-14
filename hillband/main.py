@@ -33,6 +33,7 @@ from sequence_manager import SequenceManager
 from help_overlay import HelpOverlay
 from track_mode_overlay import TrackModeOverlay
 from ui import UI
+from volume_osd import VolumeOSD
 from input import button_map as bm
 from config import (
     NUM_TRACKS, NUM_STEPS, NUM_PATTERNS,
@@ -95,6 +96,7 @@ def main():
     seq_mgr  = SequenceManager(state, ui.font_n, ui.font_s)
     help_ov  = HelpOverlay(ui.font_n, ui.font_s)
     tmode_ov = TrackModeOverlay(state, ui.font_n, ui.font_s)
+    volume_osd = VolumeOSD()
 
     joystick = None
     if pygame.joystick.get_count() > 0:
@@ -536,9 +538,12 @@ def main():
         elif show_tmode:
             tmode_ov.draw(screen)
 
+        volume_osd.draw(screen, ui.font_n)
+
         pygame.display.flip()
         clock.tick(config.FPS)
 
+    volume_osd.stop()
     sequencer.stop()
     state.save()
     pygame.quit()

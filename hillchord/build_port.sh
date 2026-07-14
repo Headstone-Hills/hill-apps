@@ -6,12 +6,12 @@
 #   ├── HillChord.sh            <- launcher, lives in ports/ root
 #   └── hillchord/              <- the gamedir
 #       ├── main.py + all modules (config, state, audio/, input/, theory/, ui/)
-#       ├── install_deps.sh
+#       ├── install_deps
 #       ├── hillchord.gameinfo.xml
 #       └── port.json
 #
 # pygame/numpy are NOT bundled; they are installed on-device on first launch
-# (install_deps.sh) so the binaries match the device ABI.
+# (install_deps) so the binaries match the device ABI.
 set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -35,11 +35,11 @@ cp -r "$ROOT/audio" "$ROOT/input" "$ROOT/theory" "$ROOT/ui" "$GAMEDIR/"
 cp -r "$ROOT/tools" "$GAMEDIR/"
 
 # Packaging + metadata.
-cp "$ROOT/install_deps.sh" "$GAMEDIR/"
+cp "$ROOT/install_deps" "$GAMEDIR/"
 cp "$ROOT/hillchord.gptk" "$GAMEDIR/"
 cp "$ROOT/hillchord.gameinfo.xml" "$GAMEDIR/"
 cp "$ROOT/port.json" "$GAMEDIR/"
-chmod +x "$GAMEDIR/install_deps.sh"
+chmod +x "$GAMEDIR/install_deps"
 
 # Strip caches.
 find "$STAGE" -name '__pycache__' -type d -prune -exec rm -rf {} +

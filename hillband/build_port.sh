@@ -7,11 +7,11 @@
 #   └── hillband/            <- the gamedir
 #       ├── main.py + all modules
 #       ├── audio/ input/ theory/
-#       ├── install_deps.sh
+#       ├── install_deps
 #       └── port.json
 #
 # Samples are SHARED with HillChord/HillSequencer (ROMs/Samples) and are NOT
-# included.  pygame/numpy install on-device on first launch via install_deps.sh.
+# included.  pygame/numpy install on-device on first launch via install_deps.
 set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -46,8 +46,8 @@ cp "$ROOT/main.py"             \
 cp -r "$ROOT/audio" "$ROOT/input" "$ROOT/theory" "$GAMEDIR/"
 
 # Metadata + installer
-cp "$ROOT/install_deps.sh" "$ROOT/port.json" "$ROOT/requirements.txt" "$GAMEDIR/"
-chmod +x "$GAMEDIR/install_deps.sh"
+cp "$ROOT/install_deps" "$ROOT/port.json" "$ROOT/requirements.txt" "$GAMEDIR/"
+chmod +x "$GAMEDIR/install_deps"
 
 # Strip caches
 find "$STAGE" -name '__pycache__' -type d -prune -exec rm -rf {} +

@@ -8,19 +8,27 @@ dev box and the RG35XXSP on muOS is a one-line change.
 import os
 
 # --- Platform detection -----------------------------------------------------
-# On the device the SD card is mounted at /mnt/sdcard (muOS); locally it is not.
-ON_DEVICE = os.path.isdir("/mnt/sdcard/ROMs")
+# Each supported CFW mounts the SD card / persistent storage at a different
+# root, so probe a list of known roots instead of hardcoding one:
+#   muOS (RG35XXSP):             /mnt/sdcard/ROMs
+#   Knulli (Anbernic RG-Scarab): /userdata/roms
+#   (Knulli is a Batocera fork and keeps Batocera's /userdata layout unchanged,
+#   so this also covers Batocera proper.)
+# Locally (dev machine) none of these exist.
+_DEVICE_ROOTS = ["/mnt/sdcard/ROMs", "/userdata/roms"]
+_DEVICE_ROOT = next((r for r in _DEVICE_ROOTS if os.path.isdir(r)), None)
+ON_DEVICE = _DEVICE_ROOT is not None
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Paths ------------------------------------------------------------------
 # Samples are SHARED with HillChord — never copied (the library is ~545 MB).
 #   * dev:    sibling ../hillchord/samples
-#   * device: /mnt/sdcard/ROMs/Samples (the same folder HillChord deploys to)
+#   * device: <device root>/Samples (the same folder HillChord deploys to)
 # Override any of these with the matching HILLSEQ_* env var.
 if ON_DEVICE:
-    _DEFAULT_SAMPLES = "/mnt/sdcard/ROMs/Samples"
-    _DEFAULT_CACHE = "/mnt/sdcard/ROMs/.hillsequencer_cache"
+    _DEFAULT_SAMPLES = os.path.join(_DEVICE_ROOT, "Samples")
+    _DEFAULT_CACHE = os.path.join(_DEVICE_ROOT, ".hillsequencer_cache")
 else:
     _DEFAULT_SAMPLES = os.path.normpath(os.path.join(_APP_DIR, "..", "hillchord", "samples"))
     _DEFAULT_CACHE = os.path.join(_APP_DIR, ".render_cache")

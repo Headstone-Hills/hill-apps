@@ -1,0 +1,47 @@
+#!/bin/bash
+# Install HillBeat's Python deps on-device (run once).
+# Uses device's own Python so binaries match device ABI.
+# Usage: bash install_deps "$(command -v python3)" ./pylibs
+set -e
+
+PYTHON="${1:-python3}"
+TARGET="${2:-./pylibs}"
+
+mkdir -p "$TARGET"
+
+if ! "$PYTHON" -m pip --version >/dev/null 2>&1; then
+  echo "[install_deps] pip not found for $PYTHON; bootstrapping with ensurepip"
+  "$PYTHON" -m ensurepip --upgrade || {
+    echo "[install_deps] ERROR: no pip available. Install pip on the device."
+    exit 1
+  }
+fi
+
+APPDIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Install pygame first (numpy is the slower one) so a loading screen can be
+# shown for the rest of the install instead of a blank display.
+"$PYTHON" -m pip install --no-cache-dir --timeout 20 --retries 2 --target "$TARGET" \
+  "pygame>=2.6,<3"
+
+SPLASH_PID=""
+if [ -f "$APPDIR/install_splash.py" ]; then
+  "$PYTHON" "$APPDIR/install_splash.py" &
+  SPLASH_PID=$!
+fi
+
+"$PYTHON" -m pip install --no-cache-dir --timeout 20 --retries 2 --target "$TARGET" \
+  "numpy>=1.21"
+
+if [ -n "$SPLASH_PID" ]; then
+  kill "$SPLASH_PID" 2>/dev/null || true
+  wait "$SPLASH_PID" 2>/dev/null || true
+fi
+
+echo "[install_deps] done -> $TARGET"
+"$PYTHON" - "$TARGET" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import pygame, numpy
+print("pygame", pygame.version.ver, "/ numpy", numpy.__version__)
+PY

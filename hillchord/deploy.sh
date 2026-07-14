@@ -25,6 +25,6 @@ echo "[deploy] unpacking into $PORTS_DIR ..."
 $SSH "mkdir -p '$PORTS_DIR' && cd '$PORTS_DIR' && unzip -o /tmp/HillChord.zip && rm /tmp/HillChord.zip"
 
 echo "[deploy] building python deps on-device (first run only)..."
-$SSH "cd '$PORTS_DIR/hillchord' && bash install_deps.sh \"\$(command -v python3)\" ./pylibs"
+$SSH "cd '$PORTS_DIR/hillchord' && bash install_deps \"\$(command -v python3)\" ./pylibs"
 
 echo "[deploy] done. Launch HillChord from the muOS ports menu."

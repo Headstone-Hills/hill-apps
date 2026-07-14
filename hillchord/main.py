@@ -26,6 +26,7 @@ from input.actions import Actions
 from ui.library_screen import Library
 from ui import play_screen
 from ui import help_overlay
+from volume_osd import VolumeOSD
 import precache
 
 
@@ -93,6 +94,7 @@ def main():
     arp = Arpeggiator(mixer, transport, looper)
     combo = ComboHandler()
     actions = Actions(state, mixer, looper, metronome, library, arp)
+    volume_osd = VolumeOSD()
 
     # Restore previously selected sound if it still exists.
     if state.sound:
@@ -159,6 +161,8 @@ def main():
         pygame.draw.circle(screen, (200, 170, 255) if on else (74, 66, 100),
                            (config.SCREEN_W // 2, 9), 6)
 
+        volume_osd.draw(screen, fonts["mid"])
+
         pygame.display.flip()
 
         # Perform any deferred sound load now that the "Loading…" frame is shown.
@@ -172,6 +176,7 @@ def main():
 
         clock.tick(config.FPS)
 
+    volume_osd.stop()
     _precache_stop.set()          # cancel background precache thread
     persistence.save_state(state)
     pygame.quit()

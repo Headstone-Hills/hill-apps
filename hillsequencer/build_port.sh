@@ -9,11 +9,11 @@
 #       │   instruments, loop_player, chain_editor, sequence_manager,
 #       │   library_overlay, ui, help_overlay)
 #       ├── audio/ input/ theory/
-#       ├── install_deps.sh
+#       ├── install_deps
 #       └── port.json
 #
 # pygame/numpy are NOT bundled; they install on-device on first launch
-# (install_deps.sh) so the binaries match the device ABI. Samples are SHARED
+# (install_deps) so the binaries match the device ABI. Samples are SHARED
 # with HillChord (ROMs/Samples) and are NOT included in the zip.
 set -e
 
@@ -39,8 +39,8 @@ cp "$ROOT/main.py" "$ROOT/config.py" "$ROOT/state.py" "$ROOT/transport.py" \
 cp -r "$ROOT/audio" "$ROOT/input" "$ROOT/theory" "$GAMEDIR/"
 
 # Packaging + metadata.
-cp "$ROOT/install_deps.sh" "$ROOT/port.json" "$ROOT/requirements.txt" "$GAMEDIR/"
-chmod +x "$GAMEDIR/install_deps.sh"
+cp "$ROOT/install_deps" "$ROOT/port.json" "$ROOT/requirements.txt" "$GAMEDIR/"
+chmod +x "$GAMEDIR/install_deps"
 
 # Strip caches.
 find "$STAGE" -name '__pycache__' -type d -prune -exec rm -rf {} +

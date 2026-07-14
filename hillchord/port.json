@@ -8,7 +8,7 @@
   "attr": {
     "title": "HillChord",
     "desc": "A handheld harmony instrument. Play diatonic chords and scale notes with the gamepad, shape them with D-pad chord transformations, and layer reverb/delay/chorus, a looper, and a metronome.",
-    "inst": "Place your sample folders (one folder of per-pitch WAVs per timbre) in ROMs/Samples on the SD card. On first launch HillChord installs its Python deps (needs network once).",
+    "inst": "Place your sample folders (one folder of per-pitch WAVs per timbre) in ROMs/Samples on the SD card. On first launch HillChord installs its Python deps (needs network once, usually under a minute).",
     "genres": ["music", "tools"],
     "porter": ["you"],
     "image": {

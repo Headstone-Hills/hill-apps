@@ -8,20 +8,35 @@ import os
 import sys
 
 # --- Platform detection -----------------------------------------------------
-# On the device the SD card is mounted at /mnt/sdcard. Locally it is not.
-ON_DEVICE = os.path.isdir("/mnt/sdcard/ROMs")
+# Each supported CFW mounts the SD card / persistent storage at a different
+# root, so probe a list of known roots instead of hardcoding one:
+#   muOS (RG35XXSP):             /mnt/sdcard/ROMs
+#   Knulli (Anbernic RG-Scarab): /userdata/roms
+#   (Knulli is a Batocera fork and keeps Batocera's /userdata layout unchanged,
+#   so this also covers Batocera proper.)
+# Locally (dev machine) none of these exist.
+_DEVICE_ROOTS = ["/mnt/sdcard/ROMs", "/userdata/roms"]
+_DEVICE_ROOT = next((r for r in _DEVICE_ROOTS if os.path.isdir(r)), None)
+ON_DEVICE = _DEVICE_ROOT is not None
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
 
 # --- Paths ------------------------------------------------------------------
 if ON_DEVICE:
-    SAMPLE_PATH = "/mnt/sdcard/ROMs/Samples"
-    STATE_PATH = "/mnt/sdcard/ROMs/Samples/hillchord_state.json"
+    _DEFAULT_SAMPLES = os.path.join(_DEVICE_ROOT, "Samples")
+    _DEFAULT_STATE = os.path.join(_DEVICE_ROOT, "Samples", "hillchord_state.json")
     # Persistent render cache (kept OUTSIDE Samples so it isn't browsed).
-    RENDER_CACHE_DIR = "/mnt/sdcard/ROMs/.hillchord_cache"
+    _DEFAULT_CACHE = os.path.join(_DEVICE_ROOT, ".hillchord_cache")
 else:
-    _HERE = os.path.dirname(os.path.abspath(__file__))
-    SAMPLE_PATH = os.path.join(_HERE, "samples")
-    STATE_PATH = os.path.join(_HERE, "hillchord_state.json")
-    RENDER_CACHE_DIR = os.path.join(_HERE, ".render_cache")
+    _DEFAULT_SAMPLES = os.path.join(_HERE, "samples")
+    _DEFAULT_STATE = os.path.join(_HERE, "hillchord_state.json")
+    _DEFAULT_CACHE = os.path.join(_HERE, ".render_cache")
+
+# Override any of these with the matching HILLCHORD_* env var (useful when the
+# shared sample library lives somewhere other than the detected default).
+SAMPLE_PATH = os.environ.get("HILLCHORD_SAMPLES", _DEFAULT_SAMPLES)
+STATE_PATH = os.environ.get("HILLCHORD_STATE", _DEFAULT_STATE)
+RENDER_CACHE_DIR = os.environ.get("HILLCHORD_CACHE", _DEFAULT_CACHE)
 
 # --- Display ----------------------------------------------------------------
 SCREEN_W = 640

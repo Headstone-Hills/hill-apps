@@ -3,7 +3,7 @@
 #
 # Using the device's own Python ensures the pygame/numpy binaries match the
 # device ABI. Invoked automatically on first launch by HillChord.sh, or run
-# manually:  bash install_deps.sh "$(command -v python3)" ./pylibs
+# manually:  bash install_deps "$(command -v python3)" ./pylibs
 set -e
 
 PYTHON="${1:-python3}"
@@ -19,9 +19,26 @@ if ! "$PYTHON" -m pip --version >/dev/null 2>&1; then
   }
 fi
 
-# Install into the vendored target dir (needs network on first run).
-"$PYTHON" -m pip install --no-cache-dir --target "$TARGET" \
-  "pygame>=2.6,<3" "numpy>=1.26"
+APPDIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Install pygame first (numpy is the slower one) so a loading screen can be
+# shown for the rest of the install instead of a blank display.
+"$PYTHON" -m pip install --no-cache-dir --timeout 20 --retries 2 --target "$TARGET" \
+  "pygame>=2.6,<3"
+
+SPLASH_PID=""
+if [ -f "$APPDIR/install_splash.py" ]; then
+  "$PYTHON" "$APPDIR/install_splash.py" &
+  SPLASH_PID=$!
+fi
+
+"$PYTHON" -m pip install --no-cache-dir --timeout 20 --retries 2 --target "$TARGET" \
+  "numpy>=1.26"
+
+if [ -n "$SPLASH_PID" ]; then
+  kill "$SPLASH_PID" 2>/dev/null || true
+  wait "$SPLASH_PID" 2>/dev/null || true
+fi
 
 echo "[install_deps] done -> $TARGET"
 "$PYTHON" - "$TARGET" <<'PY'

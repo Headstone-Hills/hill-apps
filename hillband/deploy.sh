@@ -48,10 +48,10 @@ $SCP -r "$STAGE/hillband" "$USER_AT:$PORTS_DIR/"
 
 echo "[deploy] copying launcher -> $MENU_DIR/HillBand.sh ..."
 $SCP "$STAGE/HillBand.sh" "$USER_AT:$MENU_DIR/HillBand.sh"
-$SSH "$USER_AT" "chmod +x '$MENU_DIR/HillBand.sh' '$PORTS_DIR/hillband/install_deps.sh'"
+$SSH "$USER_AT" "chmod +x '$MENU_DIR/HillBand.sh' '$PORTS_DIR/hillband/install_deps'"
 
 echo "[deploy] building Python deps on-device (first run only; needs wifi)..."
-$SSH "$USER_AT" "cd '$PORTS_DIR/hillband' && bash install_deps.sh \"\$(command -v python3)\" ./pylibs" \
+$SSH "$USER_AT" "cd '$PORTS_DIR/hillband' && bash install_deps \"\$(command -v python3)\" ./pylibs" \
   || echo "[deploy] (dep build skipped — will retry on first launch)"
 
 echo "[deploy] done. Launch HillBand from the muOS Ports menu."

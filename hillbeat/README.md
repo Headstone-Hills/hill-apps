@@ -157,4 +157,4 @@ Keyboard bindings are defined in the `KEYBOARD` dict at the top of `main.py` (ar
 
 ## Deploy to RG35XXSP
 
-Copy `ports/hillbeat/` to the device SD card at `/mnt/sdcard/ports/hillbeat/` and the launcher `ROMS/Ports/HillBeat.sh` to `/mnt/sdcard/ROMS/Ports/HillBeat.sh`. On first run the launcher script calls `install_deps.sh` to vendor pygame and numpy into `pylibs/`.
+Copy `ports/hillbeat/` to the device SD card at `/mnt/sdcard/ports/hillbeat/` and the launcher `ROMS/Ports/HillBeat.sh` to `/mnt/sdcard/ROMS/Ports/HillBeat.sh`. On first run the launcher script calls `install_deps` to vendor pygame and numpy into `pylibs/`.

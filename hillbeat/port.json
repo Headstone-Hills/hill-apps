@@ -8,7 +8,7 @@
   "attr": {
     "title": "HillBeat",
     "desc": "A drum machine and sample sequencer. Program 16-step patterns for kick, snare, hat, and percussion tracks, shape them with swing, velocity, and mute controls, and layer a backing loop.",
-    "inst": "Place your drum sample folders in ports/hillbeat/samples on the SD card. On first launch HillBeat installs its Python deps (needs network once).",
+    "inst": "Place your drum sample folders in ports/hillbeat/samples on the SD card. On first launch HillBeat installs its Python deps (needs network once, usually under a minute).",
     "genres": ["music", "tools"],
     "porter": ["you"],
     "image": {

@@ -8,16 +8,28 @@
 import os
 
 # --- Platform detection -------------------------------------------------------
-ON_DEVICE = os.path.isdir("/mnt/sdcard/ROMs")
+# Each supported CFW mounts the SD card / persistent storage at a different
+# root and lays out its "ports" folder differently, so probe known roots
+# instead of hardcoding one:
+#   muOS (RG35XXSP):             samples /mnt/sdcard/ROMs,  ports /mnt/sdcard/ports
+#   Knulli (Anbernic RG-Scarab): samples /userdata/roms,    ports /userdata/roms/ports
+#   (Knulli is a Batocera fork and keeps Batocera's /userdata layout unchanged,
+#   so this also covers Batocera proper.)
+_DEVICE_LAYOUTS = [
+    {"samples_root": "/mnt/sdcard/ROMs", "ports_root": "/mnt/sdcard/ports"},
+    {"samples_root": "/userdata/roms", "ports_root": "/userdata/roms/ports"},
+]
+_DEVICE_LAYOUT = next((l for l in _DEVICE_LAYOUTS if os.path.isdir(l["samples_root"])), None)
+ON_DEVICE = _DEVICE_LAYOUT is not None
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- Paths -------------------------------------------------------------------
 # Samples shared with HillChord/HillSequencer (never copied).
 if ON_DEVICE:
-    _DEFAULT_SAMPLES      = "/mnt/sdcard/ROMs/Samples"
-    _DEFAULT_DRUM_SAMPLES = "/mnt/sdcard/ports/hillbeat/samples/Cassette Drums"
-    _DEFAULT_CACHE        = "/mnt/sdcard/ROMs/.hillband_cache"
+    _DEFAULT_SAMPLES      = os.path.join(_DEVICE_LAYOUT["samples_root"], "Samples")
+    _DEFAULT_DRUM_SAMPLES = os.path.join(_DEVICE_LAYOUT["ports_root"], "hillbeat", "samples", "Cassette Drums")
+    _DEFAULT_CACHE        = os.path.join(_DEVICE_LAYOUT["samples_root"], ".hillband_cache")
 else:
     _DEFAULT_SAMPLES      = os.path.normpath(os.path.join(_APP_DIR, "..", "hillchord", "samples"))
     _DEFAULT_DRUM_SAMPLES = os.path.normpath(os.path.join(_APP_DIR, "..", "hillbeat", "samples", "Cassette Drums"))

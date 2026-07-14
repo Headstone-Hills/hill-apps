@@ -61,10 +61,10 @@ $SCP -r "$STAGE/hillsequencer" "$USER_AT:$PORTS_DIR/"
 
 echo "[deploy] copying launcher -> $MENU_DIR/HillSequencer.sh ..."
 $SCP "$STAGE/HillSequencer.sh" "$USER_AT:$MENU_DIR/HillSequencer.sh"
-$SSH "$USER_AT" "chmod +x '$MENU_DIR/HillSequencer.sh' '$PORTS_DIR/hillsequencer/install_deps.sh'"
+$SSH "$USER_AT" "chmod +x '$MENU_DIR/HillSequencer.sh' '$PORTS_DIR/hillsequencer/install_deps'"
 
 echo "[deploy] building Python deps on-device (first run only; needs wifi)..."
-$SSH "$USER_AT" "cd '$PORTS_DIR/hillsequencer' && bash install_deps.sh \"\$(command -v python3)\" ./pylibs" \
+$SSH "$USER_AT" "cd '$PORTS_DIR/hillsequencer' && bash install_deps \"\$(command -v python3)\" ./pylibs" \
   || echo "[deploy] (dep build skipped/failed — it will retry automatically on first launch)"
 
 echo "[deploy] done. Launch HillSequencer from the muOS Ports menu."

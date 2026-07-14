@@ -32,6 +32,7 @@ from loop_player  import LoopPlayer
 from library      import SampleLibrary
 from chain_editor import ChainEditor
 from ui           import UI
+from volume_osd   import VolumeOSD
 import help_overlay
 
 
@@ -76,6 +77,7 @@ def main():
     library.warmup(state.favorites)       # pre-scan sample dirs
     chain_ed  = ChainEditor(state, ui.font_n, ui.font_s,
                             reset_chain_cb=transport.reset_chain)
+    volume_osd = VolumeOSD()
 
     # ── Gamepad ───────────────────────────────────────────────────────────────
     joystick = None
@@ -486,10 +488,13 @@ def main():
         if show_help:
             help_overlay.draw(screen, help_fonts, scroll=help_scroll)
 
+        volume_osd.draw(screen, ui.font_n)
+
         pygame.display.flip()
         clock.tick(FPS)
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
+    volume_osd.stop()
     sequencer.stop()
     state.save()
     pygame.quit()
