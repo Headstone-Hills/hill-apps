@@ -31,21 +31,22 @@ fn is_sustained(s: &Sample) -> Option<bool> {
 /// How a sequencer should cut a long note short.
 #[derive(Clone, Copy)]
 pub struct Gate {
-    /// Release after this many steps (or at the track's next note).
+    /// Release after this many steps (4 measures), or at the track's next note.
     pub steps: u32,
     /// Release an audition note after this many ms.
     pub preview_ms: u32,
 }
 
 impl Instrument {
-    /// Steady sounds get a short gate; long decaying ones (over 2.5 s) a longer one;
-    /// short percussive/plucked sounds play out untouched.
+    /// Steady sounds and long decaying ones (over 2.5 s) are held for at most 4
+    /// measures and replaced by the track's next note; short sounds play out untouched.
+    /// The audition note (setting a step, choosing a sound) is cut much sooner.
     pub fn gate(&self) -> Option<Gate> {
         let longest = self.samples.iter().map(|(_, s)| s.seconds()).fold(0.0, f32::max);
         if self.sustained {
-            Some(Gate { steps: 4, preview_ms: 450 })
+            Some(Gate { steps: 64, preview_ms: 450 })
         } else if longest > 2.5 {
-            Some(Gate { steps: 8, preview_ms: 1200 })
+            Some(Gate { steps: 64, preview_ms: 1200 })
         } else {
             None
         }

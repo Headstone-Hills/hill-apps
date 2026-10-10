@@ -429,3 +429,22 @@ fn tracks_sharing_a_sound_load_it_once() {
     assert_eq!(after - before, 3, "3 files read once, not 8 times");
     let _ = b;
 }
+
+#[test]
+fn sustained_sound_holds_past_four_steps_until_the_next_note() {
+    // a steady 6 s tone, one step per bar: it must still sound well after 4 steps (0.5 s at 120 bpm)
+    let tone: Vec<f32> = (0..44100 * 6).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+    let store = shared();
+    store.lock().unwrap().samples.insert("Pads/pad.wav".into(), encode16(&tone, 1, 44100));
+    let mut a = apps::create("hillsequencer", Box::new(Shared(store.clone()))).unwrap();
+    chord(a.as_mut(), &[Btn::Start], Btn::B);
+    tap(a.as_mut(), Btn::B);
+    tap(a.as_mut(), Btn::Down);
+    tap(a.as_mut(), Btn::A); // choose the pad for track 1
+    tap(a.as_mut(), Btn::A); // step 1 on
+    run(a.as_mut(), 1.0); // audition is cut
+    tap(a.as_mut(), Btn::Start); // play: step 1 fires at once
+    run(a.as_mut(), 0.8); // well past 4 steps (0.5 s)
+    let window = run(a.as_mut(), 0.5);
+    assert!(peak(&window) > 0.05, "held past four steps");
+}
