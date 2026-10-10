@@ -30,7 +30,29 @@ fn is_sustained(s: &Sample) -> Option<bool> {
     Some(early > 1e-4 && mid > 0.5 * early)
 }
 
+/// How a sequencer should cut a long note short.
+#[derive(Clone, Copy)]
+pub struct Gate {
+    /// Release after this many steps (or at the track's next note).
+    pub steps: u32,
+    /// Release an audition note after this many ms.
+    pub preview_ms: u32,
+}
+
 impl Instrument {
+    /// Steady sounds get a short gate; long decaying ones (over 2.5 s) a longer one;
+    /// short percussive/plucked sounds play out untouched.
+    pub fn gate(&self) -> Option<Gate> {
+        let longest = self.samples.iter().map(|(_, s)| s.seconds()).fold(0.0, f32::max);
+        if self.sustained {
+            Some(Gate { steps: 4, preview_ms: 450 })
+        } else if longest > 2.5 {
+            Some(Gate { steps: 8, preview_ms: 1200 })
+        } else {
+            None
+        }
+    }
+
     pub fn new(name: &str, samples: Vec<(u8, Arc<Sample>)>) -> Self {
         let votes: Vec<bool> = samples.iter().filter_map(|(_, s)| is_sustained(s)).collect();
         let sustained = !votes.is_empty() && votes.iter().filter(|v| **v).count() * 2 > votes.len();

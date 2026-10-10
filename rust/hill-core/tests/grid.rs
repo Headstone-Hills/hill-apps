@@ -359,3 +359,25 @@ fn pausing_silences_ringing_notes() {
     run(a.as_mut(), 0.3); // release fade
     assert!(peak(&run(a.as_mut(), 0.5)) < 1e-4, "silent after pausing");
 }
+
+#[test]
+fn setting_a_step_on_a_long_sound_does_not_drone() {
+    // a 6 s steady tone as the only instrument on track 1, set up through saved state
+    let tone: Vec<f32> = (0..44100 * 6).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+    let store = shared();
+    store.lock().unwrap().samples.insert("Pads/pad.wav".into(), encode16(&tone, 1, 44100));
+    let mut a = apps::create("hillsequencer", Box::new(Shared(store.clone()))).unwrap();
+    // browse to the pad: up to the root, into Pads, pick it
+    chord(a.as_mut(), &[Btn::Start], Btn::B);
+    tap(a.as_mut(), Btn::B);
+    tap(a.as_mut(), Btn::Down); // Built-in -> pad.wav (a folder with one sound shows the sound)
+    tap(a.as_mut(), Btn::A);
+    a.save();
+    assert_eq!(saved(&store, "hillsequencer").get("t0.inst"), Some("Pads/pad.wav"), "the 6 s pad was chosen");
+    run(a.as_mut(), 1.0); // the choose-a-sound audition rings out and is cut
+    tap(a.as_mut(), Btn::A); // set a step: audition
+    let first = run(a.as_mut(), 0.3);
+    assert!(peak(&first) > 0.05, "audition is audible");
+    run(a.as_mut(), 0.6); // 450 ms cut plus the release fade
+    assert!(peak(&run(a.as_mut(), 1.0)) < 1e-4, "audition note must not keep droning");
+}

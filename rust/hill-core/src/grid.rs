@@ -53,10 +53,6 @@ struct Track {
     gate_left: u32,
 }
 
-/// A sustained note is cut after this many steps, or when the track's next note starts.
-const GATE_STEPS: u32 = 4;
-/// How long the audition note after choosing a sound may ring, in ms.
-const PREVIEW_MS: u32 = 450;
 
 enum Overlay {
     None,
@@ -254,6 +250,25 @@ impl GridApp {
         }
     }
 
+    /// The gate for a pitched track whose sound would otherwise ring for seconds.
+    fn gate_of(&self, ti: usize) -> Option<crate::instrument::Gate> {
+        if self.tracks[ti].kind != TrackKind::Pitched {
+            return None;
+        }
+        self.tracks[ti].inst.as_ref().and_then(|i| i.gate())
+    }
+
+    /// A one-off note outside the sequence (setting a step, choosing a sound):
+    /// long sounds are cut off after a moment instead of droning.
+    fn audition(&mut self, ti: usize, vel: u8) {
+        let gate = self.gate_of(ti);
+        if gate.is_some() {
+            self.mixer.release(ti as u32);
+        }
+        Self::play_track(&mut self.mixer, &mut self.tracks[ti], ti, vel);
+        self.preview = gate.map(|g| (ti, g.preview_ms));
+    }
+
     fn fire_step(&mut self, step: usize) {
         if step == 0 {
             if let Some(p) = self.pending.take() {
@@ -272,10 +287,9 @@ impl GridApp {
             }
             let v = self.cells[self.idx(self.pattern, ti, step)];
             if v > 0 && !self.tracks[ti].mute {
-                let gated = self.tracks[ti].kind == TrackKind::Pitched && self.tracks[ti].inst.as_ref().is_some_and(|i| i.sustained);
-                if gated {
+                if let Some(g) = self.gate_of(ti) {
                     self.mixer.release(ti as u32); // legato: the new note replaces the held one
-                    self.tracks[ti].gate_left = GATE_STEPS;
+                    self.tracks[ti].gate_left = g.steps;
                 }
                 Self::play_track(&mut self.mixer, &mut self.tracks[ti], ti, v);
             }
@@ -379,7 +393,7 @@ impl GridApp {
             // audition
             let (ti, v) = (self.cur_track, self.cells[a]);
             if !self.tracks[ti].mute {
-                Self::play_track(&mut self.mixer, &mut self.tracks[ti], ti, v);
+                self.audition(ti, v);
                 self.tracks[ti].scale_pos = 0;
             }
         }
@@ -515,11 +529,8 @@ impl GridApp {
                 self.sel.iter_mut().for_each(|s| *s = false);
                 let ti = targets[0];
                 if !self.tracks[ti].mute {
-                    Self::play_track(&mut self.mixer, &mut self.tracks[ti], ti, 100);
+                    self.audition(ti, 100);
                     self.tracks[ti].scale_pos = 0;
-                    if self.tracks[ti].inst.as_ref().is_some_and(|i| i.sustained) {
-                        self.preview = Some((ti, PREVIEW_MS));
-                    }
                 }
                 self.toast.say(&format!("{} -> {}", clip(&name, 18), if targets.len() > 1 { format!("{} tracks", targets.len()) } else { format!("track {}", ti + 1) }));
             }
