@@ -13,7 +13,6 @@ pub mod input;
 pub mod instrument;
 pub mod kv;
 pub mod library;
-pub mod looper;
 pub mod mixer;
 pub mod synth;
 pub mod theory;

@@ -7,12 +7,10 @@ use crate::input::{Btn, Held, Repeat, TapTempo};
 use crate::instrument::Instrument;
 use crate::kv::{from_hex, to_hex, Kv};
 use crate::library::{self, Entry};
-use crate::looper::{bpm_from_bars, parse_bpm, LoopPlayer};
 use crate::mixer::Mixer;
 use crate::theory::*;
 use crate::transport::Transport;
 use crate::ui::{modal, quit_bar, Browser, BrowserOut, Help, Toast, QUIT_HOLD_MS};
-use crate::wav;
 use crate::{App, SAMPLE_RATE};
 
 pub const STEPS: usize = 16;
@@ -33,7 +31,6 @@ pub struct GridConfig {
     /// Key/scale overlay that spreads a scale across all tracks (START+L2).
     pub key_overlay: bool,
     pub multiselect: bool,
-    pub loop_player: bool,
     /// Pre-filter the browser to drum sounds when assigning a drum track.
     pub drum_filter: bool,
     pub help: &'static [(&'static str, &'static str)],
@@ -58,10 +55,8 @@ enum Overlay {
     None,
     Help,
     Browse(Vec<usize>),
-    BrowseLoop,
     Chord { track: usize, chord: usize, scale: usize },
     Key { root: usize, scale: usize },
-    LoopBars { file: String, bars: usize },
 }
 
 /// "Pressed alone and not yet used as a modifier" flags.
@@ -74,17 +69,13 @@ struct Plain {
     select: bool,
 }
 
-const BARS: [u32; 5] = [1, 2, 4, 8, 16];
-
 pub struct GridApp {
     cfg: &'static GridConfig,
     host: Box<dyn Host>,
     catalog: Vec<Entry>,
-    file_cat: Vec<Entry>,
     rate: f32,
     mixer: Mixer,
     tr: Transport,
-    lp: LoopPlayer,
     tracks: Vec<Track>,
     cells: Vec<u8>,
     pattern: usize,
@@ -119,17 +110,14 @@ impl GridApp {
             let kits = library::kit_entries(&paths);
             catalog.splice(at..at, kits);
         }
-        let file_cat = library::file_catalog(&paths);
         let nt = cfg.tracks.len();
         let mut app = GridApp {
             cfg,
             host,
             catalog,
-            file_cat,
             rate: SAMPLE_RATE,
             mixer: Mixer::new(SAMPLE_RATE),
             tr: Transport::new(SAMPLE_RATE, STEPS),
-            lp: LoopPlayer::default(),
             tracks: Vec::new(),
             cells: vec![0; PATTERNS * nt * STEPS],
             pattern: 0,
@@ -318,11 +306,6 @@ impl GridApp {
                 k.set(&format!("p{}.t{}", p, i), to_hex(&self.cells[a..a + STEPS]));
             }
         }
-        if self.cfg.loop_player {
-            k.set("loop.file", &self.lp.file);
-            k.set("loop.bpm", self.lp.bpm);
-            k.set_bool("loop.on", self.lp.on);
-        }
         k.render()
     }
 
@@ -374,14 +357,6 @@ impl GridApp {
                     for (s, b) in bytes.iter().take(STEPS).enumerate() {
                         self.cells[a + s] = (*b).min(127);
                     }
-                }
-            }
-        }
-        if self.cfg.loop_player {
-            if let Some(f) = k.get("loop.file").filter(|f| !f.is_empty()).map(|s| s.to_string()) {
-                if let Some(s) = self.host.read_sample(&f).as_deref().and_then(wav::parse) {
-                    self.lp.set(&f, s, k.f32("loop.bpm").unwrap_or(120.0));
-                    self.lp.on = k.bool("loop.on").unwrap_or(false);
                 }
             }
         }
@@ -485,11 +460,6 @@ impl GridApp {
         self.overlay = Overlay::Browse(targets);
     }
 
-    fn open_loop_browser(&mut self) {
-        self.browser.open("Pick loop file", &self.file_cat, false, false, &[], None);
-        self.overlay = Overlay::BrowseLoop;
-    }
-
     /// Spread a kit's files over every drum track, in track order.
     fn assign_kit(&mut self, files: &[String]) {
         let drums: Vec<usize> = (0..self.nt()).filter(|&i| self.tracks[i].kind == TrackKind::Drum).collect();
@@ -555,16 +525,6 @@ impl GridApp {
         self.toast.say(&format!("Key {} {}", PC_NAMES[root], SCALE_MODES[scale].name));
     }
 
-    fn start_loop(&mut self, file: &str, bpm: f32) {
-        if let Some(s) = self.host.read_sample(file).as_deref().and_then(wav::parse) {
-            self.lp.set(file, s, bpm);
-            self.lp.on = true;
-            self.toast.say(&format!("Loop {:.0} bpm", self.lp.bpm));
-        } else {
-            self.toast.say("Could not load loop");
-        }
-    }
-
     fn save_now(&mut self) {
         let s = self.state_string();
         self.host.save_state(self.cfg.file, &s);
@@ -608,14 +568,6 @@ impl GridApp {
             Btn::A => {
                 if st {
                     self.use_mods();
-                    if self.cfg.loop_player {
-                        if self.lp.sample.is_none() {
-                            self.open_loop_browser();
-                        } else {
-                            self.lp.on = !self.lp.on;
-                            self.toast.say(if self.lp.on { "Loop on" } else { "Loop off" });
-                        }
-                    }
                 } else if !se && !fnh {
                     self.plain.a = true;
                 }
@@ -629,9 +581,6 @@ impl GridApp {
             Btn::X => {
                 if st {
                     self.use_mods();
-                    if self.cfg.loop_player {
-                        self.open_loop_browser();
-                    }
                 } else if se {
                     self.use_mods();
                     self.tr.swing_on = !self.tr.swing_on;
@@ -766,7 +715,6 @@ impl GridApp {
         self.ss = false;
         if !self.quit {
             self.tr.stop_reset();
-            self.lp.rewind();
             self.mixer.stop_all();
             self.pending = None;
             self.toast.say("Stopped");
@@ -790,37 +738,6 @@ impl GridApp {
                 }
                 BrowserOut::Close => {}
                 _ => self.overlay = Overlay::Browse(targets),
-            },
-            Overlay::BrowseLoop => match self.browser.event(b, &self.file_cat, &[]) {
-                BrowserOut::Pick(i) => {
-                    let file = self.file_cat[i].key.clone();
-                    match parse_bpm(&file) {
-                        Some(bpm) => self.start_loop(&file, bpm),
-                        None => self.overlay = Overlay::LoopBars { file, bars: 2 },
-                    }
-                }
-                BrowserOut::Close => {}
-                _ => self.overlay = Overlay::BrowseLoop,
-            },
-            Overlay::LoopBars { file, mut bars } => match b {
-                Btn::Left => {
-                    bars = bars.saturating_sub(1);
-                    self.overlay = Overlay::LoopBars { file, bars };
-                }
-                Btn::Right => {
-                    bars = (bars + 1).min(BARS.len() - 1);
-                    self.overlay = Overlay::LoopBars { file, bars };
-                }
-                Btn::A => {
-                    if let Some(s) = self.host.read_sample(&file).as_deref().and_then(wav::parse) {
-                        let bpm = bpm_from_bars(BARS[bars], s.seconds());
-                        self.lp.set(&file, s, bpm);
-                        self.lp.on = true;
-                        self.toast.say(&format!("Loop {:.0} bpm", self.lp.bpm));
-                    }
-                }
-                Btn::B => {}
-                _ => self.overlay = Overlay::LoopBars { file, bars },
             },
             Overlay::Chord { track, mut chord, mut scale } => {
                 match b {
@@ -940,9 +857,6 @@ impl GridApp {
         if self.tr.swing_on {
             fb.text(440, 7, &format!("sw{}%", self.tr.swing_percent()), 2, MELODIC);
         }
-        if self.lp.sample.is_some() {
-            fb.text(530, 7, "LOOP", 2, if self.lp.on { ACCENT } else { DIM });
-        }
         let (label, col) = if self.tr.playing { (">", ACCENT) } else { ("||", DIM) };
         fb.text_right(W - 8, 7, label, 2, col);
     }
@@ -964,12 +878,6 @@ impl GridApp {
         let mut l3 = String::new();
         if self.cfg.chords && t.kind == TrackKind::Pitched {
             l3.push_str(&format!("chord {}  scale {}", CHORD_TYPES[t.chord].name, SCALE_MODES[t.scale].name));
-        }
-        if let Some(_s) = &self.lp.sample {
-            if !l3.is_empty() {
-                l3.push_str("   ");
-            }
-            l3.push_str(&format!("loop {} x{:.2}", clip(self.lp.file.rsplit('/').next().unwrap_or(""), 14), self.lp.ratio(self.tr.bpm)));
         }
         fb.text(14, y + 52, &l3, 1, DIM);
         let hint = "A step  Y mute  X xpose  START play  SEL tap  FN+SEL help";
@@ -1020,9 +928,6 @@ impl App for GridApp {
             let chunk = (self.tr.until_due().min((frames - done) as u64) as usize).max(1);
             let seg = &mut out[done * 2..(done + chunk) * 2];
             self.mixer.render(seg);
-            if self.tr.playing {
-                self.lp.render(seg, self.tr.bpm, self.rate);
-            }
             self.tr.advance(chunk as u64);
             done += chunk;
         }
@@ -1044,13 +949,6 @@ impl App for GridApp {
             Overlay::None => {}
             Overlay::Help => self.help.draw(fb, self.cfg.name, self.cfg.help),
             Overlay::Browse(_) => self.browser.draw(fb, &self.catalog, &[]),
-            Overlay::BrowseLoop => self.browser.draw(fb, &self.file_cat, &[]),
-            Overlay::LoopBars { file, bars } => {
-                let (x, y) = modal(fb, 440, 190, "How many bars?");
-                fb.text(x, y, &clip(file.rsplit('/').next().unwrap_or(""), 34), 1, DIM);
-                fb.text_center(320, y + 36, &format!("< {} >", BARS[*bars]), 4, WHITE);
-                fb.text(x, y + 92, "No bpm in the file name. Left/Right  A ok  B cancel", 1, DIM);
-            }
             Overlay::Chord { chord, scale, .. } => {
                 let (x, y) = modal(fb, 440, 200, "Chord / scale");
                 fb.text(x, y + 4, "Chord", 2, DIM);

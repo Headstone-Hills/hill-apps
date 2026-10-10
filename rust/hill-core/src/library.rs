@@ -191,24 +191,6 @@ pub fn build_catalog(paths: &[String]) -> Vec<Entry> {
     out
 }
 
-/// One entry per WAV file (for the loop picker).
-pub fn file_catalog(paths: &[String]) -> Vec<Entry> {
-    let mut v: Vec<&String> = paths.iter().filter(|p| is_wav(p)).collect();
-    v.sort();
-    v.into_iter()
-        .map(|p| {
-            let (dir, file) = split_path(p);
-            Entry {
-                dir: dir.to_string(),
-                label: strip_ext(file).to_string(),
-                key: p.clone(),
-                kind: Kind::Files(vec![(p.clone(), None)]),
-                pitched: false,
-            }
-        })
-        .collect()
-}
-
 pub fn find_key<'a>(cat: &'a [Entry], key: &str) -> Option<&'a Entry> {
     cat.iter().find(|e| e.key == key)
 }

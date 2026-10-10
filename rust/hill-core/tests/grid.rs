@@ -283,25 +283,6 @@ fn browser_is_a_folder_tree() {
 }
 
 #[test]
-fn loop_follows_tempo_with_wav_from_host() {
-    let mut host = MemHost::default();
-    // a 2-second loop: 'bpm' in name -> 4 beats at 120 would be 2s
-    let tone: Vec<f32> = (0..88200).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
-    host.samples.insert("loops/groove_120bpm.wav".into(), encode16(&tone, 1, 44100));
-    let mut a = apps::create("hillbeat", Box::new(host)).unwrap();
-    chord(a.as_mut(), &[Btn::Start], Btn::A); // opens loop browser (no loop yet)
-    // browser lists the one file; pick it
-    tap(a.as_mut(), Btn::A);
-    tap(a.as_mut(), Btn::Start);
-    let out = run(a.as_mut(), 0.5);
-    assert!(peak(&out) > 0.2, "loop audible");
-    // pause: loop stops advancing and goes quiet
-    tap(a.as_mut(), Btn::Start);
-    let out = run(a.as_mut(), 0.2);
-    assert!(peak(&out) < 0.01);
-}
-
-#[test]
 fn bad_wav_in_library_does_not_crash() {
     let mut host = MemHost::default();
     host.samples.insert("kit/kick.wav".into(), b"not a wav".to_vec());

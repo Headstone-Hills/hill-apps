@@ -10,7 +10,6 @@ static CONFIG: GridConfig = GridConfig {
     chords: true,
     key_overlay: false,
     multiselect: true,
-    loop_player: true,
     drum_filter: true,
     help: &[
         ("PLAYBACK", ""),
@@ -37,8 +36,6 @@ static CONFIG: GridConfig = GridConfig {
         ("START+B", "pick a sound (drum tracks start on DRUM filter)"),
         ("  X in browser", "clear the drum filter"),
         ("START+R2", "select all melodic or all drum tracks (toggle), then START+B"),
-        ("START+A", "loop on / off (picks a file first time)"),
-        ("START+X", "choose a different loop file"),
         ("START+Y", "save"),
         ("FN+SELECT", "this help"),
     ],

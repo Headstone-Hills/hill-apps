@@ -16,9 +16,8 @@ The Python apps in the sibling folders are untouched. This folder is a separate 
 hill-core/     the engine and all four apps (no I/O, no threads)
   grid.rs        step-grid engine shared by HillBeat / HillSequencer / HillBand
   apps/          the four apps (beat, sequencer, band are small configs; chord is its own)
-  mixer.rs       voice pool + resampler (pitch-shift and loop varispeed)
+  mixer.rs       voice pool + resampler (pitch-shift)
   transport.rs   sample-accurate step clock with swing
-  looper.rs      backing-loop player (tempo-synced by resampling)
   library.rs     WAV catalog, multisample grouping
   synth.rs       built-in sounds, so every app works with no samples
   wav.rs  fb.rs  ui.rs  ...
@@ -34,12 +33,10 @@ The apps implement one trait (`hill_core::App`): feed it button events, ask it f
 
 Every app has a built-in cheat sheet: hold **FN** and tap **SELECT**.
 
-- **HillBeat**: 4 drum voices, 16 steps, 8 patterns. Swing, tap tempo, per-step velocity, voice mute/volume, a backing loop, save/load.
+- **HillBeat**: 4 drum voices, 16 steps, 8 patterns. Swing, tap tempo, per-step velocity, voice mute/volume, drum kits, save/load.
 - **HillSequencer**: 8 pitched tracks, 16 steps, 8 patterns. Per-track transpose, a key/scale overlay (START+L2) that spreads a scale across the tracks, multi-select to give several tracks one instrument.
-- **HillBand**: 4 melodic + 4 drum tracks. Chord types (14) and scale modes (11) per melodic track, multi-select, a backing loop.
+- **HillBand**: 4 melodic + 4 drum tracks. Chord types (14) and scale modes (11) per melodic track, multi-select.
 - **HillChord**: play chords or single notes live. Looper with overdub (stored as an event list, so BPM changes cost nothing), arpeggiator, metronome, favorites.
-
-The backing loop (HillBeat, HillBand) is resampled to follow the app tempo, so pitch moves with tempo. Put the loop's BPM in its file name (`funk_96bpm.wav`) or answer the "how many bars" prompt once.
 
 ### Deliberately not here
 
@@ -82,11 +79,10 @@ There is also a screenshot tool: `cargo run -p hill-core --example shot -- hillb
 
 ## Testing
 
-`cargo test --workspace`: unit tests for the clock, mixer, WAV decoder, catalog, looper and theory, plus integration tests that drive each app with button presses and check the audio it renders (step timing, velocity, mute, pattern queueing, looper record/overdub/clear, arpeggiator onsets, state round-trips).
+`cargo test --workspace`: unit tests for the clock, mixer, WAV decoder, catalog and theory, plus integration tests that drive each app with button presses and check the audio it renders (step timing, velocity, mute, pattern queueing, looper record/overdub/clear, arpeggiator onsets, state round-trips).
 
 ## Known limits
 
 - Not yet run on real hardware. The aarch64 binaries were checked by running them under qemu-user with dummy SDL drivers; audio output and the joystick path are untested on the RG35XXSP and R36S.
 - Choosing a multisample instrument reads its files on the UI thread under the app lock, so audio can drop out for a moment on a slow SD card.
 - The browser build uses an AudioWorklet. If a sandbox blocks worklet modules it falls back to a main-thread ScriptProcessor (works, but is deprecated and less steady).
-- Loop varispeed changes pitch with tempo, by design.
