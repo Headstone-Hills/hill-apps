@@ -18,11 +18,12 @@ struct Voice {
     rel: f32,  // per-frame decrement to use when this voice is released
     tail: bool, // longer than a beat: fades smoothly at its own end too (length = rel)
     played: u64, // frames rendered so far, for the maximum-length cap
+    dgain: f32,  // running decay gain (1 until the first beat is over)
 }
 
 impl Voice {
     fn idle() -> Self {
-        Voice { sample: None, pos: 0.0, step: 1.0, gain: 0.0, key: 0, age: 0, env: 1.0, fade: 0.0, rel: 0.0, tail: false, played: 0 }
+        Voice { sample: None, pos: 0.0, step: 1.0, gain: 0.0, key: 0, age: 0, env: 1.0, fade: 0.0, rel: 0.0, tail: false, played: 0, dgain: 1.0 }
     }
 }
 
@@ -37,10 +38,11 @@ pub struct Mixer {
     pub max_secs: Option<f32>,
     /// One beat in seconds. How long a sound plays, in beats, picks its fade (`fade_secs`).
     pub beat_secs: Option<f32>,
-    /// Sequencer sounds longer than a beat: full level for the first beat, then a decay
-    /// to silence at the end of the sound (or the `max_secs` cap, whichever is first).
-    /// It falls steeply at first and eases out (`(1 - x)^3`), with no jumps in level.
-    /// The decay is spread over that remaining time, so longer samples decay more slowly.
+    /// Sequencer sounds longer than a beat: full level for the first beat, then a decay.
+    /// Every sound is at half level or less by the end of beat two: the level halves every
+    /// `h` beats, with `h` from 0.3 (short sounds) up to 0.9 (long ones), so longer samples
+    /// fall a little more slowly. On top of that the level is eased (`(1 - x)^2`) to silence
+    /// at the end of the sound (or the `max_secs` cap, whichever is first). No jumps in level.
     pub decay: bool,
 }
 
@@ -147,6 +149,7 @@ impl Mixer {
             rel,
             tail,
             played: 0,
+            dgain: 1.0,
         };
     }
 
@@ -194,12 +197,17 @@ impl Mixer {
         for v in self.voices.iter_mut() {
             let Some(s) = v.sample.as_ref() else { continue };
             let n = s.frames();
-            // (frames at full level, frames the decay lasts) for a sound longer than a beat
+            // (frames at full level, frames until silence, per-frame decay factor) for a
+            // sound longer than a beat
             let decay = match (self.decay, beat_frames) {
                 (true, Some(b)) => {
                     let len = n as f64 / v.step;
                     let end = max_frames.map_or(len, |m| len.min(m as f64));
-                    (len > b && end > b).then_some((b, end - b))
+                    (len > b && end > b).then(|| {
+                        let span = end - b;
+                        let half_life = (0.25 + 0.08 * span / b).clamp(0.3, 0.9) * b; // frames
+                        (b, span, 0.5f64.powf(1.0 / half_life) as f32)
+                    })
                 }
                 _ => None,
             };
@@ -220,11 +228,12 @@ impl Mixer {
                 let l = l0 + (l1 - l0) * fr;
                 let r = r0 + (r1 - r0) * fr;
                 let mut g = v.gain * smooth(v.env) * master;
-                if let Some((full, span)) = decay {
+                if let Some((full, span, k)) = decay {
                     let t = v.played as f64;
                     if t > full {
+                        v.dgain *= k;
                         let left = (1.0 - (t - full) / span).clamp(0.0, 1.0) as f32;
-                        g *= left * left * left;
+                        g *= v.dgain * left * left;
                     }
                 }
                 if tail > 0.0 {
@@ -330,21 +339,20 @@ mod tests {
         // 4 s sound, 0.5 s beat: full level for the whole first beat, then a steep fall
         let a = run(4.0, None);
         assert!(a[..=500].iter().all(|v| (v - 0.5).abs() < 1e-3), "full level for exactly the first beat");
-        // the decay is at its steepest at the start: a quarter of the way through it is already
-        // under half level, and halfway through it is nearly gone
-        let q = 500 + 3500 / 4;
-        assert!((a[q] - 0.5 * 0.75f32.powi(3)).abs() < 0.01, "quarter point {}", a[q]);
-        assert!(a[q] < 0.25, "aggressive early: {}", a[q]);
-        let mid = 500 + 3500 / 2;
-        assert!((a[mid] - 0.5 * 0.125).abs() < 0.01, "halfway {}", a[mid]);
+        assert!(a[510] < a[500] && a[550] < 0.49, "it starts falling right after the first beat");
         assert!(a[3990] < 0.001, "silent at the end: {}", a[3990]);
         assert!(a[500..].windows(2).all(|w| w[1] <= w[0] + 1e-6), "never rises again");
         let biggest_step = a[500..].windows(2).map(|w| (w[0] - w[1]).abs()).fold(0.0, f32::max);
         assert!(biggest_step < 0.002, "no jumps in level: {}", biggest_step);
-        // an 8 s sound decays over a longer time: at 4 s it is still well above silence
-        let b = run(8.0, None);
-        assert!((b[500 + 7500 / 4] - 0.5 * 0.75f32.powi(3)).abs() < 0.01, "the same shape, stretched over the longer length");
-        assert!(b[2500] > a[2500], "longer sample, slower decay");
+        // after beat two (1000 frames) every sound is at half level or less, whatever its length
+        for secs in [1.2f32, 2.0, 4.0, 8.0, 20.0] {
+            let s = run(secs, Some(16.0));
+            assert!(s[1000] <= 0.25 + 1e-4, "{} s sound: level at beat two is {} (max 0.25)", secs, s[1000]);
+        }
+        // longer samples fall a little more slowly (the length still matters)
+        let short = run(1.5, None);
+        let long = run(8.0, None);
+        assert!(long[900] > short[900], "long {} short {}", long[900], short[900]);
         // a 10 s sound with a 4 s cap decays to silence by the cap, not by its own end
         let c = run(10.0, Some(4.0));
         assert!(c[3900] < 0.02 && c[500] > 0.45, "cap sets the end of the decay: {}", c[3900]);
