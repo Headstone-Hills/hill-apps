@@ -1,0 +1,8 @@
+[package]
+name = "hill-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared engine and apps for the Hill* handheld music tools"
+
+[dependencies]
+font8x8 = { version = "0.3", default-features = false, features = ["unicode"] }
