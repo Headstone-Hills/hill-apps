@@ -98,6 +98,16 @@ impl Mixer {
         }
     }
 
+    /// Fade out every sounding voice (pause, preview cut-off).
+    pub fn release_all(&mut self) {
+        let fade = 1.0 / (self.release_secs * self.rate).max(1.0);
+        for v in self.voices.iter_mut() {
+            if v.sample.is_some() && v.fade == 0.0 {
+                v.fade = fade;
+            }
+        }
+    }
+
     pub fn stop_all(&mut self) {
         for v in self.voices.iter_mut() {
             v.sample = None;

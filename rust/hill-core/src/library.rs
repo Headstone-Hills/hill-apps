@@ -316,7 +316,7 @@ pub fn load_entry(host: &dyn Host, e: &Entry) -> Option<Instrument> {
                 return None;
             }
             samples.sort_by_key(|(r, _)| *r);
-            Some(Instrument { name: e.label.clone(), samples })
+            Some(Instrument::new(&e.label, samples))
         }
     }
 }

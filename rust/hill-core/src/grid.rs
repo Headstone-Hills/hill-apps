@@ -49,7 +49,14 @@ struct Track {
     chord: usize,
     scale: usize,
     scale_pos: usize,
+    /// Steps left before a sustained instrument's note is released (0 = not gated).
+    gate_left: u32,
 }
+
+/// A sustained note is cut after this many steps, or when the track's next note starts.
+const GATE_STEPS: u32 = 4;
+/// How long the audition note after choosing a sound may ring, in ms.
+const PREVIEW_MS: u32 = 450;
 
 enum Overlay {
     None,
@@ -101,6 +108,8 @@ pub struct GridApp {
     rep: Repeat,
     tap: TapTempo,
     ms: u64,
+    /// (track, ms left): a sustained audition note to cut off.
+    preview: Option<(usize, u32)>,
     last_vel: u8,
 }
 
@@ -137,6 +146,7 @@ impl GridApp {
             ss: false,
             ss_ms: 0,
             quit: false,
+            preview: None,
             overlay: Overlay::None,
             browser: Browser::default(),
             help: Help::default(),
@@ -197,6 +207,7 @@ impl GridApp {
                 chord: 0,
                 scale: 0,
                 scale_pos: 0,
+                gate_left: 0,
             });
         }
     }
@@ -253,8 +264,19 @@ impl GridApp {
             }
         }
         for ti in 0..self.tracks.len() {
+            if self.tracks[ti].gate_left > 0 {
+                self.tracks[ti].gate_left -= 1;
+                if self.tracks[ti].gate_left == 0 {
+                    self.mixer.release(ti as u32);
+                }
+            }
             let v = self.cells[self.idx(self.pattern, ti, step)];
             if v > 0 && !self.tracks[ti].mute {
+                let gated = self.tracks[ti].kind == TrackKind::Pitched && self.tracks[ti].inst.as_ref().is_some_and(|i| i.sustained);
+                if gated {
+                    self.mixer.release(ti as u32); // legato: the new note replaces the held one
+                    self.tracks[ti].gate_left = GATE_STEPS;
+                }
                 Self::play_track(&mut self.mixer, &mut self.tracks[ti], ti, v);
             }
         }
@@ -495,6 +517,9 @@ impl GridApp {
                 if !self.tracks[ti].mute {
                     Self::play_track(&mut self.mixer, &mut self.tracks[ti], ti, 100);
                     self.tracks[ti].scale_pos = 0;
+                    if self.tracks[ti].inst.as_ref().is_some_and(|i| i.sustained) {
+                        self.preview = Some((ti, PREVIEW_MS));
+                    }
                 }
                 self.toast.say(&format!("{} -> {}", clip(&name, 18), if targets.len() > 1 { format!("{} tracks", targets.len()) } else { format!("track {}", ti + 1) }));
             }
@@ -688,6 +713,11 @@ impl GridApp {
                     self.finish_ss();
                 } else if self.plain.start {
                     self.tr.toggle();
+                    if !self.tr.playing {
+                        // pausing silences everything still ringing
+                        self.mixer.release_all();
+                        self.tracks.iter_mut().for_each(|t| t.gate_left = 0);
+                    }
                 }
                 self.plain.start = false;
             }
@@ -1017,6 +1047,14 @@ impl App for GridApp {
     fn tick(&mut self, dt: u32) {
         self.ms += dt as u64;
         self.toast.tick(dt);
+        if let Some((ti, left)) = self.preview {
+            if left <= dt {
+                self.mixer.release(ti as u32);
+                self.preview = None;
+            } else {
+                self.preview = Some((ti, left - dt));
+            }
+        }
         if self.ss && self.held.is(Btn::Start) && self.held.is(Btn::Select) {
             self.ss_ms += dt;
             if self.ss_ms >= QUIT_HOLD_MS {

@@ -309,3 +309,15 @@ fn picking_a_drum_kit_fills_every_drum_track_in_order() {
     }
     assert!(found, "kit entry reachable in the drum browser");
 }
+
+#[test]
+fn pausing_silences_ringing_notes() {
+    let mut a = apps::create("hillsequencer", Box::new(MemHost::default())).unwrap();
+    tap(a.as_mut(), Btn::A); // a step on track 1
+    tap(a.as_mut(), Btn::Start); // play
+    let playing = run(a.as_mut(), 0.6);
+    assert!(peak(&playing) > 0.05, "audible while playing");
+    tap(a.as_mut(), Btn::Start); // pause
+    run(a.as_mut(), 0.3); // release fade
+    assert!(peak(&run(a.as_mut(), 0.5)) < 1e-4, "silent after pausing");
+}
