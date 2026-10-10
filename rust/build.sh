@@ -57,12 +57,16 @@ do_device() {
     cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28 -p hill-device
   local bin="$ROOT/target/aarch64-unknown-linux-gnu/release"
   rm -rf "$DIST/ports"; mkdir -p "$DIST/ports"
-  for a in "${APPS[@]}" hillmap; do
-    local stage="$DIST/ports/stage/$a" t="${TITLE[$a]}"
+  # NAME_SUFFIX (e.g. NAME_SUFFIX=-rs) renames launcher, folder and binary so
+  # they can sit next to the Python ports (HillBeat.sh / hillbeat/) without clashing.
+  local sfx="${NAME_SUFFIX:-}"
+  for b in "${APPS[@]}" hillmap; do
+    local a="$b$sfx" t="${TITLE[$b]}${sfx^^}"
+    local stage="$DIST/ports/stage/$a"
     mkdir -p "$stage/$a"
-    sed -e "s|@NAME@|$t|g" -e "s|@DIR@|$a|g" -e "s|@DESC@|${DESC[$a]}|g" ports/launcher.sh.in > "$stage/$t.sh"
+    sed -e "s|@NAME@|$t|g" -e "s|@DIR@|$a|g" -e "s|@DESC@|${DESC[$b]}|g" ports/launcher.sh.in > "$stage/$t.sh"
     chmod +x "$stage/$t.sh"
-    cp "$bin/$a" "$stage/$a/$a"
+    cp "$bin/$b" "$stage/$a/$a"
     cat > "$stage/$a/port.json" <<JSON
 {
   "version": 1,
@@ -70,7 +74,7 @@ do_device() {
   "items": ["$t.sh", "$a/"],
   "attr": {
     "title": "$t",
-    "desc": "${DESC[$a]}.",
+    "desc": "${DESC[$b]}.",
     "inst": "Put .wav samples in the shared Samples folder (see README), or set HILL_SAMPLES. Built-in sounds work without any samples.",
     "genres": ["music", "tools"],
     "porter": ["you"],

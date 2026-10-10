@@ -32,6 +32,8 @@ export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 export SDL_AUDIODRIVER=alsa
 export HILL_FULLSCREEN=1
 export HILL_DATA="$GAMEDIR"
+# One button map shared by all Hill apps (HillMap writes it, the others read it).
+export HILL_BUTTONS="${HILL_BUTTONS:-$GAMEDIR/../hill-buttons.cfg}"
 
 # Shared sample library. HILL_SAMPLES wins if you set it yourself; otherwise the
 # first folder below that exists is used (the /roms ones are guesses for ArkOS).
