@@ -233,18 +233,53 @@ fn sequencer_key_overlay_spreads_scale() {
 fn multi_select_assigns_one_sound_to_many_tracks() {
     let store = shared();
     let mut a = apps::create("hillsequencer", Box::new(Shared(store.clone()))).unwrap();
-    chord(a.as_mut(), &[Btn::Start], Btn::R2); // select track 1
-    tap(a.as_mut(), Btn::Down);
-    chord(a.as_mut(), &[Btn::Start], Btn::R2); // select track 2
+    chord(a.as_mut(), &[Btn::Start], Btn::R2); // select all tracks
     chord(a.as_mut(), &[Btn::Start], Btn::B); // browser
-    // the browser opens on the current sound (Bell, the last built-in); Down wraps to Kick
+    // the browser opens in Built-in on the current sound (Bell, the last one); Down wraps to Kick
+    tap(a.as_mut(), Btn::Down);
+    tap(a.as_mut(), Btn::A);
+    a.save();
+    let k = saved(&store, "hillsequencer");
+    for t in 0..8 {
+        assert_eq!(k.get(&format!("t{}.inst", t)), Some("builtin:Kick"), "track {}", t);
+    }
+}
+
+#[test]
+fn multi_select_toggles_off_again() {
+    let store = shared();
+    let mut a = apps::create("hillsequencer", Box::new(Shared(store.clone()))).unwrap();
+    chord(a.as_mut(), &[Btn::Start], Btn::R2); // all on
+    chord(a.as_mut(), &[Btn::Start], Btn::R2); // all off
+    chord(a.as_mut(), &[Btn::Start], Btn::B);
     tap(a.as_mut(), Btn::Down);
     tap(a.as_mut(), Btn::A);
     a.save();
     let k = saved(&store, "hillsequencer");
     assert_eq!(k.get("t0.inst"), Some("builtin:Kick"));
-    assert_eq!(k.get("t1.inst"), Some("builtin:Kick"));
-    assert_ne!(k.get("t2.inst"), Some("builtin:Kick"));
+    assert_ne!(k.get("t1.inst"), Some("builtin:Kick"), "only the cursor track changed");
+}
+
+#[test]
+fn browser_is_a_folder_tree() {
+    let tone: Vec<f32> = (0..2000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+    let wav = encode16(&tone, 1, 44100);
+    let store = shared();
+    for f in ["Lib/Keys/Piano/Piano_C3.wav", "Lib/Keys/Piano/Piano_C4.wav", "Lib/Keys/Organ/Organ_C3.wav", "Lib/Keys/Organ/Organ_C4.wav"] {
+        store.lock().unwrap().samples.insert(f.into(), wav.clone());
+    }
+    let mut a = apps::create("hillsequencer", Box::new(Shared(store.clone()))).unwrap();
+    chord(a.as_mut(), &[Btn::Start], Btn::B);
+    tap(a.as_mut(), Btn::B); // up from Built-in to the root: rows are Built-in, Lib
+    tap(a.as_mut(), Btn::Down); // Built-in -> Lib
+    tap(a.as_mut(), Btn::A); // enter Lib (single sub-folder chain: Keys)
+    tap(a.as_mut(), Btn::A); // enter Keys: rows Organ, Piano
+    tap(a.as_mut(), Btn::Down); // Piano
+    tap(a.as_mut(), Btn::A); // enter Piano
+    tap(a.as_mut(), Btn::A); // pick its only sound
+    a.save();
+    let k = saved(&store, "hillsequencer");
+    assert_eq!(k.get("t0.inst"), Some("Lib/Keys/Piano/Piano*"));
 }
 
 #[test]
@@ -293,6 +328,9 @@ fn picking_a_drum_kit_fills_every_drum_track_in_order() {
         }
         let mut a = apps::create("hillbeat", Box::new(Shared(store.clone()))).unwrap();
         chord(a.as_mut(), &[Btn::Start], Btn::B);
+        tap(a.as_mut(), Btn::B); // up to the root: Built-in, Packs
+        tap(a.as_mut(), Btn::Down);
+        tap(a.as_mut(), Btn::A); // into Packs
         for _ in 0..downs {
             tap(a.as_mut(), Btn::Down);
         }

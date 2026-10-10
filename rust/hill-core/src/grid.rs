@@ -645,8 +645,17 @@ impl GridApp {
             Btn::L2 | Btn::R2 => {
                 if st && b == Btn::R2 && self.cfg.multiselect {
                     self.use_mods();
-                    let c = self.cur_track;
-                    self.sel[c] = !self.sel[c];
+                    // toggle every track of the cursor track's kind (all melodic, or all drums)
+                    let kind = self.tracks[self.cur_track].kind;
+                    let group: Vec<usize> = (0..self.nt()).filter(|&i| self.tracks[i].kind == kind).collect();
+                    let all_on = group.iter().all(|&i| self.sel[i]);
+                    self.sel.iter_mut().for_each(|s| *s = false);
+                    if !all_on {
+                        group.iter().for_each(|&i| self.sel[i] = true);
+                        self.toast.say(&format!("Selected {} tracks", group.len()));
+                    } else {
+                        self.toast.say("Selection cleared");
+                    }
                 } else if st && b == Btn::L2 {
                     self.use_mods();
                     if self.cfg.chords {

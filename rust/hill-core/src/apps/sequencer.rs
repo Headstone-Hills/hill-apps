@@ -30,7 +30,7 @@ static CONFIG: GridConfig = GridConfig {
         ("SELECT+L1", "clear pattern"),
         ("SOUNDS & KEY", ""),
         ("START+B", "pick an instrument for the track"),
-        ("START+R2", "add / remove track from multi-select"),
+        ("START+R2", "select all tracks / clear selection"),
         ("  then START+B", "assigns the sound to every selected track"),
         ("START+L2", "key / scale: spreads a scale over all tracks"),
         ("START+Y", "save"),
