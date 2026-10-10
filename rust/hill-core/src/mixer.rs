@@ -18,12 +18,11 @@ struct Voice {
     rel: f32,  // per-frame decrement to use when this voice is released
     tail: bool, // longer than a beat: fades smoothly at its own end too (length = rel)
     played: u64, // frames rendered so far, for the maximum-length cap
-    dgain: f32,  // running decay gain (1 until the first beat is over)
 }
 
 impl Voice {
     fn idle() -> Self {
-        Voice { sample: None, pos: 0.0, step: 1.0, gain: 0.0, key: 0, age: 0, env: 1.0, fade: 0.0, rel: 0.0, tail: false, played: 0, dgain: 1.0 }
+        Voice { sample: None, pos: 0.0, step: 1.0, gain: 0.0, key: 0, age: 0, env: 1.0, fade: 0.0, rel: 0.0, tail: false, played: 0 }
     }
 }
 
@@ -38,11 +37,9 @@ pub struct Mixer {
     pub max_secs: Option<f32>,
     /// One beat in seconds. How long a sound plays, in beats, picks its fade (`fade_secs`).
     pub beat_secs: Option<f32>,
-    /// Sequencer sounds longer than a beat: full level for the first beat, then a decay.
-    /// Every sound is at half level or less by the end of beat two: the level halves every
-    /// `h` beats, with `h` from 0.3 (short sounds) up to 0.9 (long ones), so longer samples
-    /// fall a little more slowly. On top of that the level is eased (`(1 - x)^2`) to silence
-    /// at the end of the sound (or the `max_secs` cap, whichever is first). No jumps in level.
+    /// Sequencer sounds longer than a beat follow an envelope (see `Envelope`): full level
+    /// for the first beat (attack), a steep decay to a low sustain, and a release that is
+    /// longer for samples that go on past two beats.
     pub decay: bool,
 }
 
@@ -75,6 +72,61 @@ const LONG_FADE_SECS: f32 = 0.6;
 fn smooth(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
     x * x * (3.0 - 2.0 * x)
+}
+
+/// The shape given to long sounds in the sequencer apps, in frames.
+///   attack  : full level for the first beat
+///   decay   : from full to `SUSTAIN` over `DECAY_BEATS`, steep at first then easing out (cubic)
+///   sustain : held at `SUSTAIN` of the attack level
+///   release : fades the held level to silence at the end of the sound (or the cap)
+/// The release is short (`SHORT_RELEASE_BEATS`) for sounds up to two beats, and for longer ones
+/// grows with the sound's length. Nothing steps: every part joins the next at the same level.
+struct Envelope {
+    beat: f64,
+    decay: f64,
+    release_start: f64,
+    release: f64,
+    base_at_release: f32,
+}
+
+const SUSTAIN: f32 = 0.25;
+const DECAY_BEATS: f64 = 0.75;
+const SHORT_RELEASE_BEATS: f64 = 0.25;
+
+impl Envelope {
+    /// For a sound that plays `end` frames at `beat` frames per beat; None if it is no
+    /// longer than a beat.
+    fn new(beat: f64, end: f64) -> Option<Envelope> {
+        if end <= beat {
+            return None;
+        }
+        let beats = end / beat;
+        let release_beats = if beats <= 2.0 { SHORT_RELEASE_BEATS } else { (0.5 + 0.2 * beats).min(3.0) };
+        let release = (release_beats * beat).min(end - beat);
+        let release_start = end - release;
+        let decay = (DECAY_BEATS * beat).min(release_start - beat).max(1.0);
+        let mut e = Envelope { beat, decay, release_start, release, base_at_release: 1.0 };
+        e.base_at_release = e.base(release_start);
+        Some(e)
+    }
+
+    /// Level before the release: 1 for the first beat, then SUSTAIN + (1 - SUSTAIN)(1 - x)^3.
+    fn base(&self, t: f64) -> f32 {
+        if t <= self.beat {
+            return 1.0;
+        }
+        let left = (1.0 - (t - self.beat) / self.decay).clamp(0.0, 1.0) as f32;
+        SUSTAIN + (1.0 - SUSTAIN) * left * left * left
+    }
+
+    fn gain(&self, t: f64) -> f32 {
+        if t < self.release_start {
+            self.base(t)
+        } else {
+            let y = ((t - self.release_start) / self.release).clamp(0.0, 1.0) as f32;
+            self.base_at_release * smooth(1.0 - y)
+        }
+    }
 }
 
 impl Mixer {
@@ -149,7 +201,6 @@ impl Mixer {
             rel,
             tail,
             played: 0,
-            dgain: 1.0,
         };
     }
 
@@ -197,23 +248,17 @@ impl Mixer {
         for v in self.voices.iter_mut() {
             let Some(s) = v.sample.as_ref() else { continue };
             let n = s.frames();
-            // (frames at full level, frames until silence, per-frame decay factor) for a
-            // sound longer than a beat
-            let decay = match (self.decay, beat_frames) {
+            // the envelope for a sound longer than a beat (it ends at its own end or the cap)
+            let env = match (self.decay, beat_frames) {
                 (true, Some(b)) => {
                     let len = n as f64 / v.step;
-                    let end = max_frames.map_or(len, |m| len.min(m as f64));
-                    (len > b && end > b).then(|| {
-                        let span = end - b;
-                        let half_life = (0.25 + 0.08 * span / b).clamp(0.3, 0.9) * b; // frames
-                        (b, span, 0.5f64.powf(1.0 / half_life) as f32)
-                    })
+                    Envelope::new(b, max_frames.map_or(len, |m| len.min(m as f64)))
                 }
                 _ => None,
             };
             // a voice that sounds longer than a beat fades out at its own end, over the
             // same length as its release (the fade is in source frames: step per output frame)
-            let tail = if v.tail && v.rel > 0.0 { (1.0 / v.rel) as f64 * v.step } else { 0.0 };
+            let tail = if env.is_none() && v.tail && v.rel > 0.0 { (1.0 / v.rel) as f64 * v.step } else { 0.0 };
             let mut pos = v.pos;
             let mut done = false;
             for f in 0..frames {
@@ -228,13 +273,8 @@ impl Mixer {
                 let l = l0 + (l1 - l0) * fr;
                 let r = r0 + (r1 - r0) * fr;
                 let mut g = v.gain * smooth(v.env) * master;
-                if let Some((full, span, k)) = decay {
-                    let t = v.played as f64;
-                    if t > full {
-                        v.dgain *= k;
-                        let left = (1.0 - (t - full) / span).clamp(0.0, 1.0) as f32;
-                        g *= v.dgain * left * left;
-                    }
+                if let Some(e) = &env {
+                    g *= e.gain(v.played as f64);
                 }
                 if tail > 0.0 {
                     let left = (n - 1) as f64 - pos;
@@ -322,43 +362,71 @@ mod tests {
         }
     }
 
+    /// Level (left channel) of a constant 0.5 sample played through the sequencer envelope,
+    /// at 1 kHz with a 0.5 s beat (500 frames).
+    fn env_run(secs: f32, cap: Option<f32>) -> Vec<f32> {
+        env_run_at(1000, secs, cap)
+    }
+
+    fn env_run_at(rate: u32, secs: f32, cap: Option<f32>) -> Vec<f32> {
+        let frames = (secs * rate as f32) as usize;
+        let mut m = Mixer::new(rate as f32);
+        m.beat_secs = Some(0.5);
+        m.max_secs = cap;
+        m.decay = true;
+        m.master = 1.0;
+        let s = Arc::new(Sample::new(vec![0.5; 2 * frames], rate));
+        m.trigger(&s, 1.0, 1.0, 1, 0);
+        let mut out = vec![0.0; 2 * frames];
+        m.render(&mut out);
+        out.chunks(2).map(|p| p[0]).collect()
+    }
+
     #[test]
-    fn long_sounds_decay_smoothly_after_the_first_beat_over_their_length() {
-        let mk = |secs: f32| Arc::new(Sample::new(vec![0.5; 2 * (secs * 1000.0) as usize], 1000));
-        let run = |secs: f32, cap: Option<f32>| {
-            let mut m = Mixer::new(1000.0);
-            m.beat_secs = Some(0.5);
-            m.max_secs = cap;
-            m.decay = true;
-            m.master = 1.0;
-            m.trigger(&mk(secs), 1.0, 1.0, 1, 0);
-            let mut out = vec![0.0; 2 * (secs * 1000.0) as usize];
-            m.render(&mut out);
-            out.chunks(2).map(|p| p[0]).collect::<Vec<f32>>()
-        };
-        // 4 s sound, 0.5 s beat: full level for the whole first beat, then a steep fall
-        let a = run(4.0, None);
-        assert!(a[..=500].iter().all(|v| (v - 0.5).abs() < 1e-3), "full level for exactly the first beat");
-        assert!(a[510] < a[500] && a[550] < 0.49, "it starts falling right after the first beat");
-        assert!(a[3990] < 0.001, "silent at the end: {}", a[3990]);
-        assert!(a[500..].windows(2).all(|w| w[1] <= w[0] + 1e-6), "never rises again");
-        let biggest_step = a[500..].windows(2).map(|w| (w[0] - w[1]).abs()).fold(0.0, f32::max);
-        assert!(biggest_step < 0.002, "no jumps in level: {}", biggest_step);
-        // after beat two (1000 frames) every sound is at half level or less, whatever its length
-        for secs in [1.2f32, 2.0, 4.0, 8.0, 20.0] {
-            let s = run(secs, Some(16.0));
-            assert!(s[1000] <= 0.25 + 1e-4, "{} s sound: level at beat two is {} (max 0.25)", secs, s[1000]);
-        }
-        // longer samples fall a little more slowly (the length still matters)
-        let short = run(1.5, None);
-        let long = run(8.0, None);
-        assert!(long[900] > short[900], "long {} short {}", long[900], short[900]);
-        // a 10 s sound with a 4 s cap decays to silence by the cap, not by its own end
-        let c = run(10.0, Some(4.0));
-        assert!(c[3900] < 0.02 && c[500] > 0.45, "cap sets the end of the decay: {}", c[3900]);
+    fn long_sounds_attack_decay_to_a_low_sustain_then_release() {
+        let a = env_run(4.0, None); // 8 beats
+        // attack: full level for exactly the first beat
+        assert!(a[..=500].iter().all(|v| (v - 0.5).abs() < 1e-3), "full level for the first beat");
+        // decay: falls steeply right after it (already well down a fifth of the way in)...
+        assert!(a[575] < 0.5 * 0.65 && a[575] > 0.5 * SUSTAIN, "steep early fall: {}", a[575]);
+        // ...to a lower sustain (a quarter of the attack level) once the 0.75-beat decay is over
+        let sustain = 0.5 * SUSTAIN;
+        assert!((a[875] - sustain).abs() < 0.002 && (a[2000] - sustain).abs() < 0.002, "sustain {}", a[2000]);
+        // release: a long fade to silence at the end
+        assert!(a[3990] < 0.003, "silent at the end: {}", a[3990]);
+        // never rises, never steps
+        assert!(a[500..].windows(2).all(|w| w[1] <= w[0] + 1e-6), "monotone");
+        // (the 500-frame beat of this test makes the designed slope 0.003 a frame at its steepest)
+        let biggest = a[500..].windows(2).map(|w| (w[0] - w[1]).abs()).fold(0.0, f32::max);
+        assert!(biggest < 0.0035, "no jumps in level: {}", biggest);
+        // at the real 44.1 kHz rate (a 22050-frame beat) every step is tiny
+        let real = env_run_at(44100, 4.0, None);
+        let biggest = real[22050..].windows(2).map(|w| (w[0] - w[1]).abs()).fold(0.0, f32::max);
+        assert!(biggest < 0.0001, "no jumps in level at 44.1 kHz: {}", biggest);
         // a sound of one beat or less is untouched
-        let d = run(0.4, None);
+        let d = env_run(0.4, None);
         assert!((d[390] - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn release_is_longer_for_samples_over_two_beats() {
+        // frames before the end at which the level has left the sustain level
+        let release_len = |v: &[f32]| v.len() - v.iter().rposition(|x| *x >= 0.5 * SUSTAIN * 0.99).unwrap();
+        let two_beats = release_len(&env_run(1.0, None)); // exactly 2 beats: short release (0.25 beat)
+        let six_beats = release_len(&env_run(3.0, None)); // 6 beats: 0.5 + 0.2 * 6 = 1.7 beats
+        let sixteen_beats = release_len(&env_run(8.0, None)); // 16 beats: capped at 3 beats
+        assert!(two_beats <= 140, "2 beats: {}", two_beats);
+        // (the S-shaped release starts flat, so the audible part is a little under its nominal length)
+        assert!((750..900).contains(&six_beats), "6 beats: {}", six_beats);
+        assert!((1350..1550).contains(&sixteen_beats), "16 beats: {}", sixteen_beats);
+        assert!(two_beats < six_beats && six_beats < sixteen_beats, "longer sample, longer release");
+    }
+
+    #[test]
+    fn envelope_ends_at_the_cap() {
+        // a 10 s sound with a 4 s cap releases to silence by the cap, not by its own end
+        let c = env_run(10.0, Some(4.0));
+        assert!(c[3990] < 0.003 && c[500] > 0.49 && c[2000] > 0.1, "{} {} {}", c[3990], c[500], c[2000]);
     }
 
     #[test]
