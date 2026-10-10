@@ -29,10 +29,15 @@ pub struct Entry {
 /// part (`toms`, `hats_01`), so "tom" does not match "custom".
 pub const DRUM_WORDS: &[&str] = &[
     "kick", "snare", "hat", "hihat", "perc", "cymbal", "clap", "tom", "drum", "kit", "808", "909", "rim", "shaker", "conga", "bongo",
-    "cowbell", "tamb", "crash", "ride", "snap", "beat",
+    "cowbell", "tamb", "crash", "ride", "snap", "beat", "clave", "cabasa", "cym",
+    // abbreviations used by sample packs (exact name parts only)
+    "bd", "sd", "ch", "oh", "hh", "cp",
 ];
 
 fn is_drum_word(part: &str, w: &str) -> bool {
+    if w.len() <= 2 {
+        return part == w;
+    }
     part.starts_with(w) || (w.len() >= 4 && part.contains(w))
 }
 
@@ -212,15 +217,34 @@ pub fn matches_filter(e: &Entry, words: &[&str]) -> bool {
 fn drum_rank(stem: &str) -> u8 {
     let s = stem.to_lowercase();
     let has = |ws: &[&str]| s.split(|c: char| !c.is_alphanumeric()).any(|p| ws.iter().any(|w| is_drum_word(p, w)));
-    if has(&["kick"]) {
+    if has(&["kick", "bd"]) {
         0
-    } else if has(&["snare", "clap", "rim"]) {
+    } else if has(&["snare", "sd", "clap", "cp", "rim"]) {
         1
-    } else if has(&["hat", "hihat", "cymbal"]) {
+    } else if has(&["hat", "hihat", "cymbal", "cym", "ch", "oh", "hh"]) {
         2
     } else {
         3
     }
+}
+
+/// One sound of each role in turn (kick, snare, hat, other), then the next of
+/// each, so the first N files cover N different roles instead of N kicks.
+fn interleave_by_role(mut v: Vec<String>) -> Vec<String> {
+    v.sort();
+    let mut buckets: [std::collections::VecDeque<String>; 4] = Default::default();
+    for p in v {
+        buckets[drum_rank(strip_ext(split_path(&p).1)) as usize].push_back(p);
+    }
+    let mut out = Vec::new();
+    while buckets.iter().any(|b| !b.is_empty()) {
+        for b in buckets.iter_mut() {
+            if let Some(p) = b.pop_front() {
+                out.push(p);
+            }
+        }
+    }
+    out
 }
 
 /// Folders holding at least two drum-named WAVs become kits. Files are ordered
@@ -263,7 +287,7 @@ pub fn kit_entries(paths: &[String]) -> Vec<Entry> {
     dirs.into_iter()
         .filter(|(_, v)| v.len() >= 2)
         .map(|(dir, mut v)| {
-            v.sort_by_key(|p| (drum_rank(strip_ext(split_path(p).1)), p.clone()));
+            v = interleave_by_role(v);
             let (parent, name) = split_path(&dir);
             Entry {
                 dir: parent.to_string(),
@@ -385,6 +409,24 @@ mod tests {
         assert_eq!(kits.len(), 1);
         let Kind::Kit(f) = &kits[0].kind else { panic!() };
         assert!(f[0].contains("midi036") && f[1].contains("midi038") && f[2].contains("midi045"));
+    }
+
+    #[test]
+    fn big_kit_folder_gives_one_of_each_role_first() {
+        let kits = kit_entries(&p(&[
+            "K/BD 909 A 01.wav",
+            "K/BD 909 A 02.wav",
+            "K/BD 909 A 03.wav",
+            "K/SD 909 B 01.wav",
+            "K/CH 909 01.wav",
+            "K/Rim 909 01.wav",
+            "K/Tom 909 Lo.wav",
+            "K/Chime.wav",
+        ]));
+        let Kind::Kit(f) = &kits[0].kind else { panic!() };
+        let n: Vec<_> = f.iter().take(4).map(|x| x.rsplit('/').next().unwrap()).collect();
+        assert_eq!(n, ["BD 909 A 01.wav", "Rim 909 01.wav", "CH 909 01.wav", "Tom 909 Lo.wav"]);
+        assert!(!f.iter().any(|x| x.contains("Chime")), "ch is an exact word, not a prefix");
     }
 
     #[test]
