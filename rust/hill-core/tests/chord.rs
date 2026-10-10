@@ -72,7 +72,8 @@ fn silent_until_played_then_sounds_and_releases() {
     assert!(peak(&on) > 0.1);
     a.event(Btn::A, false);
     let tail = run(a.as_mut(), 0.4);
-    assert!(win(&tail, 0.15, 0.4) < 0.001, "release should fade to silence");
+    // long sounds release over 250 ms (short ones over 80 ms)
+    assert!(win(&tail, 0.3, 0.4) < 0.001, "release should fade to silence");
 }
 
 #[test]

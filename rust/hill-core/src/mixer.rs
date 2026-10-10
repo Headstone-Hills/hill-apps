@@ -15,12 +15,14 @@ struct Voice {
     age: u64,
     env: f32,
     fade: f32, // per-frame decrement once released; 0 = holding
+    rel: f32,  // per-frame decrement to use when this voice is released
+    long: bool, // sounds longer than a beat: smooth fade at its own end too
     played: u64, // frames rendered so far, for the maximum-length cap
 }
 
 impl Voice {
     fn idle() -> Self {
-        Voice { sample: None, pos: 0.0, step: 1.0, gain: 0.0, key: 0, age: 0, env: 1.0, fade: 0.0, played: 0 }
+        Voice { sample: None, pos: 0.0, step: 1.0, gain: 0.0, key: 0, age: 0, env: 1.0, fade: 0.0, rel: 0.0, long: false, played: 0 }
     }
 }
 
@@ -33,13 +35,21 @@ pub struct Mixer {
     pub release_secs: f32,
     /// No voice sounds longer than this many seconds (apps set it to 4 measures).
     pub max_secs: Option<f32>,
-    /// One beat in seconds. A voice that sounds longer than this fades out over its
-    /// last `END_FADE_SECS` instead of stopping abruptly; shorter ones are left alone.
+    /// One beat in seconds. A voice that sounds longer than this (a pad, a drone) ends
+    /// with a longer, smoother fade (`LONG_FADE_SECS`) however it ends: its own end,
+    /// release, the next note, pause or the cap. Shorter sounds keep `release_secs`.
     pub beat_secs: Option<f32>,
 }
 
-/// Length of the fade at the natural end of a long sound.
-const END_FADE_SECS: f32 = 0.06;
+/// Fade length for sounds longer than a beat.
+const LONG_FADE_SECS: f32 = 0.25;
+
+/// S-shaped gain for a fade position 1 (full) .. 0 (silent): gentle at both ends.
+#[inline]
+fn smooth(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
 
 impl Mixer {
     pub fn new(rate: f32) -> Self {
@@ -68,23 +78,26 @@ impl Mixer {
         self.counter += 1;
         // Triggering a sound that is already sounding restarts it (a loop), not a second copy on top.
         let step = ratio * s.rate as f64 / self.rate as f64;
-        let fade = 1.0 / (self.release_secs * self.rate).max(1.0);
         for v in self.voices.iter_mut() {
             if v.key == key && v.fade == 0.0 && v.sample.as_ref().is_some_and(|o| Arc::ptr_eq(o, s)) && (v.step - step).abs() < 1e-9 {
-                v.fade = fade;
+                v.fade = v.rel;
             }
         }
         if limit > 0 {
             let mut same: Vec<usize> = (0..self.voices.len())
-                .filter(|&i| self.voices[i].sample.is_some() && self.voices[i].key == key)
+                .filter(|&i| self.voices[i].sample.is_some() && self.voices[i].key == key && self.voices[i].fade == 0.0)
                 .collect();
             if same.len() >= limit {
                 same.sort_by_key(|&i| self.voices[i].age);
                 for &i in same.iter().take(same.len() + 1 - limit) {
-                    self.voices[i].sample = None;
+                    self.voices[i].fade = self.voices[i].rel; // fade the oldest, don't chop it
                 }
             }
         }
+        // a sound longer than a beat gets the long, smooth release
+        let long = self.beat_secs.is_some_and(|b| s.frames() as f64 / step > (b * self.rate) as f64);
+        let rel_secs = if long { LONG_FADE_SECS.max(self.release_secs) } else { self.release_secs };
+        let rel = 1.0 / (rel_secs * self.rate).max(1.0);
         let idx = match self.voices.iter().position(|v| v.sample.is_none()) {
             Some(i) => i,
             None => self
@@ -104,26 +117,26 @@ impl Mixer {
             age: self.counter,
             env: 1.0,
             fade: 0.0,
+            rel,
+            long,
             played: 0,
         };
     }
 
     /// Begin fading out every held voice with this key.
     pub fn release(&mut self, key: u32) {
-        let fade = 1.0 / (self.release_secs * self.rate).max(1.0);
         for v in self.voices.iter_mut() {
             if v.sample.is_some() && v.key == key && v.fade == 0.0 {
-                v.fade = fade;
+                v.fade = v.rel;
             }
         }
     }
 
     /// Fade out every sounding voice (pause, preview cut-off).
     pub fn release_all(&mut self) {
-        let fade = 1.0 / (self.release_secs * self.rate).max(1.0);
         for v in self.voices.iter_mut() {
             if v.sample.is_some() && v.fade == 0.0 {
-                v.fade = fade;
+                v.fade = v.rel;
             }
         }
     }
@@ -139,17 +152,12 @@ impl Mixer {
         let frames = out.len() / 2;
         let master = self.master;
         let max_frames = self.max_secs.map(|s| (s * self.rate) as u64);
-        let cap_fade = 1.0 / (self.release_secs * self.rate).max(1.0);
-        let beat_frames = self.beat_secs.map(|b| b * self.rate);
-        let end_fade_frames = END_FADE_SECS * self.rate;
         for v in self.voices.iter_mut() {
             let Some(s) = v.sample.as_ref() else { continue };
             let n = s.frames();
-            // output frames this voice will sound in total; long ones get an end fade
-            let tail = match beat_frames {
-                Some(b) if n as f64 / v.step > b as f64 => (end_fade_frames as f64 * v.step).max(1.0),
-                _ => 0.0,
-            };
+            // a voice that sounds longer than a beat fades out at its own end, over the
+            // same length as its release (the fade is in source frames: step per output frame)
+            let tail = if v.long && v.rel > 0.0 { (1.0 / v.rel) as f64 * v.step } else { 0.0 };
             let mut pos = v.pos;
             let mut done = false;
             for f in 0..frames {
@@ -163,11 +171,11 @@ impl Mixer {
                 let (l1, r1) = s.frame(i + 1);
                 let l = l0 + (l1 - l0) * fr;
                 let r = r0 + (r1 - r0) * fr;
-                let mut g = v.gain * v.env * master;
+                let mut g = v.gain * smooth(v.env) * master;
                 if tail > 0.0 {
                     let left = (n - 1) as f64 - pos;
                     if left < tail {
-                        g *= (left / tail).max(0.0) as f32;
+                        g *= smooth((left / tail) as f32);
                     }
                 }
                 out[f * 2] += l * g;
@@ -176,7 +184,7 @@ impl Mixer {
                 v.played += 1;
                 if let Some(m) = max_frames {
                     if v.played >= m && v.fade == 0.0 {
-                        v.fade = cap_fade;
+                        v.fade = v.rel;
                     }
                 }
                 if v.fade > 0.0 {
@@ -238,9 +246,11 @@ mod tests {
             let at = |f: usize| out[2 * f];
             assert!((at(frames / 2) - 0.5).abs() < 1e-3, "body untouched");
             if faded {
-                assert!(at(frames - 3) < 0.15, "tail is faded: {}", at(frames - 3));
-                assert!(at(frames - 70) > 0.49, "fade is short (60 ms)");
-                assert!(at(frames - 30) < at(frames - 50), "monotone");
+                assert!(at(frames - 3) < 0.01, "tail is faded: {}", at(frames - 3));
+                assert!(at(frames - 300) > 0.49, "fade starts 250 ms from the end");
+                assert!(at(frames - 30) < at(frames - 100) && at(frames - 100) < at(frames - 200), "monotone");
+                let (a, b) = (at(frames - 125), 0.25); // the S-curve passes through the middle
+                assert!((a - b).abs() < 0.03, "{}", a);
             } else {
                 assert!(at(frames - 3) > 0.49, "short sounds keep their snap");
             }
@@ -293,6 +303,9 @@ mod tests {
         for _ in 0..5 {
             m.trigger(&ramp(10000), 1.0, 1.0, 7, 3);
         }
+        // the two oldest are fading, not chopped; once the 80 ms release is over 3 remain
+        let mut out = vec![0.0; 2 * 6615];
+        m.render(&mut out);
         assert_eq!(m.active(), 3);
     }
 
