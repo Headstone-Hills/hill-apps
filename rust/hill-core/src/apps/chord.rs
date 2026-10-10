@@ -38,12 +38,10 @@ const HELP: &[(&str, &str)] = &[
     ("NOTE MODE", ""),
     ("D-pad", "notes 1-4: up, right, down, left"),
     ("X / A / B / Y", "notes 5 / 6 / 7 / 8 (clockwise, after the D-pad)"),
-    ("L1 / R1", "octave down / up (instead of instrument, in note mode)"),
+    ("L1 / R1", "chord mode: BPM - / + (hold repeats); note mode: octave down / up"),
     ("hold a button", "note sustains; release stops it"),
     ("D-pad (chord mode, chord held)", "L sus2, R sus4, D add9, U 7th"),
     ("D-pad Up (chord mode, alone)", "major / minor"),
-    ("D-pad L/R (chord mode, alone)", "BPM - / + (hold repeats)"),
-    ("L1 / R1 (chord mode)", "previous / next instrument"),
     ("START", "instrument library (Y star, X favorites)"),
     ("FN+Left/Right", "octave down / up"),
     ("FN+Up/Down", "key root up / down"),
@@ -579,23 +577,6 @@ impl ChordApp {
         }
     }
 
-    fn step_instrument(&mut self, d: isize) {
-        if self.catalog.is_empty() {
-            return;
-        }
-        let n = self.catalog.len() as isize;
-        let cur = self.catalog.iter().position(|e| e.key == self.inst_key).unwrap_or(0) as isize;
-        for k in 1..=n {
-            let i = ((cur + d * k).rem_euclid(n)) as usize;
-            let e = self.catalog[i].clone();
-            if self.load_entry(&e) {
-                self.toast.say(&clip(&e.label, 24));
-                return;
-            }
-        }
-        self.toast.say("No playable sound");
-    }
-
     // ---- state -----------------------------------------------------------
 
     fn state_string(&self) -> String {
@@ -712,7 +693,9 @@ impl ChordApp {
                         self.octave = (self.octave + if b == Btn::L1 { -1 } else { 1 }).clamp(1, 6);
                         self.toast.say(&format!("Octave {}", self.octave));
                     } else {
-                        self.step_instrument(if b == Btn::L1 { -1 } else { 1 });
+                        // chord mode: tempo down / up, repeating while held
+                        self.bpm = (self.bpm + if b == Btn::L1 { -1.0 } else { 1.0 }).clamp(40.0, 240.0);
+                        self.rep.start(b);
                     }
                 }
             }
@@ -754,14 +737,6 @@ impl ChordApp {
                         Btn::Up => {
                             self.minor = !self.minor;
                             self.toast.say(if self.minor { "Minor" } else { "Major" });
-                        }
-                        Btn::Left => {
-                            self.bpm = (self.bpm - 1.0).max(40.0);
-                            self.rep.start(b);
-                        }
-                        Btn::Right => {
-                            self.bpm = (self.bpm + 1.0).min(240.0);
-                            self.rep.start(b);
                         }
                         _ => {}
                     }
@@ -806,7 +781,7 @@ impl ChordApp {
                 }
                 self.l2_down = false;
             }
-            Btn::Left | Btn::Right => self.rep.stop(b),
+            Btn::L1 | Btn::R1 => self.rep.stop(b),
             Btn::Up | Btn::Down => {}
             _ => {}
         }
@@ -1014,7 +989,7 @@ impl App for ChordApp {
         if let Some(m) = self.modifier.filter(|_| self.face.iter().any(|f| *f)) {
             fb.text(20, 340, &format!("mod: {}", Self::mod_suffix(Some(m))), 2, DRUM);
         }
-        let l1r1 = if self.mode == Mode::Note { "octave" } else { "sound" };
+        let l1r1 = if self.mode == Mode::Note { "octave" } else { "tempo" };
         fb.text(20, 440, &format!("L2 loop  START library  L1/R1 {}  SEL+B arp  SEL+A click", l1r1), 1, DIM);
         self.toast.draw(fb);
         if self.ss && self.held.is(Btn::Start) && self.held.is(Btn::Select) {
@@ -1058,7 +1033,7 @@ impl App for ChordApp {
         }
         if matches!(self.overlay, Overlay::None) {
             if let Some(b) = self.rep.tick(dt) {
-                if b == Btn::Left {
+                if b == Btn::L1 {
                     self.bpm = (self.bpm - 1.0).max(40.0);
                 } else {
                     self.bpm = (self.bpm + 1.0).min(240.0);
@@ -1209,6 +1184,51 @@ mod tests {
         assert!(a.mode == Mode::Chord);
         a.event(Btn::Up, true);
         assert!(a.face_notes[4].is_empty());
+    }
+
+    #[test]
+    fn l1_r1_set_tempo_in_chord_mode_and_dpad_lr_only_modify_chords() {
+        let mut a = app();
+        assert_eq!(a.bpm, 120.0);
+        a.event(Btn::R1, true);
+        a.event(Btn::R1, false);
+        assert_eq!(a.bpm, 121.0);
+        a.event(Btn::L1, true);
+        a.event(Btn::L1, false);
+        a.event(Btn::L1, true);
+        a.event(Btn::L1, false);
+        assert_eq!(a.bpm, 119.0);
+        // holding repeats
+        a.event(Btn::R1, true);
+        for _ in 0..100 {
+            a.tick(16);
+        }
+        a.event(Btn::R1, false);
+        assert!(a.bpm > 125.0, "held R1 keeps raising the tempo: {}", a.bpm);
+        // D-pad left/right alone do nothing in chord mode
+        let bpm = a.bpm;
+        let (minor, octave) = (a.minor, a.octave);
+        for b in [Btn::Left, Btn::Right] {
+            a.event(b, true);
+            for _ in 0..100 {
+                a.tick(16);
+            }
+            a.event(b, false);
+        }
+        assert_eq!((a.bpm, a.minor, a.octave), (bpm, minor, octave));
+        // ...but still modify a held chord (sus2 on I)
+        a.event(Btn::A, true);
+        a.tick(40);
+        a.event(Btn::Left, true);
+        assert_eq!(a.face_notes[0], vec![48, 50, 55]);
+        a.event(Btn::Left, false);
+        a.event(Btn::A, false);
+        // in note mode the same buttons are the octave, and the tempo is untouched
+        a.event(Btn::R2, true);
+        a.event(Btn::R2, false);
+        a.event(Btn::R1, true);
+        a.event(Btn::R1, false);
+        assert_eq!((a.octave, a.bpm), (4, bpm));
     }
 
     #[test]
