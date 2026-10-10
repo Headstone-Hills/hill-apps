@@ -268,3 +268,27 @@ fn start_select_tap_panics_hold_quits() {
     run(a.as_mut(), 1.7);
     assert!(a.wants_quit());
 }
+
+#[test]
+fn select_l2_pauses_and_resumes_the_loop_without_clearing_it() {
+    let mut a = apps::create("hillchord", Box::new(MemHost::default())).unwrap();
+    tap(a.as_mut(), Btn::L2); // record
+    run(a.as_mut(), 0.5);
+    a.event(Btn::A, true);
+    run(a.as_mut(), 0.25);
+    a.event(Btn::A, false);
+    run(a.as_mut(), 1.25);
+    tap(a.as_mut(), Btn::L2); // loop, 4 beats (2 s); the note is at 0.5 s into each cycle
+    assert!(peak(&run(a.as_mut(), 2.2)) > 0.05, "loop plays");
+    // pause with SELECT+L2
+    a.event(Btn::Select, true);
+    tap(a.as_mut(), Btn::L2);
+    a.event(Btn::Select, false);
+    run(a.as_mut(), 0.5); // let a sounding note finish
+    assert!(peak(&run(a.as_mut(), 4.5)) < 0.002, "silent while paused, over more than two loop lengths");
+    // resume with SELECT+L2: the recorded note is still there
+    a.event(Btn::Select, true);
+    tap(a.as_mut(), Btn::L2);
+    a.event(Btn::Select, false);
+    assert!(peak(&run(a.as_mut(), 3.0)) > 0.05, "loop plays again after resuming");
+}

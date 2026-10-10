@@ -39,6 +39,7 @@ const HELP: &[(&str, &str)] = &[
     ("LOOPER", ""),
     ("L2", "record > loop > overdub > loop"),
     ("L2 (hold 2s)", "clear loop"),
+    ("SELECT+L2", "pause / resume loop (keeps it)"),
     ("ARP & CLICK", ""),
     ("SELECT+B", "arpeggiator on / off"),
     ("SELECT+Y", "arp rate 1/4 - 1/8 - 1/16"),
@@ -83,11 +84,13 @@ struct Looper {
     len: f64,
     events: Vec<Ev>,
     open: Vec<Open>,
+    /// Loop kept but not playing (SELECT+L2). Resumes from its start on the next beat.
+    paused: bool,
 }
 
 impl Looper {
     fn new() -> Self {
-        Looper { state: LState::Idle, t0: 0.0, len: 4.0, events: Vec::new(), open: Vec::new() }
+        Looper { state: LState::Idle, t0: 0.0, len: 4.0, events: Vec::new(), open: Vec::new(), paused: false }
     }
 
     fn recording(&self) -> bool {
@@ -393,7 +396,7 @@ impl ChordApp {
             }
         }
 
-        if matches!(self.looper.state, LState::Loop | LState::Over) {
+        if matches!(self.looper.state, LState::Loop | LState::Over) && !self.looper.paused {
             let (t0, len) = (self.looper.t0, self.looper.len);
             let c0 = ((prev - t0) / len).floor() as i64;
             let c1 = ((cur - t0) / len).floor() as i64;
@@ -435,7 +438,33 @@ impl ChordApp {
         self.next_key
     }
 
+    /// SELECT+L2: stop the loop playing without clearing it, or start it again from
+    /// its first beat on the next whole beat.
+    fn toggle_loop_pause(&mut self) {
+        let now = self.beat;
+        match self.looper.state {
+            LState::Idle => self.toast.say("No loop to pause"),
+            LState::Rec => self.toast.say("Finish recording first"),
+            LState::Loop | LState::Over => {
+                if self.looper.paused {
+                    self.looper.t0 = now.ceil();
+                    self.looper.paused = false;
+                    self.toast.say("Loop resumed");
+                } else {
+                    self.looper.close_all(now);
+                    self.looper.state = LState::Loop;
+                    self.looper.paused = true;
+                    self.toast.say("Loop paused");
+                }
+            }
+        }
+    }
+
     fn l2_advance(&mut self) {
+        if self.looper.paused {
+            self.toggle_loop_pause(); // a plain L2 tap brings a paused loop back
+            return;
+        }
         let now = self.beat;
         match self.looper.state {
             LState::Idle => {
@@ -629,6 +658,8 @@ impl ChordApp {
                     self.l2_down = true;
                     self.l2_used = false;
                     self.l2_ms = 0;
+                } else if se && !st {
+                    self.toggle_loop_pause();
                 }
             }
             Btn::Up | Btn::Down | Btn::Left | Btn::Right => {
@@ -758,6 +789,7 @@ impl ChordApp {
         let (label, col) = match l.state {
             LState::Idle => ("LOOP: idle", DIM),
             LState::Rec => ("RECORDING", WARN),
+            LState::Loop if l.paused => ("LOOP PAUSED", WARN),
             LState::Loop => ("LOOPING", ACCENT),
             LState::Over => ("OVERDUB", DRUM),
         };
