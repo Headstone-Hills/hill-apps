@@ -16,13 +16,13 @@ struct Voice {
     env: f32,
     fade: f32, // per-frame decrement once released; 0 = holding
     rel: f32,  // per-frame decrement to use when this voice is released
-    long: bool, // sounds longer than a beat: smooth fade at its own end too
+    tail: bool, // longer than a beat: fades smoothly at its own end too (length = rel)
     played: u64, // frames rendered so far, for the maximum-length cap
 }
 
 impl Voice {
     fn idle() -> Self {
-        Voice { sample: None, pos: 0.0, step: 1.0, gain: 0.0, key: 0, age: 0, env: 1.0, fade: 0.0, rel: 0.0, long: false, played: 0 }
+        Voice { sample: None, pos: 0.0, step: 1.0, gain: 0.0, key: 0, age: 0, env: 1.0, fade: 0.0, rel: 0.0, tail: false, played: 0 }
     }
 }
 
@@ -35,14 +35,33 @@ pub struct Mixer {
     pub release_secs: f32,
     /// No voice sounds longer than this many seconds (apps set it to 4 measures).
     pub max_secs: Option<f32>,
-    /// One beat in seconds. A voice that sounds longer than this (a pad, a drone) ends
-    /// with a longer, smoother fade (`LONG_FADE_SECS`) however it ends: its own end,
-    /// release, the next note, pause or the cap. Shorter sounds keep `release_secs`.
+    /// One beat in seconds. How long a sound plays, in beats, picks its fade (`fade_secs`).
     pub beat_secs: Option<f32>,
 }
 
-/// Fade length for sounds longer than a beat.
-const LONG_FADE_SECS: f32 = 0.25;
+/// Fade out by how long the sound plays (`beats` at the current tempo), however it
+/// ends: its own end, release, the next note, pause or the cap.
+///   up to 1 beat: none (a hit or pluck keeps its snap; an early release still gets
+///                 `release_secs` so it does not click)
+///   up to 4 beats: short   up to 8 beats: medium   over 8 beats: long
+/// Returns (fade seconds, fades at its own end too).
+fn fade_secs(beats: f64, release_secs: f32) -> (f32, bool) {
+    if beats <= 1.0 {
+        (release_secs, false)
+    } else if beats <= 4.0 {
+        (SHORT_FADE_SECS.max(release_secs), true)
+    } else if beats <= 8.0 {
+        (MEDIUM_FADE_SECS, true)
+    } else {
+        (LONG_FADE_SECS, true)
+    }
+}
+
+/// Fade for "stop now" actions (pause, audition cut-off) on sounds with a longer tier fade.
+const QUICK_FADE_SECS: f32 = 0.15;
+const SHORT_FADE_SECS: f32 = 0.1;
+const MEDIUM_FADE_SECS: f32 = 0.25;
+const LONG_FADE_SECS: f32 = 0.6;
 
 /// S-shaped gain for a fade position 1 (full) .. 0 (silent): gentle at both ends.
 #[inline]
@@ -94,9 +113,11 @@ impl Mixer {
                 }
             }
         }
-        // a sound longer than a beat gets the long, smooth release
-        let long = self.beat_secs.is_some_and(|b| s.frames() as f64 / step > (b * self.rate) as f64);
-        let rel_secs = if long { LONG_FADE_SECS.max(self.release_secs) } else { self.release_secs };
+        // the fade depends on how many beats this sound plays for
+        let (rel_secs, tail) = match self.beat_secs {
+            Some(b) if b > 0.0 => fade_secs(s.frames() as f64 / step / (b * self.rate) as f64, self.release_secs),
+            _ => (self.release_secs, false),
+        };
         let rel = 1.0 / (rel_secs * self.rate).max(1.0);
         let idx = match self.voices.iter().position(|v| v.sample.is_none()) {
             Some(i) => i,
@@ -118,7 +139,7 @@ impl Mixer {
             env: 1.0,
             fade: 0.0,
             rel,
-            long,
+            tail,
             played: 0,
         };
     }
@@ -132,11 +153,22 @@ impl Mixer {
         }
     }
 
-    /// Fade out every sounding voice (pause, preview cut-off).
+    /// Fade out every sounding voice (pause). Always quick, whatever the length.
     pub fn release_all(&mut self) {
+        let quick = 1.0 / (QUICK_FADE_SECS * self.rate).max(1.0);
         for v in self.voices.iter_mut() {
             if v.sample.is_some() && v.fade == 0.0 {
-                v.fade = v.rel;
+                v.fade = v.rel.max(quick);
+            }
+        }
+    }
+
+    /// Like `release`, but never slower than `QUICK_FADE_SECS` (cutting an audition note).
+    pub fn release_quick(&mut self, key: u32) {
+        let quick = 1.0 / (QUICK_FADE_SECS * self.rate).max(1.0);
+        for v in self.voices.iter_mut() {
+            if v.sample.is_some() && v.key == key && v.fade == 0.0 {
+                v.fade = v.rel.max(quick);
             }
         }
     }
@@ -157,7 +189,7 @@ impl Mixer {
             let n = s.frames();
             // a voice that sounds longer than a beat fades out at its own end, over the
             // same length as its release (the fade is in source frames: step per output frame)
-            let tail = if v.long && v.rel > 0.0 { (1.0 / v.rel) as f64 * v.step } else { 0.0 };
+            let tail = if v.tail && v.rel > 0.0 { (1.0 / v.rel) as f64 * v.step } else { 0.0 };
             let mut pos = v.pos;
             let mut done = false;
             for f in 0..frames {
@@ -233,9 +265,11 @@ mod tests {
     }
 
     #[test]
-    fn long_sounds_fade_at_their_end_and_short_ones_do_not() {
+    fn fade_length_follows_sample_length_in_beats() {
+        // mixer at 1 kHz, one beat = 0.5 s (120 bpm): tiers at 0.5, 2, 4 s
         let mk = |secs: f32| Arc::new(Sample::new(vec![0.5; 2 * (secs * 1000.0) as usize], 1000));
-        for (secs, faded) in [(2.0f32, true), (0.2, false)] {
+        // (length s, expected fade ms at the very end; 0 = none)
+        for (secs, fade_ms) in [(0.4f32, 0), (1.5, 100), (3.5, 250), (6.0, 600)] {
             let mut m = Mixer::new(1000.0);
             m.beat_secs = Some(0.5);
             m.master = 1.0;
@@ -244,15 +278,14 @@ mod tests {
             let mut out = vec![0.0; 2 * frames];
             m.render(&mut out);
             let at = |f: usize| out[2 * f];
-            assert!((at(frames / 2) - 0.5).abs() < 1e-3, "body untouched");
-            if faded {
-                assert!(at(frames - 3) < 0.01, "tail is faded: {}", at(frames - 3));
-                assert!(at(frames - 300) > 0.49, "fade starts 250 ms from the end");
-                assert!(at(frames - 30) < at(frames - 100) && at(frames - 100) < at(frames - 200), "monotone");
-                let (a, b) = (at(frames - 125), 0.25); // the S-curve passes through the middle
-                assert!((a - b).abs() < 0.03, "{}", a);
+            assert!((at(frames / 4) - 0.5).abs() < 1e-3, "{}s: body untouched", secs);
+            if fade_ms == 0 {
+                assert!(at(frames - 3) > 0.49, "{}s: no fade", secs);
             } else {
-                assert!(at(frames - 3) > 0.49, "short sounds keep their snap");
+                let f = fade_ms as usize;
+                assert!(at(frames - 3) < 0.01, "{}s: faded at the end ({})", secs, at(frames - 3));
+                assert!(at(frames - f - 20) > 0.49, "{}s: fade starts {} ms out", secs, f);
+                assert!((at(frames - f / 2) - 0.25).abs() < 0.04, "{}s: S-curve midpoint {}", secs, at(frames - f / 2));
             }
         }
     }

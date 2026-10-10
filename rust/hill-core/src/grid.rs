@@ -1077,7 +1077,7 @@ impl App for GridApp {
         self.mixer.beat_secs = Some(60.0 / self.tr.bpm.max(1.0));
         if let Some((ti, left)) = self.preview {
             if left <= dt {
-                self.mixer.release(ti as u32);
+                self.mixer.release_quick(ti as u32);
                 self.preview = None;
             } else {
                 self.preview = Some((ti, left - dt));
