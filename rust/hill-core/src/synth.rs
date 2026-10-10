@@ -35,7 +35,7 @@ fn mono(v: Vec<f32>) -> Arc<Sample> {
         data.push(s);
         data.push(s);
     }
-    Arc::new(Sample { data, rate: SR })
+    Arc::new(Sample::new(data, SR))
 }
 
 fn frames(secs: f32) -> usize {
@@ -191,9 +191,9 @@ mod tests {
         for id in 0..BUILTINS.len() {
             let i = builtin(id).unwrap();
             let s = i.first().unwrap();
-            let peak = s.data.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+            let peak = (0..s.frames()).fold(0.0f32, |m, i| m.max(s.frame(i).0.abs()).max(s.frame(i).1.abs()));
             assert!(peak > 0.1 && peak <= 1.0, "{} peak {}", i.name, peak);
-            assert!(s.data.iter().all(|x| x.is_finite()));
+            assert!((0..s.frames()).all(|i| s.frame(i).0.is_finite() && s.frame(i).1.is_finite()));
         }
     }
 }

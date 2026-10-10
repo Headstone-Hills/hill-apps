@@ -136,7 +136,6 @@ impl Mixer {
         for v in self.voices.iter_mut() {
             let Some(s) = v.sample.as_ref() else { continue };
             let n = s.frames();
-            let data = &s.data;
             let mut pos = v.pos;
             let mut done = false;
             for f in 0..frames {
@@ -146,8 +145,10 @@ impl Mixer {
                     break;
                 }
                 let fr = (pos - i as f64) as f32;
-                let l = data[i * 2] + (data[i * 2 + 2] - data[i * 2]) * fr;
-                let r = data[i * 2 + 1] + (data[i * 2 + 3] - data[i * 2 + 1]) * fr;
+                let (l0, r0) = s.frame(i);
+                let (l1, r1) = s.frame(i + 1);
+                let l = l0 + (l1 - l0) * fr;
+                let r = r0 + (r1 - r0) * fr;
                 let g = v.gain * v.env * master;
                 out[f * 2] += l * g;
                 out[f * 2 + 1] += r * g;
@@ -187,7 +188,7 @@ mod tests {
             data.push(0.5);
             data.push(0.5);
         }
-        Arc::new(Sample { data, rate: 44100 })
+        Arc::new(Sample::new(data, 44100))
     }
 
     #[test]
@@ -195,7 +196,7 @@ mod tests {
         let mut m = Mixer::new(1000.0);
         m.max_secs = Some(1.0);
         m.release_secs = 0.01;
-        let long = Arc::new(Sample { data: vec![0.5; 2 * 10_000], rate: 1000 }); // 10 s
+        let long = Arc::new(Sample::new(vec![0.5; 2 * 10_000], 1000)); // 10 s
         m.trigger(&long, 1.0, 1.0, 1, 0);
         let mut out = vec![0.0; 2 * 1500];
         m.render(&mut out);
@@ -207,7 +208,7 @@ mod tests {
     fn retrigger_restarts_instead_of_stacking() {
         let mut m = Mixer::new(1000.0);
         m.release_secs = 0.01;
-        let s = Arc::new(Sample { data: vec![0.5; 2 * 10_000], rate: 1000 });
+        let s = Arc::new(Sample::new(vec![0.5; 2 * 10_000], 1000));
         m.trigger(&s, 1.0, 1.0, 1, 0);
         m.trigger(&s, 1.0, 1.0, 1, 0);
         m.trigger(&s, 1.0, 1.0, 1, 0);

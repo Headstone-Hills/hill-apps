@@ -392,9 +392,6 @@ impl Host for Counting {
         *self.1.lock().unwrap() += 1;
         self.0.lock().unwrap().read_sample(n)
     }
-    fn sample_len(&self, n: &str) -> Option<u64> {
-        self.0.lock().unwrap().sample_len(n)
-    }
     fn load_state(&self, n: &str) -> Option<String> {
         self.0.lock().unwrap().load_state(n)
     }

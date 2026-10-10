@@ -86,9 +86,6 @@ impl Host for FsHost {
         r
     }
 
-    fn sample_len(&self, name: &str) -> Option<u64> {
-        fs::metadata(self.sample_root.as_ref()?.join(name)).ok().map(|m| m.len())
-    }
 
     fn load_state(&self, app: &str) -> Option<String> {
         fs::read_to_string(self.data_dir.join(format!("{}_state.txt", app))).ok()

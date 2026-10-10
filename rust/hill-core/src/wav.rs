@@ -3,18 +3,62 @@
 
 use std::sync::Arc;
 
-/// Decoded audio: interleaved stereo f32.
+/// How the audio is held. 16-bit files stay 16-bit, and mono when both channels
+/// match (most of the converted library), which is 4x smaller than f32 stereo.
+enum Store {
+    /// Interleaved stereo f32.
+    F32(Vec<f32>),
+    /// Interleaved stereo i16.
+    I16(Vec<i16>),
+    /// i16, one channel (played on both sides).
+    I16Mono(Vec<i16>),
+}
+
+/// Decoded audio. Read it with `frame(i)`.
 pub struct Sample {
-    pub data: Vec<f32>,
+    store: Store,
     pub rate: u32,
 }
 
+const I16_SCALE: f32 = 1.0 / 32768.0;
+
 impl Sample {
+    /// From interleaved stereo f32.
+    pub fn new(data: Vec<f32>, rate: u32) -> Self {
+        Sample { store: Store::F32(data), rate }
+    }
     pub fn frames(&self) -> usize {
-        self.data.len() / 2
+        match &self.store {
+            Store::F32(d) => d.len() / 2,
+            Store::I16(d) => d.len() / 2,
+            Store::I16Mono(d) => d.len(),
+        }
+    }
+    /// The (left, right) pair at frame `i`; `i` must be below `frames()`.
+    #[inline]
+    pub fn frame(&self, i: usize) -> (f32, f32) {
+        match &self.store {
+            Store::F32(d) => (d[i * 2], d[i * 2 + 1]),
+            Store::I16(d) => (d[i * 2] as f32 * I16_SCALE, d[i * 2 + 1] as f32 * I16_SCALE),
+            Store::I16Mono(d) => {
+                let v = d[i] as f32 * I16_SCALE;
+                (v, v)
+            }
+        }
     }
     pub fn seconds(&self) -> f32 {
         self.frames() as f32 / self.rate.max(1) as f32
+    }
+    /// Memory held by the audio, in bytes.
+    pub fn bytes(&self) -> usize {
+        match &self.store {
+            Store::F32(d) => d.len() * 4,
+            Store::I16(d) => d.len() * 2,
+            Store::I16Mono(d) => d.len() * 2,
+        }
+    }
+    pub fn is_mono_stored(&self) -> bool {
+        matches!(self.store, Store::I16Mono(_))
     }
 }
 
@@ -66,6 +110,9 @@ pub fn parse(bytes: &[u8]) -> Option<Arc<Sample>> {
     }
     let frame_bytes = bps * ch;
     let n = data.len() / frame_bytes;
+    if tag == 1 && bits == 16 {
+        return Some(Arc::new(compact16(data, ch, n, rate)));
+    }
     let mut out = Vec::with_capacity(n * 2);
     let read = |o: usize| -> Option<f32> {
         let b = &data[o..o + bps];
@@ -89,7 +136,31 @@ pub fn parse(bytes: &[u8]) -> Option<Arc<Sample>> {
         out.push(l);
         out.push(r);
     }
-    Some(Arc::new(Sample { data: out, rate }))
+    Some(Arc::new(Sample::new(out, rate)))
+}
+
+/// 16-bit PCM kept as i16. Two channels that differ by at most 2 LSB throughout
+/// (dither on a mono source) are stored as one.
+fn compact16(data: &[u8], ch: usize, n: usize, rate: u32) -> Sample {
+    let s16 = |o: usize| i16::from_le_bytes([data[o], data[o + 1]]);
+    if ch == 1 {
+        let m: Vec<i16> = (0..n).map(|i| s16(i * 2)).collect();
+        return Sample { store: Store::I16Mono(m), rate };
+    }
+    let mut st: Vec<i16> = Vec::with_capacity(n * 2);
+    let mut max_diff = 0i32;
+    for i in 0..n {
+        let (l, r) = (s16(i * ch * 2), s16(i * ch * 2 + 2));
+        max_diff = max_diff.max((l as i32 - r as i32).abs());
+        st.push(l);
+        st.push(r);
+    }
+    if max_diff <= 2 {
+        let m: Vec<i16> = st.chunks_exact(2).map(|p| ((p[0] as i32 + p[1] as i32) / 2) as i16).collect();
+        Sample { store: Store::I16Mono(m), rate }
+    } else {
+        Sample { store: Store::I16(st), rate }
+    }
 }
 
 /// Encode mono/stereo f32 as 16-bit PCM WAV (used by tests and tools).
@@ -125,8 +196,8 @@ mod tests {
         let s = parse(&w).unwrap();
         assert_eq!(s.rate, 22050);
         assert_eq!(s.frames(), 100);
-        assert!((s.data[20] - src[10]).abs() < 1e-3);
-        assert_eq!(s.data[20], s.data[21]);
+        assert!((s.frame(10).0 - src[10]).abs() < 1e-3);
+        assert_eq!(s.frame(10).0, s.frame(10).1);
     }
 
     #[test]
@@ -134,7 +205,7 @@ mod tests {
         let src = [0.5, -0.5, 0.25, -0.25];
         let s = parse(&encode16(&src, 2, 44100)).unwrap();
         assert_eq!(s.frames(), 2);
-        assert!(s.data[0] > 0.49 && s.data[1] < -0.49);
+        assert!(s.frame(0).0 > 0.49 && s.frame(0).1 < -0.49);
     }
 
     #[test]
@@ -149,5 +220,27 @@ mod tests {
         w.truncate(w.len() - 10);
         let s = parse(&w).unwrap();
         assert!(s.frames() >= 58 && s.frames() < 64);
+    }
+
+    #[test]
+    fn dual_mono_16bit_is_stored_mono_and_real_stereo_is_not() {
+        // dithered dual-mono: channels differ by 1 LSB
+        let tone: Vec<f32> = (0..2000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+        let mut dm = Vec::new();
+        for (i, v) in tone.iter().enumerate() {
+            dm.push(*v);
+            dm.push(*v + if i % 2 == 0 { 1.0 / 32768.0 } else { 0.0 });
+        }
+        let s = parse(&encode16(&dm, 2, 44100)).unwrap();
+        assert!(s.is_mono_stored());
+        assert_eq!(s.bytes(), 2000 * 2);
+        assert!((s.frame(500).0 - tone[500]).abs() < 2.0 / 32768.0);
+        assert_eq!(s.frame(500).0, s.frame(500).1);
+        // genuine stereo keeps both channels
+        let st: Vec<f32> = (0..2000).flat_map(|i| [(i as f32 * 0.05).sin() * 0.5, (i as f32 * 0.09).sin() * 0.5]).collect();
+        let s = parse(&encode16(&st, 2, 44100)).unwrap();
+        assert!(!s.is_mono_stored());
+        assert_eq!(s.bytes(), 2000 * 4);
+        assert!((s.frame(300).1 - st[601]).abs() < 2.0 / 32768.0);
     }
 }

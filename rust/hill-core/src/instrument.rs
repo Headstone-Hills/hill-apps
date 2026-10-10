@@ -11,13 +11,6 @@ pub struct Instrument {
     pub sustained: bool,
 }
 
-fn rms(d: &[f32]) -> f32 {
-    if d.is_empty() {
-        return 0.0;
-    }
-    (d.iter().map(|x| x * x).sum::<f32>() / d.len() as f32).sqrt()
-}
-
 /// Mid-sample level vs the start: a sound that is still more than half as loud
 /// at 40-60% of its length as in its first fifth is sustained.
 fn is_sustained(s: &Sample) -> Option<bool> {
@@ -25,8 +18,13 @@ fn is_sustained(s: &Sample) -> Option<bool> {
         return None;
     }
     let n = s.frames();
-    let early = rms(&s.data[..n / 5 * 2]);
-    let mid = rms(&s.data[n * 2 / 5 * 2..n * 3 / 5 * 2]);
+    let window = |a: usize, b: usize| -> f32 {
+        if b <= a {
+            return 0.0;
+        }
+        (((a..b).map(|i| s.frame(i).0.powi(2)).sum::<f32>()) / (b - a) as f32).sqrt()
+    };
+    let (early, mid) = (window(0, n / 5), window(n * 2 / 5, n * 3 / 5));
     Some(early > 1e-4 && mid > 0.5 * early)
 }
 
@@ -84,14 +82,14 @@ mod tests {
     use super::*;
 
     fn s() -> Arc<Sample> {
-        Arc::new(Sample { data: vec![0.0; 8], rate: 44100 })
+        Arc::new(Sample::new(vec![0.0; 8], 44100))
     }
 
     #[test]
     fn sustained_detection() {
         let tone = |f: &dyn Fn(usize) -> f32| {
             let d: Vec<f32> = (0..44100 * 2).flat_map(|i| [f(i), f(i)]).collect();
-            Arc::new(Sample { data: d, rate: 44100 })
+            Arc::new(Sample::new(d, 44100))
         };
         let pad = Instrument::single("pad", 60, tone(&|i| (i as f32 * 0.05).sin() * 0.5));
         let pluck = Instrument::single("pluck", 60, tone(&|i| (i as f32 * 0.05).sin() * (-(i as f32) / 6000.0).exp()));

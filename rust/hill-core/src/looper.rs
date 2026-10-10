@@ -58,8 +58,10 @@ impl LoopPlayer {
             let i = self.pos as usize;
             let j = if i + 1 >= n { 0 } else { i + 1 };
             let fr = (self.pos - i as f64) as f32;
-            let l = s.data[i * 2] + (s.data[j * 2] - s.data[i * 2]) * fr;
-            let r = s.data[i * 2 + 1] + (s.data[j * 2 + 1] - s.data[i * 2 + 1]) * fr;
+            let (l0, r0) = s.frame(i);
+            let (l1, r1) = s.frame(j);
+            let l = l0 + (l1 - l0) * fr;
+            let r = r0 + (r1 - r0) * fr;
             out[f * 2] += l * gain;
             out[f * 2 + 1] += r * gain;
             self.pos += step;
@@ -141,7 +143,7 @@ mod tests {
 
     #[test]
     fn varispeed_ratio_and_wrap() {
-        let s = Arc::new(Sample { data: (0..2000).map(|i| (i / 2) as f32 / 1000.0).collect(), rate: 44100 });
+        let s = Arc::new(Sample::new((0..2000).map(|i| (i / 2) as f32 / 1000.0).collect(), 44100));
         let mut lp = LoopPlayer::default();
         lp.set("x_100bpm.wav", s, 100.0);
         lp.on = true;
@@ -155,7 +157,7 @@ mod tests {
 
     #[test]
     fn off_renders_nothing() {
-        let s = Arc::new(Sample { data: vec![1.0; 200], rate: 44100 });
+        let s = Arc::new(Sample::new(vec![1.0; 200], 44100));
         let mut lp = LoopPlayer::default();
         lp.set("a", s, 100.0);
         let mut out = vec![0.0; 100];
