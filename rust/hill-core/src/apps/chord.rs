@@ -27,7 +27,7 @@ const FACE_COLS: [u32; 4] = [rgb(120, 220, 160), rgb(255, 110, 110), rgb(90, 150
 const HELP: &[(&str, &str)] = &[
     ("PLAYING", ""),
     ("A / B / X / Y", "play chord (or note) for this page"),
-    ("R2", "switch degree page (I-IV / V-I')"),
+    ("R2", "switch page: I IV V vi / ii iii vii* I'"),
     ("SELECT+X", "chord mode / note mode"),
     ("D-pad (chord held)", "L sus2, R sus4, D add9, U 7th"),
     ("D-pad Up (alone)", "major / minor"),
@@ -244,8 +244,11 @@ impl ChordApp {
         self.root_midi() + self.scale()[d % 7] + 12 * (d / 7) as i32
     }
 
+    /// Scale degree (0 = I) on each face button, per page. Page 1 is the original
+    /// HillChord layout: A=I, B=IV, X=V, Y=vi. R2 switches to the rest: ii, iii, vii*, I'.
     fn degree_of(&self, face: usize) -> usize {
-        self.page * 4 + face
+        const PAGES: [[usize; 4]; 2] = [[0, 3, 4, 5], [1, 2, 6, 7]];
+        PAGES[self.page.min(1)][face.min(3)]
     }
 
     /// Notes for a face button, with an optional D-pad modifier applied.
@@ -554,7 +557,7 @@ impl ChordApp {
         self.minor = k.bool("minor").unwrap_or(false);
         self.octave = k.usize("octave").unwrap_or(3).clamp(1, 6) as i32;
         self.mode = if k.usize("mode") == Some(1) { Mode::Note } else { Mode::Chord };
-        self.page = k.usize("page").unwrap_or(0).min(1);
+        self.page = 0; // always start on I IV V vi
         self.click_on = k.bool("click").unwrap_or(false);
         self.arp_on = k.bool("arp").unwrap_or(false);
         self.arp_div = k.usize("arp_div").unwrap_or(1).min(ARP_DIVS.len() - 1);
@@ -989,11 +992,15 @@ mod tests {
     fn chord_degrees_major_and_minor() {
         let mut a = app();
         // C major, octave 3 -> root midi 48
+        // default page: A=I, B=IV, X=V, Y=vi (the original HillChord layout)
         assert_eq!(a.notes_for(0, None), vec![48, 52, 55]); // I = C E G
-        assert_eq!(a.notes_for(1, None), vec![50, 53, 57]); // ii = D F A
-        assert_eq!(a.notes_for(3, None), vec![53, 57, 60]); // IV
-        a.page = 1;
-        assert_eq!(a.notes_for(0, None), vec![55, 59, 62]); // V
+        assert_eq!(a.notes_for(1, None), vec![53, 57, 60]); // IV = F A C
+        assert_eq!(a.notes_for(2, None), vec![55, 59, 62]); // V = G B D
+        assert_eq!(a.notes_for(3, None), vec![57, 60, 64]); // vi = A C E
+        a.page = 1; // R2 page: ii, iii, vii*, I'
+        assert_eq!(a.notes_for(0, None), vec![50, 53, 57]); // ii = D F A
+        assert_eq!(a.notes_for(1, None), vec![52, 55, 59]); // iii = E G B
+        assert_eq!(a.notes_for(2, None), vec![59, 62, 65]); // vii* = B D F
         assert_eq!(a.notes_for(3, None), vec![60, 64, 67]); // I'
         a.page = 0;
         a.minor = true;
@@ -1007,17 +1014,17 @@ mod tests {
         assert_eq!(a.notes_for(0, Some(Btn::Right)), vec![48, 53, 55]); // sus4
         assert_eq!(a.notes_for(0, Some(Btn::Up)), vec![48, 52, 55, 59]); // maj7
         assert_eq!(a.notes_for(4 % 4, Some(Btn::Down)).len(), 4);
-        // V gets a dominant 7th (F) from the scale
-        let mut b = app();
-        b.page = 1;
-        assert_eq!(b.notes_for(0, Some(Btn::Up)), vec![55, 59, 62, 65]);
+        // V (face X on the default page) gets a dominant 7th (F) from the scale
+        let b = app();
+        assert_eq!(b.notes_for(2, Some(Btn::Up)), vec![55, 59, 62, 65]);
     }
 
     #[test]
     fn labels() {
         let mut a = app();
         assert_eq!(a.chord_label(0, None), "C");
-        assert_eq!(a.chord_label(1, None), "Dm");
+        assert_eq!(a.chord_label(1, None), "F");
+        assert_eq!(a.chord_label(3, None), "Am");
         assert_eq!(a.chord_label(0, Some(Btn::Up)), "C7");
         a.mode = Mode::Note;
         assert_eq!(a.chord_label(0, None), "C3");
