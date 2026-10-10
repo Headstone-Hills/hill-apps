@@ -29,8 +29,9 @@ const FACE_COLS: [u32; 4] = [rgb(120, 220, 160), rgb(255, 110, 110), rgb(90, 150
 const HELP: &[(&str, &str)] = &[
     ("PLAYING", ""),
     ("A B X Y", "chord mode: I IV V vi; pairs A+B ii, A+X iii, B+Y vii*"),
-    ("R2", "note mode: notes 1-4 / 5-8"),
-    ("SELECT+X", "chord mode / note mode"),
+    ("R2", "chord mode / note mode"),
+    ("SELECT+X", "chord mode / note mode (same)"),
+    ("SELECT+R2", "note mode: notes 1-4 / 5-8"),
     ("D-pad (chord held)", "L sus2, R sus4, D add9, U 7th"),
     ("D-pad Up (alone)", "major / minor"),
     ("D-pad L/R (alone)", "BPM - / + (hold repeats)"),
@@ -383,6 +384,13 @@ impl ChordApp {
         }
     }
 
+    /// Switch between chord and note mode, re-voicing whatever is held.
+    fn set_mode(&mut self, m: Mode) {
+        self.mode = m;
+        self.toast.say(if m == Mode::Chord { "Chord mode" } else { "Note mode" });
+        self.faces_changed();
+    }
+
     fn face_on(&mut self, f: usize) {
         self.face[f] = true;
         self.faces_changed();
@@ -675,10 +683,7 @@ impl ChordApp {
                             self.arp_i = 0;
                             self.toast.say(if self.arp_on { "Arp on" } else { "Arp off" });
                         }
-                        Btn::X => {
-                            self.mode = if self.mode == Mode::Chord { Mode::Note } else { Mode::Chord };
-                            self.toast.say(if self.mode == Mode::Chord { "Chord mode" } else { "Note mode" });
-                        }
+                        Btn::X => self.set_mode(if self.mode == Mode::Chord { Mode::Note } else { Mode::Chord }),
                         _ => {
                             self.arp_div = (self.arp_div + 1) % ARP_DIVS.len();
                             self.toast.say(&format!("Arp {}", ARP_DIVS[self.arp_div].1));
@@ -694,7 +699,9 @@ impl ChordApp {
                 }
             }
             Btn::R2 => {
-                if !st && !se && self.mode == Mode::Note {
+                if !st && !se {
+                    self.set_mode(if self.mode == Mode::Chord { Mode::Note } else { Mode::Chord });
+                } else if se && !st && self.mode == Mode::Note {
                     self.page = 1 - self.page;
                     self.toast.say(if self.page == 0 { "Notes 1-4" } else { "Notes 5-8" });
                 }
@@ -1101,6 +1108,29 @@ mod tests {
         c.face_on(3);
         c.tick(40);
         assert!(c.face_notes.iter().all(|n| n.is_empty()));
+    }
+
+    #[test]
+    fn r2_toggles_chord_and_note_mode_and_select_r2_pages_notes() {
+        let mut a = app();
+        assert!(a.mode == Mode::Chord);
+        a.event(Btn::R2, true);
+        a.event(Btn::R2, false);
+        assert!(a.mode == Mode::Note, "R2 -> note mode");
+        a.event(Btn::Select, true);
+        a.event(Btn::R2, true);
+        a.event(Btn::R2, false);
+        a.event(Btn::Select, false);
+        assert!(a.mode == Mode::Note && a.page == 1, "SELECT+R2 pages notes, stays in note mode");
+        a.event(Btn::R2, true);
+        a.event(Btn::R2, false);
+        assert!(a.mode == Mode::Chord, "R2 -> back to chord mode");
+        // note mode plays single notes: A = scale note 1 (page 0)
+        a.page = 0;
+        a.event(Btn::R2, true);
+        a.event(Btn::R2, false);
+        a.event(Btn::A, true);
+        assert_eq!(a.face_notes[0], vec![48]);
     }
 
     #[test]
