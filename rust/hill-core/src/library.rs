@@ -241,6 +241,25 @@ pub fn kit_entries(paths: &[String]) -> Vec<Entry> {
             None => dirs.push((dir.to_string(), vec![p.clone()])),
         }
     }
+    // Folders named like a drum set (`Univox JR-5 Drum Machine`) whose files carry
+    // note names instead of drum names: small ones are kits too, in pitch order
+    // (the usual drum-machine layout puts kick lowest).
+    let mut all: Vec<&String> = paths.iter().filter(|p| is_wav(p)).collect();
+    all.sort();
+    let mut by_dir: Vec<(String, Vec<String>)> = Vec::new();
+    for p in all {
+        let dir = split_path(p).0;
+        match by_dir.iter_mut().find(|(d, _)| d == dir) {
+            Some((_, v)) => v.push(p.clone()),
+            None => by_dir.push((dir.to_string(), vec![p.clone()])),
+        }
+    }
+    for (dir, v) in by_dir {
+        let probe = Entry { dir: dir.clone(), label: String::new(), key: String::new(), kind: Kind::Kit(vec![]), pitched: false };
+        if (2..=16).contains(&v.len()) && matches_filter(&probe, DRUM_WORDS) && !dirs.iter().any(|(d, _)| *d == dir) {
+            dirs.push((dir, v));
+        }
+    }
     dirs.into_iter()
         .filter(|(_, v)| v.len() >= 2)
         .map(|(dir, mut v)| {
@@ -352,6 +371,20 @@ mod tests {
         let Kind::Kit(f) = &kits[0].kind else { panic!() };
         let names: Vec<_> = f.iter().map(|x| x.rsplit('/').next().unwrap()).collect();
         assert_eq!(names, ["kick_01.wav", "snare_01.wav", "hat_closed.wav", "perc_x.wav"]);
+    }
+
+    #[test]
+    fn drum_machine_folder_with_note_names_is_a_kit_in_pitch_order() {
+        let kits = kit_entries(&p(&[
+            "Univox/Univox JR-5 Drum Machine/Univox_JR_5_midi045_A2.wav",
+            "Univox/Univox JR-5 Drum Machine/Univox_JR_5_midi036_C2.wav",
+            "Univox/Univox JR-5 Drum Machine/Univox_JR_5_midi038_D2.wav",
+            "Keys/Piano/Piano_midi060_C4.wav",
+            "Keys/Piano/Piano_midi062_D4.wav",
+        ]));
+        assert_eq!(kits.len(), 1);
+        let Kind::Kit(f) = &kits[0].kind else { panic!() };
+        assert!(f[0].contains("midi036") && f[1].contains("midi038") && f[2].contains("midi045"));
     }
 
     #[test]
