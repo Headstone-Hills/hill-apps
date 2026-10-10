@@ -21,13 +21,15 @@ const ROMAN_MAJ: [&str; 7] = ["I", "ii", "iii", "IV", "V", "vi", "vii*"];
 const ROMAN_MIN: [&str; 7] = ["i", "ii*", "III", "iv", "v", "VI", "VII"];
 const ARP_DIVS: [(f64, &str); 3] = [(1.0, "1/4"), (0.5, "1/8"), (0.25, "1/16")];
 const FACE_KEYS: [u32; 4] = [100, 101, 102, 103];
+/// Chord mode waits this long after a face button changes before voicing the chord.
+const FACE_SETTLE_MS: u32 = 30;
 const FACE_NAMES: [&str; 4] = ["A", "B", "X", "Y"];
 const FACE_COLS: [u32; 4] = [rgb(120, 220, 160), rgb(255, 110, 110), rgb(90, 150, 255), rgb(255, 210, 80)];
 
 const HELP: &[(&str, &str)] = &[
     ("PLAYING", ""),
-    ("A / B / X / Y", "play chord (or note) for this page"),
-    ("R2", "switch page: I IV V vi / ii iii vii* I'"),
+    ("A B X Y", "chord mode: I IV V vi; pairs A+B ii, A+X iii, B+Y vii*"),
+    ("R2", "note mode: notes 1-4 / 5-8"),
     ("SELECT+X", "chord mode / note mode"),
     ("D-pad (chord held)", "L sus2, R sus4, D add9, U 7th"),
     ("D-pad Up (alone)", "major / minor"),
@@ -155,6 +157,7 @@ pub struct ChordApp {
     arp_i: usize,
 
     face: [bool; 4],
+    settle_ms: Option<u32>,
     face_notes: [Vec<u8>; 4],
     modifier: Option<Btn>,
     looper: Looper,
@@ -200,6 +203,7 @@ pub fn new(host: Box<dyn Host>) -> ChordApp {
         arp_div: 1,
         arp_i: 0,
         face: [false; 4],
+        settle_ms: None,
         face_notes: Default::default(),
         modifier: None,
         looper: Looper::new(),
@@ -244,19 +248,36 @@ impl ChordApp {
         self.root_midi() + self.scale()[d % 7] + 12 * (d / 7) as i32
     }
 
-    /// Scale degree (0 = I) on each face button, per page. Page 1 is the original
-    /// HillChord layout: A=I, B=IV, X=V, Y=vi. R2 switches to the rest: ii, iii, vii*, I'.
-    fn degree_of(&self, face: usize) -> usize {
-        const PAGES: [[usize; 4]; 2] = [[0, 3, 4, 5], [1, 2, 6, 7]];
-        PAGES[self.page.min(1)][face.min(3)]
+    /// Note mode: scale degree (0 = I) on each face button; R2 switches page.
+    fn note_degree(&self, face: usize) -> usize {
+        self.page.min(1) * 4 + face.min(3)
     }
 
-    /// Notes for a face button, with an optional D-pad modifier applied.
-    fn notes_for(&self, face: usize, modifier: Option<Btn>) -> Vec<u8> {
-        let d = self.degree_of(face);
-        if self.mode == Mode::Note {
-            return vec![clamp_note(self.degree_note(d))];
+    /// Chord mode: the chord degree for a set of held face buttons (the original
+    /// HillChord layout): A=I B=IV X=V Y=vi, and the pairs A+B=ii A+X=iii B+Y=vii*.
+    fn combo_degree(set: [bool; 4]) -> Option<usize> {
+        match set {
+            [true, false, false, false] => Some(0),
+            [false, true, false, false] => Some(3),
+            [false, false, true, false] => Some(4),
+            [false, false, false, true] => Some(5),
+            [true, true, false, false] => Some(1),
+            [true, false, true, false] => Some(2),
+            [false, true, false, true] => Some(6),
+            _ => None,
         }
+    }
+
+    /// Notes for a face button on its own, with an optional D-pad modifier applied.
+    fn notes_for(&self, face: usize, modifier: Option<Btn>) -> Vec<u8> {
+        if self.mode == Mode::Note {
+            return vec![clamp_note(self.degree_note(self.note_degree(face)))];
+        }
+        self.chord_notes(Self::combo_degree(Self::only(face)).unwrap_or(0), modifier)
+    }
+
+    /// Triad on scale degree `d`, with an optional D-pad modifier applied.
+    fn chord_notes(&self, d: usize, modifier: Option<Btn>) -> Vec<u8> {
         let mut n = vec![self.degree_note(d), self.degree_note(d + 2), self.degree_note(d + 4)];
         match modifier {
             Some(Btn::Left) => n[1] = self.degree_note(d + 1),
@@ -278,11 +299,21 @@ impl ChordApp {
         }
     }
 
+    fn only(face: usize) -> [bool; 4] {
+        let mut one = [false; 4];
+        one[face.min(3)] = true;
+        one
+    }
+
     fn chord_label(&self, face: usize, modifier: Option<Btn>) -> String {
-        let notes = self.notes_for(face, modifier);
         if self.mode == Mode::Note {
-            return note_name(notes[0]);
+            return note_name(self.notes_for(face, modifier)[0]);
         }
+        self.degree_label(Self::combo_degree(Self::only(face)).unwrap_or(0), modifier)
+    }
+
+    fn degree_label(&self, d: usize, modifier: Option<Btn>) -> String {
+        let notes = self.chord_notes(d, modifier);
         let root = notes[0];
         let iv: Vec<i32> = notes.iter().map(|n| *n as i32 - root as i32).collect();
         chord_name(root % 12, &iv, Self::mod_suffix(modifier))
@@ -301,38 +332,27 @@ impl ChordApp {
         }
     }
 
-    fn face_on(&mut self, f: usize) {
-        self.face[f] = true;
-        let notes = self.notes_for(f, self.modifier);
-        self.face_notes[f] = notes.clone();
-        if !self.arp_on {
-            self.sound(&notes, 1.0, FACE_KEYS[f]);
-            if self.looper.recording() {
-                self.looper.open.push(Open { key: FACE_KEYS[f], start: self.beat, notes, vel: 1.0 });
+    /// What each face slot should be sounding right now. Chord mode: the whole held
+    /// set is one chord, voiced under its first button. Note mode: one note per button.
+    fn desired(&self) -> [Vec<u8>; 4] {
+        let mut want: [Vec<u8>; 4] = Default::default();
+        if self.mode == Mode::Note {
+            for f in 0..4 {
+                if self.face[f] {
+                    want[f] = self.notes_for(f, self.modifier);
+                }
             }
+        } else if let (Some(d), Some(slot)) = (Self::combo_degree(self.face), self.face.iter().position(|x| *x)) {
+            want[slot] = self.chord_notes(d, self.modifier);
         }
+        want
     }
 
-    fn face_off(&mut self, f: usize) {
-        self.face[f] = false;
-        self.face_notes[f].clear();
-        self.mixer.release(FACE_KEYS[f]);
-        let now = self.beat;
-        if let Some(p) = self.looper.open.iter().position(|o| o.key == FACE_KEYS[f]) {
-            let o = self.looper.open.remove(p);
-            self.looper.commit(&o.notes, o.vel, o.start, now);
-        }
-    }
-
-    /// A modifier changed while buttons are held: re-voice them.
-    #[allow(clippy::needless_range_loop)]
+    /// Make the voices match `desired()`: re-voices on a changed chord, modifier or release.
     fn revoice(&mut self) {
+        let want = self.desired();
         for f in 0..4 {
-            if !self.face[f] {
-                continue;
-            }
-            let notes = self.notes_for(f, self.modifier);
-            if notes == self.face_notes[f] {
+            if want[f] == self.face_notes[f] {
                 continue;
             }
             self.mixer.release(FACE_KEYS[f]);
@@ -341,8 +361,9 @@ impl ChordApp {
                 let o = self.looper.open.remove(p);
                 self.looper.commit(&o.notes, o.vel, o.start, now);
             }
-            self.face_notes[f] = notes.clone();
-            if !self.arp_on {
+            self.face_notes[f] = want[f].clone();
+            if !want[f].is_empty() && !self.arp_on {
+                let notes = want[f].clone();
                 self.sound(&notes, 1.0, FACE_KEYS[f]);
                 if self.looper.recording() {
                     self.looper.open.push(Open { key: FACE_KEYS[f], start: now, notes, vel: 1.0 });
@@ -351,9 +372,31 @@ impl ChordApp {
         }
     }
 
+    /// A face button went down or up. In chord mode, wait a moment (`FACE_SETTLE_MS`)
+    /// so two buttons pressed or released nearly together act as one chord.
+    fn faces_changed(&mut self) {
+        if self.mode == Mode::Note || !self.face.iter().any(|x| *x) {
+            self.settle_ms = None;
+            self.revoice();
+        } else {
+            self.settle_ms = Some(FACE_SETTLE_MS);
+        }
+    }
+
+    fn face_on(&mut self, f: usize) {
+        self.face[f] = true;
+        self.faces_changed();
+    }
+
+    fn face_off(&mut self, f: usize) {
+        self.face[f] = false;
+        self.faces_changed();
+    }
+
     fn panic(&mut self) {
         self.mixer.stop_all();
         self.face = [false; 4];
+        self.settle_ms = None;
         for n in self.face_notes.iter_mut() {
             n.clear();
         }
@@ -651,9 +694,9 @@ impl ChordApp {
                 }
             }
             Btn::R2 => {
-                if !st && !se {
+                if !st && !se && self.mode == Mode::Note {
                     self.page = 1 - self.page;
-                    self.toast.say(if self.page == 0 { "Page 1" } else { "Page 2" });
+                    self.toast.say(if self.page == 0 { "Notes 1-4" } else { "Notes 5-8" });
                 }
             }
             Btn::L2 => {
@@ -885,7 +928,7 @@ impl App for ChordApp {
         let inst = self.inst.as_ref().map(|i| i.name.as_str()).unwrap_or("-");
         let star = if self.favs.contains(&self.inst_key) { "* " } else { "" };
         fb.text(20, 44, &format!("{}{}", star, clip(inst, 24)), 2, WHITE);
-        fb.text_right(W - 20, 48, &format!("{} mode   oct {}   page {}", if self.mode == Mode::Chord { "CHORD" } else { "NOTE" }, self.octave, self.page + 1), 1, DIM);
+        fb.text_right(W - 20, 48, &format!("{} mode   oct {}{}", if self.mode == Mode::Chord { "CHORD" } else { "NOTE" }, self.octave, if self.mode == Mode::Note { format!("   notes {}", if self.page == 0 { "1-4" } else { "5-8" }) } else { String::new() }), 1, DIM);
 
         // four chord tiles
         let roman = if self.minor { &ROMAN_MIN } else { &ROMAN_MAJ };
@@ -896,11 +939,16 @@ impl App for ChordApp {
             fb.rect(x, 80, 140, 110, if held { scale(col, 0.55) } else { PANEL });
             fb.frame(x, 80, 140, 110, if held { 3 } else { 2 }, if held { col } else { CELL_BEAT });
             fb.text(x + 8, 88, FACE_NAMES[f], 3, col);
-            let d = self.degree_of(f);
+            // a held pair shows the chord it makes (A+B = ii), not each button's own chord
+            let m = if held { self.modifier } else { None };
+            let pair = if held && self.mode == Mode::Chord && self.face.iter().filter(|x| **x).count() >= 2 { Self::combo_degree(self.face) } else { None };
+            let (d, label) = match pair {
+                Some(d) => (d, self.degree_label(d, m)),
+                None => (if self.mode == Mode::Note { self.note_degree(f) } else { Self::combo_degree(Self::only(f)).unwrap_or(0) }, self.chord_label(f, m)),
+            };
             let r = if d < 7 { roman[d].to_string() } else { format!("{}'", roman[d % 7]) };
             fb.text_right(x + 132, 92, &r, 2, DIM);
-            let m = if held { self.modifier } else { None };
-            fb.text_center(x + 70, 136, &self.chord_label(f, m), 2, if held { WHITE } else { TEXT });
+            fb.text_center(x + 70, 136, &label, 2, if held { WHITE } else { TEXT });
         }
 
         // what is sounding
@@ -912,7 +960,7 @@ impl App for ChordApp {
             let names: Vec<String> = s.iter().map(|n| note_name(*n)).collect();
             fb.text_center(320, 206, &names.join(" "), 2, ACCENT);
         } else {
-            fb.text_center(320, 206, "A B X Y play   R2 page   FN+SEL help", 1, DIM);
+            fb.text_center(320, 206, "A B X Y   A+B ii   A+X iii   B+Y vii   FN+SEL help", 1, DIM);
         }
 
         self.draw_loop(fb, 250);
@@ -935,6 +983,14 @@ impl App for ChordApp {
         self.toast.tick(dt);
         self.mixer.max_secs = Some(4.0 * 4.0 * 60.0 / self.bpm.max(1.0)); // 4 measures
         self.mixer.beat_secs = Some(60.0 / self.bpm.max(1.0));
+        if let Some(left) = self.settle_ms {
+            if left <= dt {
+                self.settle_ms = None;
+                self.revoice();
+            } else {
+                self.settle_ms = Some(left - dt);
+            }
+        }
         if self.ss && self.held.is(Btn::Start) && self.held.is(Btn::Select) {
             self.ss_ms += dt;
             if self.ss_ms >= QUIT_HOLD_MS {
@@ -991,20 +1047,60 @@ mod tests {
     #[test]
     fn chord_degrees_major_and_minor() {
         let mut a = app();
-        // C major, octave 3 -> root midi 48
-        // default page: A=I, B=IV, X=V, Y=vi (the original HillChord layout)
+        // C major, octave 3 -> root midi 48. Single buttons: A=I, B=IV, X=V, Y=vi
         assert_eq!(a.notes_for(0, None), vec![48, 52, 55]); // I = C E G
         assert_eq!(a.notes_for(1, None), vec![53, 57, 60]); // IV = F A C
         assert_eq!(a.notes_for(2, None), vec![55, 59, 62]); // V = G B D
         assert_eq!(a.notes_for(3, None), vec![57, 60, 64]); // vi = A C E
-        a.page = 1; // R2 page: ii, iii, vii*, I'
-        assert_eq!(a.notes_for(0, None), vec![50, 53, 57]); // ii = D F A
-        assert_eq!(a.notes_for(1, None), vec![52, 55, 59]); // iii = E G B
-        assert_eq!(a.notes_for(2, None), vec![59, 62, 65]); // vii* = B D F
-        assert_eq!(a.notes_for(3, None), vec![60, 64, 67]); // I'
-        a.page = 0;
+        // pairs: A+B = ii, A+X = iii, B+Y = vii*
+        let notes = |a: &ChordApp, set: [bool; 4]| a.chord_notes(ChordApp::combo_degree(set).unwrap(), None);
+        assert_eq!(notes(&a, [true, true, false, false]), vec![50, 53, 57]); // ii = D F A
+        assert_eq!(notes(&a, [true, false, true, false]), vec![52, 55, 59]); // iii = E G B
+        assert_eq!(notes(&a, [false, true, false, true]), vec![59, 62, 65]); // vii* = B D F
+        // other combinations play nothing
+        assert!(ChordApp::combo_degree([false, false, true, true]).is_none());
+        assert!(ChordApp::combo_degree([true, true, true, false]).is_none());
         a.minor = true;
         assert_eq!(a.notes_for(0, None), vec![48, 51, 55]); // i = C Eb G
+    }
+
+    #[test]
+    fn face_pairs_play_one_chord_without_a_blip() {
+        let mut a = app();
+        let (i, ii, iv) = (vec![48, 52, 55], vec![50, 53, 57], vec![53, 57, 60]);
+        // A then B a few ms later: nothing sounds until the settle window ends, then only ii
+        a.face_on(0);
+        a.tick(5);
+        a.face_on(1);
+        assert!(a.face_notes.iter().all(|n| n.is_empty()), "nothing sounded yet");
+        a.tick(40);
+        assert_eq!(a.face_notes[0], ii, "A+B is ii, voiced under the first button");
+        assert!(a.face_notes[1].is_empty());
+        assert_ne!(a.face_notes[0], i);
+        // release one then the other almost together: no single-chord blip
+        a.face_off(0);
+        a.tick(5);
+        a.face_off(1);
+        assert!(a.face_notes.iter().all(|n| n.is_empty()), "all released: silent at once");
+        // release only A and keep holding B: after the settle window B plays its own chord
+        a.face_on(0);
+        a.face_on(1);
+        a.tick(40);
+        a.face_off(0);
+        a.tick(40);
+        assert_eq!(a.face_notes[1], iv);
+        assert!(a.face_notes[0].is_empty());
+        // a single button sounds after the same short wait
+        let mut b = app();
+        b.face_on(0);
+        b.tick(40);
+        assert_eq!(b.face_notes[0], i);
+        // an unassigned pair (X+Y) is silent
+        let mut c = app();
+        c.face_on(2);
+        c.face_on(3);
+        c.tick(40);
+        assert!(c.face_notes.iter().all(|n| n.is_empty()));
     }
 
     #[test]
@@ -1013,10 +1109,9 @@ mod tests {
         assert_eq!(a.notes_for(0, Some(Btn::Left)), vec![48, 50, 55]); // sus2
         assert_eq!(a.notes_for(0, Some(Btn::Right)), vec![48, 53, 55]); // sus4
         assert_eq!(a.notes_for(0, Some(Btn::Up)), vec![48, 52, 55, 59]); // maj7
-        assert_eq!(a.notes_for(4 % 4, Some(Btn::Down)).len(), 4);
-        // V (face X on the default page) gets a dominant 7th (F) from the scale
-        let b = app();
-        assert_eq!(b.notes_for(2, Some(Btn::Up)), vec![55, 59, 62, 65]);
+        assert_eq!(a.notes_for(0, Some(Btn::Down)).len(), 4);
+        // V (face X) gets a dominant 7th (F) from the scale
+        assert_eq!(a.notes_for(2, Some(Btn::Up)), vec![55, 59, 62, 65]);
     }
 
     #[test]
