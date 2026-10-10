@@ -11,7 +11,7 @@ use crate::looper::{bpm_from_bars, parse_bpm, LoopPlayer};
 use crate::mixer::Mixer;
 use crate::theory::*;
 use crate::transport::Transport;
-use crate::ui::{modal, Browser, BrowserOut, Help, Toast};
+use crate::ui::{modal, quit_bar, Browser, BrowserOut, Help, Toast, QUIT_HOLD_MS};
 use crate::wav;
 use crate::{App, SAMPLE_RATE};
 
@@ -107,7 +107,13 @@ pub struct GridApp {
 impl GridApp {
     pub fn new(cfg: &'static GridConfig, host: Box<dyn Host>) -> Self {
         let paths = host.list_samples();
-        let catalog = library::build_catalog(&paths);
+        let mut catalog = library::build_catalog(&paths);
+        if cfg.drum_filter {
+            // drum kits go right after the built-ins, so they are the first thing in the drum browser
+            let at = catalog.iter().take_while(|e| matches!(e.kind, library::Kind::Builtin(_))).count();
+            let kits = library::kit_entries(&paths);
+            catalog.splice(at..at, kits);
+        }
         let file_cat = library::file_catalog(&paths);
         let nt = cfg.tracks.len();
         let mut app = GridApp {
@@ -442,7 +448,40 @@ impl GridApp {
         self.overlay = Overlay::BrowseLoop;
     }
 
+    /// Spread a kit's files over every drum track, in track order.
+    fn assign_kit(&mut self, files: &[String]) {
+        let drums: Vec<usize> = (0..self.nt()).filter(|&i| self.tracks[i].kind == TrackKind::Drum).collect();
+        let mut n = 0;
+        for (&ti, path) in drums.iter().zip(files) {
+            let stem = path.rsplit('/').next().unwrap_or(path);
+            let one = Entry {
+                dir: String::new(),
+                label: stem.rsplit_once('.').map(|(s, _)| s).unwrap_or(stem).to_string(),
+                key: path.clone(),
+                kind: library::Kind::Files(vec![(path.clone(), None)]),
+                pitched: false,
+            };
+            if let Some(inst) = library::load_entry(self.host.as_ref(), &one) {
+                let t = &mut self.tracks[ti];
+                t.inst = Some(inst);
+                t.inst_key = path.clone();
+                n += 1;
+            }
+        }
+        self.sel.iter_mut().for_each(|s| *s = false);
+        if let Some(&ti) = drums.first() {
+            if !self.tracks[ti].mute {
+                Self::play_track(&mut self.mixer, &mut self.tracks[ti], ti, 100);
+            }
+        }
+        self.toast.say(&format!("Kit loaded: {} voices", n));
+    }
+
     fn assign(&mut self, targets: &[usize], e: &Entry) {
+        if let library::Kind::Kit(files) = &e.kind {
+            self.assign_kit(files);
+            return;
+        }
         match library::load_entry(self.host.as_ref(), e) {
             Some(inst) => {
                 let name = inst.name.clone();
@@ -942,6 +981,9 @@ impl App for GridApp {
         self.draw_grid(fb);
         self.draw_detail(fb);
         self.toast.draw(fb);
+        if self.ss && self.held.is(Btn::Start) && self.held.is(Btn::Select) {
+            quit_bar(fb, self.ss_ms);
+        }
         match &self.overlay {
             Overlay::None => {}
             Overlay::Help => self.help.draw(fb, self.cfg.name, self.cfg.help),
@@ -977,7 +1019,7 @@ impl App for GridApp {
         self.toast.tick(dt);
         if self.ss && self.held.is(Btn::Start) && self.held.is(Btn::Select) {
             self.ss_ms += dt;
-            if self.ss_ms >= 2000 {
+            if self.ss_ms >= QUIT_HOLD_MS {
                 self.quit = true;
                 self.ss = false;
                 self.save_now();

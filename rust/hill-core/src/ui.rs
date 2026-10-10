@@ -189,6 +189,24 @@ impl Help {
     }
 }
 
+/// How long START+SELECT must be held to quit, in every app.
+pub const QUIT_HOLD_MS: u32 = 1500;
+
+/// Progress bar shown while START+SELECT is held, so the quit gesture is visible.
+pub fn quit_bar(fb: &mut Fb, held_ms: u32) {
+    if held_ms < 250 {
+        return;
+    }
+    let w = 360;
+    let x = (W - w) / 2;
+    fb.rect(x - 12, 180, w + 24, 84, rgb(10, 12, 16));
+    fb.frame(x - 12, 180, w + 24, 84, 2, ACCENT);
+    fb.text_center(W / 2, 194, "Hold to quit", 3, WHITE);
+    fb.frame(x, 236, w, 18, 2, DIM);
+    let fill = (w - 4) * held_ms.min(QUIT_HOLD_MS) as i32 / QUIT_HOLD_MS as i32;
+    fb.rect(x + 2, 238, fill, 14, ACCENT);
+}
+
 /// Transient one-line message.
 #[derive(Default)]
 pub struct Toast {

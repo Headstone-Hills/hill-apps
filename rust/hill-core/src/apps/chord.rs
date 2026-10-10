@@ -10,7 +10,7 @@ use crate::library::{self, Entry};
 use crate::mixer::Mixer;
 use crate::synth;
 use crate::theory::*;
-use crate::ui::{Browser, BrowserOut, Help, Toast};
+use crate::ui::{quit_bar, Browser, BrowserOut, Help, Toast, QUIT_HOLD_MS};
 use crate::{App, SAMPLE_RATE};
 use std::sync::Arc;
 
@@ -45,7 +45,7 @@ const HELP: &[(&str, &str)] = &[
     ("SELECT+A", "metronome on / off"),
     ("OTHER", ""),
     ("START+Y", "save"),
-    ("START+SELECT", "tap: panic + clear loop, hold 1.2s: quit"),
+    ("START+SELECT", "tap: panic + clear loop, hold 1.5s: quit"),
     ("FN+SELECT", "this help"),
 ];
 
@@ -886,6 +886,9 @@ impl App for ChordApp {
         }
         fb.text(20, 440, "L2 loop  START library  L1/R1 sound  SEL+B arp  SEL+A click", 1, DIM);
         self.toast.draw(fb);
+        if self.ss && self.held.is(Btn::Start) && self.held.is(Btn::Select) {
+            quit_bar(fb, self.ss_ms);
+        }
         match self.overlay {
             Overlay::None => {}
             Overlay::Help => self.help.draw(fb, "HillChord", HELP),
@@ -897,7 +900,7 @@ impl App for ChordApp {
         self.toast.tick(dt);
         if self.ss && self.held.is(Btn::Start) && self.held.is(Btn::Select) {
             self.ss_ms += dt;
-            if self.ss_ms >= 1200 {
+            if self.ss_ms >= QUIT_HOLD_MS {
                 self.quit = true;
                 self.ss = false;
                 self.save_now();

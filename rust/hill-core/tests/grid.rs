@@ -279,3 +279,33 @@ fn bad_wav_in_library_does_not_crash() {
     let mut fb = hill_core::fb::Fb::new();
     a.render(&mut fb);
 }
+
+#[test]
+fn picking_a_drum_kit_fills_every_drum_track_in_order() {
+    let tone: Vec<f32> = (0..2000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+    let wav = encode16(&tone, 1, 44100);
+    // the kit is somewhere in the drum-filtered list: scan down to it
+    let mut found = false;
+    for downs in 0..40 {
+        let store = shared();
+        for f in ["Packs/Dusty/perc_x.wav", "Packs/Dusty/hat_closed.wav", "Packs/Dusty/kick_01.wav", "Packs/Dusty/snare_01.wav", "Pads/warm.wav"] {
+            store.lock().unwrap().samples.insert(f.into(), wav.clone());
+        }
+        let mut a = apps::create("hillbeat", Box::new(Shared(store.clone()))).unwrap();
+        chord(a.as_mut(), &[Btn::Start], Btn::B);
+        for _ in 0..downs {
+            tap(a.as_mut(), Btn::Down);
+        }
+        tap(a.as_mut(), Btn::A);
+        a.save();
+        let k = saved(&store, "hillbeat");
+        if k.get("t0.inst") == Some("Packs/Dusty/kick_01.wav") {
+            assert_eq!(k.get("t1.inst"), Some("Packs/Dusty/snare_01.wav"));
+            assert_eq!(k.get("t2.inst"), Some("Packs/Dusty/hat_closed.wav"));
+            assert_eq!(k.get("t3.inst"), Some("Packs/Dusty/perc_x.wav"));
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "kit entry reachable in the drum browser");
+}

@@ -16,7 +16,7 @@ static CONFIG: GridConfig = GridConfig {
         ("PLAYBACK", ""),
         ("START", "play / pause"),
         ("SELECT", "tap tempo"),
-        ("START+SELECT", "tap: stop & reset, hold 2s: quit"),
+        ("START+SELECT", "tap: stop & reset, hold 1.5s: quit"),
         ("L1 / R1", "previous / next pattern"),
         ("L2 / R2", "BPM - / + (hold repeats)"),
         ("SELECT+X", "swing on / off"),

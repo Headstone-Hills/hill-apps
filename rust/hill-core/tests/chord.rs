@@ -264,6 +264,6 @@ fn start_select_tap_panics_hold_quits() {
     assert_eq!(peak(&run(a.as_mut(), 0.2)), 0.0, "panic silences everything");
     a.event(Btn::Start, true);
     a.event(Btn::Select, true);
-    run(a.as_mut(), 1.4);
+    run(a.as_mut(), 1.7);
     assert!(a.wants_quit());
 }
