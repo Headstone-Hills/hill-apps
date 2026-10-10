@@ -1067,6 +1067,7 @@ impl App for GridApp {
     fn tick(&mut self, dt: u32) {
         self.ms += dt as u64;
         self.toast.tick(dt);
+        self.mixer.max_secs = Some(4.0 * 4.0 * 60.0 / self.tr.bpm.max(1.0)); // 4 measures
         if let Some((ti, left)) = self.preview {
             if left <= dt {
                 self.mixer.release(ti as u32);

@@ -15,11 +15,12 @@ struct Voice {
     age: u64,
     env: f32,
     fade: f32, // per-frame decrement once released; 0 = holding
+    played: u64, // frames rendered so far, for the maximum-length cap
 }
 
 impl Voice {
     fn idle() -> Self {
-        Voice { sample: None, pos: 0.0, step: 1.0, gain: 0.0, key: 0, age: 0, env: 1.0, fade: 0.0 }
+        Voice { sample: None, pos: 0.0, step: 1.0, gain: 0.0, key: 0, age: 0, env: 1.0, fade: 0.0, played: 0 }
     }
 }
 
@@ -30,6 +31,8 @@ pub struct Mixer {
     pub master: f32,
     /// Release time applied by `release`, in seconds.
     pub release_secs: f32,
+    /// No voice sounds longer than this many seconds (apps set it to 4 measures).
+    pub max_secs: Option<f32>,
 }
 
 impl Mixer {
@@ -40,6 +43,7 @@ impl Mixer {
             counter: 0,
             master: 0.8,
             release_secs: 0.08,
+            max_secs: None,
         }
     }
 
@@ -55,6 +59,14 @@ impl Mixer {
     /// `limit` voices with the same key sound at once (oldest is cut).
     pub fn trigger(&mut self, s: &Arc<Sample>, ratio: f64, gain: f32, key: u32, limit: usize) {
         self.counter += 1;
+        // Triggering a sound that is already sounding restarts it (a loop), not a second copy on top.
+        let step = ratio * s.rate as f64 / self.rate as f64;
+        let fade = 1.0 / (self.release_secs * self.rate).max(1.0);
+        for v in self.voices.iter_mut() {
+            if v.key == key && v.fade == 0.0 && v.sample.as_ref().is_some_and(|o| Arc::ptr_eq(o, s)) && (v.step - step).abs() < 1e-9 {
+                v.fade = fade;
+            }
+        }
         if limit > 0 {
             let mut same: Vec<usize> = (0..self.voices.len())
                 .filter(|&i| self.voices[i].sample.is_some() && self.voices[i].key == key)
@@ -85,6 +97,7 @@ impl Mixer {
             age: self.counter,
             env: 1.0,
             fade: 0.0,
+            played: 0,
         };
     }
 
@@ -118,6 +131,8 @@ impl Mixer {
     pub fn render(&mut self, out: &mut [f32]) {
         let frames = out.len() / 2;
         let master = self.master;
+        let max_frames = self.max_secs.map(|s| (s * self.rate) as u64);
+        let cap_fade = 1.0 / (self.release_secs * self.rate).max(1.0);
         for v in self.voices.iter_mut() {
             let Some(s) = v.sample.as_ref() else { continue };
             let n = s.frames();
@@ -137,6 +152,12 @@ impl Mixer {
                 out[f * 2] += l * g;
                 out[f * 2 + 1] += r * g;
                 pos += v.step;
+                v.played += 1;
+                if let Some(m) = max_frames {
+                    if v.played >= m && v.fade == 0.0 {
+                        v.fade = cap_fade;
+                    }
+                }
                 if v.fade > 0.0 {
                     v.env -= v.fade;
                     if v.env <= 0.0 {
@@ -167,6 +188,35 @@ mod tests {
             data.push(0.5);
         }
         Arc::new(Sample { data, rate: 44100 })
+    }
+
+    #[test]
+    fn voices_are_capped_at_max_secs() {
+        let mut m = Mixer::new(1000.0);
+        m.max_secs = Some(1.0);
+        m.release_secs = 0.01;
+        let long = Arc::new(Sample { data: vec![0.5; 2 * 10_000], rate: 1000 }); // 10 s
+        m.trigger(&long, 1.0, 1.0, 1, 0);
+        let mut out = vec![0.0; 2 * 1500];
+        m.render(&mut out);
+        assert_eq!(m.active(), 0, "gone after 1 s plus the release");
+        assert!(out[2 * 900] > 0.1 && out[2 * 1400].abs() < 1e-6);
+    }
+
+    #[test]
+    fn retrigger_restarts_instead_of_stacking() {
+        let mut m = Mixer::new(1000.0);
+        m.release_secs = 0.01;
+        let s = Arc::new(Sample { data: vec![0.5; 2 * 10_000], rate: 1000 });
+        m.trigger(&s, 1.0, 1.0, 1, 0);
+        m.trigger(&s, 1.0, 1.0, 1, 0);
+        m.trigger(&s, 1.0, 1.0, 1, 0);
+        let mut out = vec![0.0; 2 * 50];
+        m.render(&mut out);
+        assert_eq!(m.active(), 1, "earlier copies faded out");
+        // a different pitch is a different voice
+        m.trigger(&s, 2.0, 1.0, 1, 0);
+        assert_eq!(m.active(), 2);
     }
 
     #[test]

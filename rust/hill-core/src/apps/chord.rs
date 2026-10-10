@@ -898,6 +898,7 @@ impl App for ChordApp {
 
     fn tick(&mut self, dt: u32) {
         self.toast.tick(dt);
+        self.mixer.max_secs = Some(4.0 * 4.0 * 60.0 / self.bpm.max(1.0)); // 4 measures
         if self.ss && self.held.is(Btn::Start) && self.held.is(Btn::Select) {
             self.ss_ms += dt;
             if self.ss_ms >= QUIT_HOLD_MS {
