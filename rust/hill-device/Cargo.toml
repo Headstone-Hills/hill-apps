@@ -1,0 +1,29 @@
+[package]
+name = "hill-device"
+version = "0.1.0"
+edition = "2021"
+description = "SDL2 runner for the Hill apps on RG35XXSP / R36S (and desktop for development)"
+
+[dependencies]
+hill-core = { path = "../hill-core" }
+sdl2 = { version = "0.38", default-features = false }
+
+[[bin]]
+name = "hillbeat"
+path = "src/bin/hillbeat.rs"
+
+[[bin]]
+name = "hillsequencer"
+path = "src/bin/hillsequencer.rs"
+
+[[bin]]
+name = "hillband"
+path = "src/bin/hillband.rs"
+
+[[bin]]
+name = "hillchord"
+path = "src/bin/hillchord.rs"
+
+[[bin]]
+name = "hillmap"
+path = "src/bin/hillmap.rs"

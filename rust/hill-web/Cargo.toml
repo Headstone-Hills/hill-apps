@@ -1,0 +1,11 @@
+[package]
+name = "hill-web"
+version = "0.1.0"
+edition = "2021"
+description = "WebAssembly build of the Hill apps (C ABI, no wasm-bindgen)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+hill-core = { path = "../hill-core" }

@@ -65,7 +65,7 @@ fn note_token(tok: &str) -> Option<u8> {
 }
 
 fn tokens(stem: &str) -> Vec<&str> {
-    stem.split(|c: char| c == '_' || c == ' ').filter(|t| !t.is_empty()).collect()
+    stem.split(['_', ' ']).filter(|t| !t.is_empty()).collect()
 }
 
 /// Root note encoded in a file stem (`midi036`, `C2`, `Piano_Eb4`).
@@ -88,8 +88,8 @@ pub fn instr_stem(stem: &str) -> String {
     let kept: Vec<&str> = tokens(stem)
         .into_iter()
         .filter(|t| {
-            let midi = t.get(..4).map_or(false, |h| h.eq_ignore_ascii_case("midi"))
-                && t.get(4..).map_or(false, |n| n.parse::<u32>().is_ok());
+            let midi = t.get(..4).is_some_and(|h| h.eq_ignore_ascii_case("midi"))
+                && t.get(4..).is_some_and(|n| n.parse::<u32>().is_ok());
             !midi && note_token(t).is_none()
         })
         .collect();
@@ -130,7 +130,8 @@ pub fn build_catalog(paths: &[String]) -> Vec<Entry> {
     files.sort();
 
     // group by (dir, stem-without-pitch)
-    let mut groups: Vec<(String, String, Vec<(String, Option<u8>)>)> = Vec::new();
+    type Group = (String, String, Vec<(String, Option<u8>)>);
+    let mut groups: Vec<Group> = Vec::new();
     for p in files {
         let (dir, file) = split_path(p);
         let stem = strip_ext(file);

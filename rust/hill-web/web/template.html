@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hill Apps</title>
+<style>
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --text: #1b2230;
+  --muted: #5d6779;
+  --line: #d5d9e0;
+  --accent: #14805a;
+  --accent-ink: #ffffff;
+  --btn: #e6e9ef;
+  --btn-down: #b9dfcf;
+  --screen: #0e1116;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0e13;
+    --panel: #151a22;
+    --text: #e4e9f2;
+    --muted: #8d97a9;
+    --line: #2a3140;
+    --accent: #78dca0;
+    --accent-ink: #0b1a12;
+    --btn: #232a37;
+    --btn-down: #2f6b50;
+    --screen: #0e1116;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b0e13;
+  --panel: #151a22;
+  --text: #e4e9f2;
+  --muted: #8d97a9;
+  --line: #2a3140;
+  --accent: #78dca0;
+  --accent-ink: #0b1a12;
+  --btn: #232a37;
+  --btn-down: #2f6b50;
+  --screen: #0e1116;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  padding: 16px max(16px, env(safe-area-inset-left));
+  -webkit-text-size-adjust: 100%;
+  overflow-x: hidden;
+}
+main { max-width: 720px; margin: 0 auto; }
+h1 { font-size: 1.6rem; margin: 8px 0 4px; letter-spacing: .01em; }
+p.lede { color: var(--muted); margin: 0 0 16px; }
+[hidden] { display: none !important; }
+
+.cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.card {
+  text-align: left; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  border-radius: 10px; padding: 12px 14px; cursor: pointer; font: inherit;
+}
+.card:hover, .card:focus-visible { border-color: var(--accent); outline: none; }
+.card b { display: block; font-size: 1.05rem; }
+.card span { color: var(--muted); font-size: .9rem; }
+
+.panel { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 12px 14px; margin-top: 14px; }
+.panel h2 { font-size: 1rem; margin: 0 0 6px; }
+.panel p { margin: 4px 0 10px; color: var(--muted); font-size: .92rem; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.btn {
+  border: 1px solid var(--line); background: var(--btn); color: var(--text); border-radius: 8px;
+  padding: 8px 12px; font: inherit; cursor: pointer;
+}
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#count { color: var(--muted); font-size: .9rem; }
+.msg { color: var(--muted); font-size: .9rem; min-height: 1.3em; margin-top: 6px; }
+.msg.err { color: #c0392b; }
+
+#screenwrap { background: var(--screen); border-radius: 8px; overflow: hidden; width: 100%; aspect-ratio: 4 / 3; }
+canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+.topbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.topbar .grow { flex: 1; }
+.meter { width: 64px; height: 8px; background: var(--btn); border-radius: 4px; overflow: hidden; }
+.meter i { display: block; height: 100%; width: 0; background: var(--accent); }
+
+.pad { margin-top: 12px; display: grid; gap: 10px; user-select: none; -webkit-user-select: none; touch-action: none; }
+.shoulders { display: flex; justify-content: space-between; gap: 8px; }
+.shoulders .grp { display: flex; gap: 8px; }
+.mid { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.cross, .face { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); gap: 4px; width: min(40vw, 168px); aspect-ratio: 1; }
+.sys { display: flex; justify-content: center; gap: 10px; }
+.k {
+  border: 1px solid var(--line); background: var(--btn); color: var(--text); border-radius: 10px;
+  font: 600 .95rem system-ui, sans-serif; display: flex; align-items: center; justify-content: center;
+  min-height: 40px; cursor: pointer; touch-action: none; -webkit-tap-highlight-color: transparent;
+}
+.k.down { background: var(--btn-down); border-color: var(--accent); }
+.k.round { border-radius: 50%; }
+.k.wide { padding: 0 16px; border-radius: 999px; min-height: 34px; font-size: .8rem; }
+.keys { color: var(--muted); font-size: .85rem; margin-top: 10px; }
+.keys code { background: var(--btn); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <section id="menu">
+    <h1>Hill Apps</h1>
+    <p class="lede">Four small music tools, rebuilt in Rust and compiled to WebAssembly. The same code runs on the RG35XXSP and R36S handhelds.</p>
+    <div class="cards" id="cards"></div>
+
+    <div class="panel">
+      <h2>Your samples</h2>
+      <p>Every app has built-in sounds. To use your own, add <code>.wav</code> files or a whole folder. They stay on this device (kept in your browser's storage) and appear in each app's sound browser.</p>
+      <div class="row">
+        <button class="btn" id="addFiles" type="button">Add WAV files</button>
+        <button class="btn" id="addFolder" type="button">Add folder</button>
+        <button class="btn" id="clearFiles" type="button">Remove all</button>
+        <span id="count"></span>
+      </div>
+      <input id="fileIn" type="file" accept=".wav,audio/wav,audio/x-wav" multiple hidden>
+      <input id="dirIn" type="file" webkitdirectory multiple hidden>
+      <div class="msg" id="fileMsg" role="status"></div>
+    </div>
+  </section>
+
+  <section id="player" hidden>
+    <div class="topbar">
+      <button class="btn" id="back" type="button">Menu</button>
+      <strong id="title" class="grow"></strong>
+      <div class="meter" title="output level"><i id="lvl"></i></div>
+    </div>
+    <div id="screenwrap"><canvas id="screen" width="640" height="480" aria-label="App screen"></canvas></div>
+    <div class="pad" id="pad">
+      <div class="shoulders">
+        <div class="grp"><button class="k wide" data-b="L2">L2</button><button class="k wide" data-b="L1">L1</button></div>
+        <div class="grp"><button class="k wide" data-b="R1">R1</button><button class="k wide" data-b="R2">R2</button></div>
+      </div>
+      <div class="mid">
+        <div class="cross">
+          <span></span><button class="k" data-b="Up" aria-label="Up">&#9650;</button><span></span>
+          <button class="k" data-b="Left" aria-label="Left">&#9664;</button><span></span><button class="k" data-b="Right" aria-label="Right">&#9654;</button>
+          <span></span><button class="k" data-b="Down" aria-label="Down">&#9660;</button><span></span>
+        </div>
+        <div class="face">
+          <span></span><button class="k round" data-b="X">X</button><span></span>
+          <button class="k round" data-b="Y">Y</button><span></span><button class="k round" data-b="A">A</button>
+          <span></span><button class="k round" data-b="B">B</button><span></span>
+        </div>
+      </div>
+      <div class="sys">
+        <button class="k wide" data-b="Select">SELECT</button>
+        <button class="k wide" data-b="Start">START</button>
+        <button class="k wide" data-b="Fn">FN</button>
+      </div>
+    </div>
+    <p class="keys">Keyboard: arrows = D-pad, <code>A</code> <code>B</code> <code>X</code> <code>Y</code>, <code>Q</code> <code>W</code> = L1 R1, <code>E</code> <code>R</code> = L2 R2, <code>O</code> = Select, <code>P</code> = Start, <code>U</code> = FN. FN + SELECT shows every control for the app.</p>
+    <div class="msg" id="playMsg" role="status"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const WASM_B64 = "/*WASM_B64*/";
+
+// Order matches hill_core::Btn::ALL.
+const BTN = ["Up","Down","Left","Right","A","B","X","Y","L1","R1","L2","R2","L3","R3","Select","Start","Fn"];
+// Order matches hill_core::apps::NAMES.
+const APPS = [
+  { key: "hillbeat",      name: "HillBeat",      blurb: "4-voice drum machine: 16 steps, 8 patterns, swing, a backing loop." },
+  { key: "hillsequencer", name: "HillSequencer", blurb: "8 pitched tracks on a 16-step grid, with a key/scale spreader." },
+  { key: "hillband",      name: "HillBand",      blurb: "4 melodic + 4 drum tracks, chords, scale modes, a backing loop." },
+  { key: "hillchord",     name: "HillChord",     blurb: "Play chords and notes live. Looper, arpeggiator, metronome." },
+];
+
+function b64bytes(s) {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Engine: wraps the wasm module. Runs in the AudioWorklet when possible, on
+// the main thread otherwise. Must not reference anything outside this class
+// (its source text is copied into the worklet).
+// ---------------------------------------------------------------------------
+class Engine {
+  constructor() { this.ex = null; this.wasm = null; this.files = []; this.app = 0; this.rate = 44100; this.lastState = null; }
+
+  static utf8(s) {
+    const bin = unescape(encodeURIComponent(s));
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  static str(bytes) {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    try { return decodeURIComponent(escape(bin)); } catch (e) { return bin; }
+  }
+
+  async init(wasm, app, rate, files, state) {
+    this.wasm = wasm; this.app = app; this.rate = rate; this.files = files;
+    const { instance } = await WebAssembly.instantiate(wasm, {});
+    this.ex = instance.exports;
+    this.ex.hill_reset();
+    for (const f of files) this.addFile(f.name, new Uint8Array(f.data));
+    if (state) { const p = this.put(Engine.utf8(state)); this.ex.hill_set_state(app, p.ptr, p.len); this.free(p); }
+    if (!this.ex.hill_init(app, rate)) throw new Error("could not start app");
+    this.lastState = state || null;
+  }
+  put(bytes) {
+    const ptr = this.ex.hill_alloc(bytes.length);
+    new Uint8Array(this.ex.memory.buffer, ptr, bytes.length).set(bytes);
+    return { ptr, len: bytes.length };
+  }
+  free(p) { this.ex.hill_free(p.ptr, p.len); }
+  addFile(name, data) {
+    const n = this.put(Engine.utf8(name));
+    const d = this.put(data);
+    this.ex.hill_add_sample(n.ptr, n.len, d.ptr, d.len);
+    this.free(n); this.free(d);
+  }
+  btn(b, down) { this.ex.hill_event(b, down ? 1 : 0); }
+  tick(ms) { this.ex.hill_tick(ms); }
+  audio(frames) { return new Float32Array(this.ex.memory.buffer, this.ex.hill_audio(frames), frames * 2); }
+  frame() { return new Uint8ClampedArray(this.ex.memory.buffer, this.ex.hill_render(), 640 * 480 * 4); }
+  quit() { return this.ex.hill_wants_quit() === 1; }
+  // Persist and return state text if it changed since last asked.
+  state() {
+    this.ex.hill_save();
+    if (!this.ex.hill_state_dirty()) return null;
+    const n = this.ex.hill_state_take();
+    const text = Engine.str(new Uint8Array(this.ex.memory.buffer, this.ex.hill_state_ptr(), n));
+    this.lastState = text;
+    return text;
+  }
+  // Add more samples without losing the app's state.
+  async addFiles(more) {
+    const st = this.state() || this.lastState;
+    const merged = this.files.filter(f => !more.some(m => m.name === f.name)).concat(more);
+    await this.init(this.wasm, this.app, this.rate, merged, st);
+  }
+}
+
+const WORKLET_SRC = `
+${Engine.toString()}
+class HillProc extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.eng = new Engine(); this.ready = false; this.dead = false;
+    this.ms = 0; this.sinceFrame = 0; this.sinceSave = 0; this.sinceLevel = 0; this.peak = 0; this.pending = false;
+    this.port.onmessage = (e) => this.onMsg(e.data);
+  }
+  async onMsg(m) {
+    try {
+      if (m.t === "init") {
+        this.ready = false;
+        await this.eng.init(m.wasm, m.app, sampleRate, m.files, m.state);
+        this.ready = true; this.pending = false;
+        this.port.postMessage({ t: "ready", rate: sampleRate });
+      } else if (m.t === "files") {
+        this.ready = false;
+        await this.eng.addFiles(m.files);
+        this.ready = true;
+        this.port.postMessage({ t: "files-added" });
+      } else if (m.t === "btn") { if (this.ready) this.eng.btn(m.b, m.d); }
+      else if (m.t === "ack") { this.pending = false; }
+      else if (m.t === "save") { const s = this.ready ? this.eng.state() : null; this.port.postMessage({ t: "state", data: s }); }
+      else if (m.t === "stop") { this.ready = false; this.dead = true; }
+    } catch (err) { this.port.postMessage({ t: "error", msg: String(err && err.message || err) }); }
+  }
+  process(inputs, outputs) {
+    if (this.dead) return false;
+    const out = outputs[0], L = out[0], R = out[1] || out[0];
+    if (!this.ready) return true;
+    const n = L.length;
+    const a = this.eng.audio(n);
+    let pk = 0;
+    for (let i = 0; i < n; i++) { const l = a[2*i], r = a[2*i+1]; L[i] = l; if (R !== L) R[i] = r; const m = Math.abs(l) > Math.abs(r) ? Math.abs(l) : Math.abs(r); if (m > pk) pk = m; }
+    if (pk > this.peak) this.peak = pk;
+    const dt = n / sampleRate * 1000;
+    this.ms += dt; this.sinceFrame += dt; this.sinceSave += dt; this.sinceLevel += dt;
+    if (this.ms >= 16) { const whole = Math.floor(this.ms); this.eng.tick(whole); this.ms -= whole; }
+    if (this.sinceFrame >= 33 && !this.pending) {
+      this.sinceFrame = 0; this.pending = true;
+      const copy = new Uint8ClampedArray(this.eng.frame());
+      this.port.postMessage({ t: "frame", buf: copy.buffer }, [copy.buffer]);
+      if (this.eng.quit()) this.port.postMessage({ t: "quit" });
+    }
+    if (this.sinceLevel >= 100) { this.port.postMessage({ t: "level", v: this.peak }); this.peak = 0; this.sinceLevel = 0; }
+    if (this.sinceSave >= 3000) { this.sinceSave = 0; const s = this.eng.state(); if (s !== null) this.port.postMessage({ t: "state", data: s }); }
+    return true;
+  }
+}
+registerProcessor("hill-proc", HillProc);
+`;
+
+// ---------------------------------------------------------------------------
+// Storage (all best-effort: private windows and sandboxes may refuse)
+// ---------------------------------------------------------------------------
+const store = {
+  getState(key) { try { return localStorage.getItem("hill.state." + key); } catch (e) { return null; } },
+  setState(key, v) { try { localStorage.setItem("hill.state." + key, v); } catch (e) {} },
+  db() {
+    return new Promise((res, rej) => {
+      try {
+        const r = indexedDB.open("hill-samples", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("wav");
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+      } catch (e) { rej(e); }
+    });
+  },
+  async allFiles() {
+    try {
+      const db = await this.db();
+      return await new Promise((res, rej) => {
+        const out = [];
+        const c = db.transaction("wav").objectStore("wav").openCursor();
+        c.onsuccess = () => { const cur = c.result; if (cur) { out.push({ name: cur.key, data: cur.value }); cur.continue(); } else res(out); };
+        c.onerror = () => rej(c.error);
+      });
+    } catch (e) { return []; }
+  },
+  async putFiles(list) {
+    try {
+      const db = await this.db();
+      await new Promise((res, rej) => {
+        const tx = db.transaction("wav", "readwrite");
+        const os = tx.objectStore("wav");
+        for (const f of list) os.put(f.data, f.name);
+        tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+      });
+      return true;
+    } catch (e) { return false; }
+  },
+  async clearFiles() {
+    try {
+      const db = await this.db();
+      await new Promise((res, rej) => { const tx = db.transaction("wav", "readwrite"); tx.objectStore("wav").clear(); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+    } catch (e) {}
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Session: one running app, in a worklet or on the main thread.
+// ---------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const canvas = $("screen");
+const ctx = canvas.getContext("2d");
+let wasmBytes = null;
+let files = [];            // {name, data: ArrayBuffer}
+let session = null;
+const debug = { frames: 0, level: 0, mode: "", ready: false };
+window.__hill = debug;
+
+function drawFrame(buf) {
+  ctx.putImageData(new ImageData(buf instanceof Uint8ClampedArray ? buf : new Uint8ClampedArray(buf), 640, 480), 0, 0);
+  debug.frames++;
+}
+function setMeter(v) { $("lvl").style.width = Math.min(100, Math.round(Math.sqrt(v) * 100)) + "%"; debug.level = Math.max(debug.level * 0.5, v); }
+
+class Session {
+  constructor(appIdx) {
+    this.appIdx = appIdx; this.key = APPS[appIdx].key;
+    this.ac = null; this.node = null; this.eng = null; this.mode = ""; this.closed = false;
+  }
+  async start() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    this.ac = new AC({ latencyHint: "interactive" });
+    if (this.ac.state === "suspended") { try { await this.ac.resume(); } catch (e) {} }
+    const state = store.getState(this.key);
+    try {
+      await this.startWorklet(state);
+    } catch (e) {
+      console.warn("AudioWorklet unavailable, using main-thread audio:", e);
+      await this.startMain(state);
+    }
+    debug.mode = this.mode; debug.ready = true;
+  }
+  async startWorklet(state) {
+    if (!this.ac.audioWorklet) throw new Error("no audioWorklet");
+    // Blob URLs are blocked in some sandboxes; try a data: URL before giving up.
+    const blobUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: "text/javascript" }));
+    const dataUrl = "data:text/javascript;base64," + btoa(unescape(encodeURIComponent(WORKLET_SRC)));
+    let loaded = false, lastErr = null;
+    for (const u of [blobUrl, dataUrl]) {
+      try { await this.ac.audioWorklet.addModule(u); loaded = true; break; } catch (e) { lastErr = e; }
+    }
+    URL.revokeObjectURL(blobUrl);
+    if (!loaded) throw lastErr || new Error("worklet module failed");
+    this.node = new AudioWorkletNode(this.ac, "hill-proc", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+    this.node.connect(this.ac.destination);
+    await new Promise((res, rej) => {
+      const t = setTimeout(() => rej(new Error("worklet start timeout")), 8000);
+      this.node.port.onmessage = (e) => {
+        const m = e.data;
+        if (m.t === "ready") { clearTimeout(t); this.node.port.onmessage = (ev) => this.onWorkletMsg(ev.data); res(); }
+        else if (m.t === "error") { clearTimeout(t); rej(new Error(m.msg)); }
+      };
+      this.node.port.postMessage({ t: "init", wasm: wasmBytes, app: this.appIdx, files, state });
+    });
+    this.mode = "worklet";
+  }
+  onWorkletMsg(m) {
+    if (this.closed) return;
+    if (m.t === "frame") { drawFrame(m.buf); this.node.port.postMessage({ t: "ack" }); }
+    else if (m.t === "level") setMeter(m.v);
+    else if (m.t === "state") { if (m.data) store.setState(this.key, m.data); }
+    else if (m.t === "quit") { goMenu(); }
+    else if (m.t === "error") { $("playMsg").textContent = "Error: " + m.msg; $("playMsg").className = "msg err"; }
+    else if (m.t === "files-added") { $("playMsg").textContent = "Samples loaded."; }
+  }
+  async startMain(state) {
+    this.eng = new Engine();
+    await this.eng.init(wasmBytes, this.appIdx, this.ac.sampleRate, files, state);
+    const sp = this.ac.createScriptProcessor(1024, 0, 2);
+    sp.onaudioprocess = (e) => {
+      const n = e.outputBuffer.length;
+      const a = this.eng.audio(n);
+      const L = e.outputBuffer.getChannelData(0), R = e.outputBuffer.getChannelData(1);
+      let pk = 0;
+      for (let i = 0; i < n; i++) { L[i] = a[2 * i]; R[i] = a[2 * i + 1]; const m = Math.max(Math.abs(L[i]), Math.abs(R[i])); if (m > pk) pk = m; }
+      this.peak = Math.max(this.peak || 0, pk);
+    };
+    sp.connect(this.ac.destination);
+    this.node = sp;
+    this.mode = "main";
+    this.last = performance.now(); this.sinceSave = 0; this.peak = 0;
+    const loop = (now) => {
+      if (this.closed) return;
+      const dt = Math.min(100, now - this.last); this.last = now;
+      this.eng.tick(Math.max(1, Math.round(dt)));
+      drawFrame(this.eng.frame());
+      setMeter(this.peak); this.peak = 0;
+      this.sinceSave += dt;
+      if (this.sinceSave > 3000) { this.sinceSave = 0; const s = this.eng.state(); if (s !== null) store.setState(this.key, s); }
+      if (this.eng.quit()) { goMenu(); return; }
+      this.raf = requestAnimationFrame(loop);
+    };
+    this.raf = requestAnimationFrame(loop);
+  }
+  btn(name, down) {
+    const i = BTN.indexOf(name);
+    if (i < 0) return;
+    if (this.mode === "worklet") this.node.port.postMessage({ t: "btn", b: i, d: down });
+    else if (this.eng) this.eng.btn(i, down);
+  }
+  async addFiles(list) {
+    if (this.mode === "worklet") this.node.port.postMessage({ t: "files", files: list });
+    else if (this.eng) { await this.eng.addFiles(list); $("playMsg").textContent = "Samples loaded."; }
+  }
+  async stop() {
+    this.closed = true;
+    try {
+      if (this.mode === "worklet") {
+        const s = await new Promise((res) => {
+          const t = setTimeout(() => res(null), 500);
+          const prev = this.node.port.onmessage;
+          this.node.port.onmessage = (e) => { if (e.data.t === "state") { clearTimeout(t); res(e.data.data); } };
+          this.node.port.postMessage({ t: "save" });
+        });
+        if (s) store.setState(this.key, s);
+        this.node.port.postMessage({ t: "stop" });
+      } else if (this.eng) {
+        cancelAnimationFrame(this.raf);
+        const s = this.eng.state(); if (s !== null) store.setState(this.key, s);
+      }
+    } catch (e) {}
+    try { this.node.disconnect(); } catch (e) {}
+    try { await this.ac.close(); } catch (e) {}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// UI
+// ---------------------------------------------------------------------------
+function showCount() {
+  const n = files.length;
+  $("count").textContent = n ? n + " sample" + (n === 1 ? "" : "s") + " loaded" : "No samples added (built-in sounds only)";
+}
+
+function msg(text, err) { const m = $("fileMsg"); m.textContent = text; m.className = "msg" + (err ? " err" : ""); }
+
+async function ingest(fileList) {
+  const added = [];
+  let skipped = 0;
+  for (const f of fileList) {
+    const name = (f.webkitRelativePath || f.name).replace(/\\/g, "/");
+    const base = name.split("/").pop();
+    if (!/\.wav$/i.test(base) || base.startsWith(".")) { skipped++; continue; }
+    try { added.push({ name, data: await f.arrayBuffer() }); } catch (e) { skipped++; }
+  }
+  if (!added.length) { msg(skipped ? "No .wav files found." : "", skipped > 0); return; }
+  files = files.filter(f => !added.some(a => a.name === f.name)).concat(added);
+  const saved = await store.putFiles(added);
+  showCount();
+  msg("Added " + added.length + " file" + (added.length === 1 ? "" : "s") + (skipped ? " (" + skipped + " skipped)" : "") + (saved ? "." : ". Browser storage is unavailable, so they will not be remembered."), !saved);
+  if (session) session.addFiles(added.map(a => ({ name: a.name, data: a.data })));
+}
+
+async function launch(i) {
+  $("menu").hidden = true; $("player").hidden = false;
+  $("title").textContent = APPS[i].name;
+  $("playMsg").textContent = ""; $("playMsg").className = "msg";
+  session = new Session(i);
+  try { await session.start(); }
+  catch (e) { $("playMsg").textContent = "Could not start audio: " + (e && e.message || e); $("playMsg").className = "msg err"; }
+}
+
+async function goMenu() {
+  const s = session; session = null;
+  if (s) await s.stop();
+  $("player").hidden = true; $("menu").hidden = false;
+  ctx.fillStyle = "#0e1116"; ctx.fillRect(0, 0, 640, 480);
+}
+
+function buildMenu() {
+  const wrap = $("cards");
+  APPS.forEach((a, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "card"; b.dataset.app = a.key;
+    b.innerHTML = "<b></b><span></span>";
+    b.firstChild.textContent = a.name; b.lastChild.textContent = a.blurb;
+    b.addEventListener("click", () => launch(i));
+    wrap.appendChild(b);
+  });
+}
+
+function wirePad() {
+  document.querySelectorAll("#pad .k[data-b]").forEach((el) => {
+    const name = el.dataset.b;
+    const down = (e) => { e.preventDefault(); try { el.setPointerCapture(e.pointerId); } catch (_) {} el.classList.add("down"); if (session) session.btn(name, true); };
+    const up = (e) => { e.preventDefault(); el.classList.remove("down"); if (session) session.btn(name, false); };
+    el.addEventListener("pointerdown", down);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+    el.addEventListener("lostpointercapture", (e) => { if (el.classList.contains("down")) up(e); });
+    el.addEventListener("contextmenu", (e) => e.preventDefault());
+  });
+  const KEYS = { ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", a: "A", b: "B", x: "X", y: "Y", q: "L1", w: "R1", e: "L2", r: "R2", o: "Select", p: "Start", u: "Fn" };
+  const held = new Set();
+  const find = (n) => document.querySelector('#pad .k[data-b="' + n + '"]');
+  window.addEventListener("keydown", (e) => {
+    if (!session || e.ctrlKey || e.metaKey || e.altKey) return;
+    const n = KEYS[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+    if (!n) return;
+    e.preventDefault();
+    if (held.has(n)) return;
+    held.add(n); find(n).classList.add("down"); session.btn(n, true);
+  });
+  window.addEventListener("keyup", (e) => {
+    const n = KEYS[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+    if (!n || !held.has(n)) return;
+    held.delete(n); find(n).classList.remove("down"); if (session) session.btn(n, false);
+  });
+  window.addEventListener("blur", () => { held.forEach((n) => { find(n).classList.remove("down"); if (session) session.btn(n, false); }); held.clear(); });
+}
+
+async function main() {
+  buildMenu(); wirePad();
+  try { wasmBytes = b64bytes(WASM_B64); } catch (e) { msg("Could not load the engine.", true); return; }
+  $("addFiles").addEventListener("click", () => $("fileIn").click());
+  $("addFolder").addEventListener("click", () => $("dirIn").click());
+  $("fileIn").addEventListener("change", (e) => { ingest(Array.from(e.target.files)); e.target.value = ""; });
+  $("dirIn").addEventListener("change", (e) => { ingest(Array.from(e.target.files)); e.target.value = ""; });
+  $("clearFiles").addEventListener("click", async () => { files = []; await store.clearFiles(); showCount(); msg("Removed all samples. Restart an app to use built-in sounds only."); });
+  $("back").addEventListener("click", goMenu);
+  files = await store.allFiles();
+  showCount();
+  ctx.fillStyle = "#0e1116"; ctx.fillRect(0, 0, 640, 480);
+}
+main();
+</script>
+</body>
+</html>

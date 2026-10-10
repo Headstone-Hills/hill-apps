@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["hill-core"]
+members = ["hill-core", "hill-device", "hill-web"]
 
 [profile.release]
 opt-level = 3

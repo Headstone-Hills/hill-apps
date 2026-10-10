@@ -192,30 +192,29 @@ fn dpad_modifier_retriggers_held_chord() {
 #[test]
 fn state_persists_settings() {
     use hill_core::host::Host;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    struct Shared(Rc<RefCell<MemHost>>);
+    use std::sync::{Arc, Mutex};
+    struct Shared(Arc<Mutex<MemHost>>);
     impl Host for Shared {
         fn list_samples(&self) -> Vec<String> {
-            self.0.borrow().list_samples()
+            self.0.lock().unwrap().list_samples()
         }
         fn read_sample(&self, n: &str) -> Option<Vec<u8>> {
-            self.0.borrow().read_sample(n)
+            self.0.lock().unwrap().read_sample(n)
         }
         fn load_state(&self, n: &str) -> Option<String> {
-            self.0.borrow().load_state(n)
+            self.0.lock().unwrap().load_state(n)
         }
         fn save_state(&mut self, n: &str, d: &str) {
-            self.0.borrow_mut().save_state(n, d)
+            self.0.lock().unwrap().save_state(n, d)
         }
     }
-    let store = Rc::new(RefCell::new(MemHost::default()));
+    let store = Arc::new(Mutex::new(MemHost::default()));
     let mut a = apps::create("hillchord", Box::new(Shared(store.clone()))).unwrap();
     tap(a.as_mut(), Btn::Up); // minor
     chord(a.as_mut(), &[Btn::Fn], Btn::Up); // root up
     chord(a.as_mut(), &[Btn::Select], Btn::A); // metronome
     chord(a.as_mut(), &[Btn::Start], Btn::Y); // save
-    let text = store.borrow().load_state("hillchord").unwrap();
+    let text = store.lock().unwrap().load_state("hillchord").unwrap();
     assert!(text.contains("minor=1") && text.contains("root=1") && text.contains("click=1"), "{}", text);
     let mut b = apps::create("hillchord", Box::new(Shared(store.clone()))).unwrap();
     let out = run(b.as_mut(), 1.2);
@@ -225,9 +224,8 @@ fn state_persists_settings() {
 #[test]
 fn favorites_toggle_in_library() {
     use hill_core::host::Host;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    struct Shared(Rc<RefCell<MemHost>>);
+    use std::sync::{Arc, Mutex};
+    struct Shared(Arc<Mutex<MemHost>>);
     impl Host for Shared {
         fn list_samples(&self) -> Vec<String> {
             vec![]
@@ -236,19 +234,19 @@ fn favorites_toggle_in_library() {
             None
         }
         fn load_state(&self, n: &str) -> Option<String> {
-            self.0.borrow().load_state(n)
+            self.0.lock().unwrap().load_state(n)
         }
         fn save_state(&mut self, n: &str, d: &str) {
-            self.0.borrow_mut().save_state(n, d)
+            self.0.lock().unwrap().save_state(n, d)
         }
     }
-    let store = Rc::new(RefCell::new(MemHost::default()));
+    let store = Arc::new(Mutex::new(MemHost::default()));
     let mut a = apps::create("hillchord", Box::new(Shared(store.clone()))).unwrap();
     tap(a.as_mut(), Btn::Start);
     tap(a.as_mut(), Btn::Y); // star the current (Pluck)
     tap(a.as_mut(), Btn::B);
     a.save();
-    let text = store.borrow().load_state("hillchord").unwrap();
+    let text = store.lock().unwrap().load_state("hillchord").unwrap();
     assert!(text.contains("favs=builtin:Pluck"), "{}", text);
 }
 

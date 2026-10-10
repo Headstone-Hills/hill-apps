@@ -874,7 +874,7 @@ impl GridApp {
             if !l3.is_empty() {
                 l3.push_str("   ");
             }
-            l3.push_str(&format!("loop {} x{:.2}", clip(&self.lp.file.rsplit('/').next().unwrap_or(""), 14), self.lp.ratio(self.tr.bpm)));
+            l3.push_str(&format!("loop {} x{:.2}", clip(self.lp.file.rsplit('/').next().unwrap_or(""), 14), self.lp.ratio(self.tr.bpm)));
         }
         fb.text(14, y + 52, &l3, 1, DIM);
         let hint = "A step  Y mute  X xpose  START play  SEL tap  FN+SEL help";

@@ -319,6 +319,7 @@ impl ChordApp {
     }
 
     /// A modifier changed while buttons are held: re-voice them.
+    #[allow(clippy::needless_range_loop)]
     fn revoice(&mut self) {
         for f in 0..4 {
             if !self.face[f] {

@@ -2,31 +2,30 @@ use hill_core::host::Host;
 use hill_core::wav::encode16;
 use hill_core::{apps, App, Btn, MemHost};
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
-struct Shared(Rc<RefCell<MemHost>>);
+struct Shared(Arc<Mutex<MemHost>>);
 impl Host for Shared {
     fn list_samples(&self) -> Vec<String> {
-        self.0.borrow().list_samples()
+        self.0.lock().unwrap().list_samples()
     }
     fn read_sample(&self, n: &str) -> Option<Vec<u8>> {
-        self.0.borrow().read_sample(n)
+        self.0.lock().unwrap().read_sample(n)
     }
     fn load_state(&self, n: &str) -> Option<String> {
-        self.0.borrow().load_state(n)
+        self.0.lock().unwrap().load_state(n)
     }
     fn save_state(&mut self, n: &str, d: &str) {
-        self.0.borrow_mut().save_state(n, d)
+        self.0.lock().unwrap().save_state(n, d)
     }
 }
 
-fn shared() -> Rc<RefCell<MemHost>> {
-    Rc::new(RefCell::new(MemHost::default()))
+fn shared() -> Arc<Mutex<MemHost>> {
+    Arc::new(Mutex::new(MemHost::default()))
 }
 
-fn saved(store: &Rc<RefCell<MemHost>>, app: &str) -> hill_core::kv::Kv {
-    hill_core::kv::Kv::parse(&store.borrow().load_state(app).expect("state saved"))
+fn saved(store: &Arc<Mutex<MemHost>>, app: &str) -> hill_core::kv::Kv {
+    hill_core::kv::Kv::parse(&store.lock().unwrap().load_state(app).expect("state saved"))
 }
 
 fn tap(a: &mut dyn App, b: Btn) {
@@ -145,7 +144,7 @@ fn state_roundtrips_through_host() {
     tap(a.as_mut(), Btn::Right);
     tap(a.as_mut(), Btn::A);
     chord(a.as_mut(), &[Btn::Start], Btn::Y); // save
-    let saved = store.borrow().load_state("hillband").unwrap();
+    let saved = store.lock().unwrap().load_state("hillband").unwrap();
     assert!(saved.contains("p0.t0=640064"), "{}", saved);
     // new instance restores the pattern
     let mut b = apps::create("hillband", Box::new(Shared(store.clone()))).unwrap();

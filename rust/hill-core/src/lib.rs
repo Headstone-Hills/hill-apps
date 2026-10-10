@@ -29,7 +29,7 @@ pub use input::Btn;
 pub const SAMPLE_RATE: f32 = 44100.0;
 
 /// The interface every Hill app presents to a runner.
-pub trait App {
+pub trait App: Send {
     fn name(&self) -> &'static str;
     /// A button went down or up.
     fn event(&mut self, b: Btn, down: bool);

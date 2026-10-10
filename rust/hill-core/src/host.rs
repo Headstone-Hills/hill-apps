@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 /// What the platform provides to an app: the sample files it can see and a
 /// place to keep state.
-pub trait Host {
+pub trait Host: Send {
     /// Relative sample paths (forward slashes), e.g. `Kit/Kick/kick1.wav`.
     fn list_samples(&self) -> Vec<String>;
     fn read_sample(&self, name: &str) -> Option<Vec<u8>>;

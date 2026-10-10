@@ -18,6 +18,11 @@ hillsequencer/   8-track sequencer
 hillband/        melodic + drum hybrid sequencer
 ```
 
+## Rust edition
+
+`rust/` holds lightweight Rust rewrites of all four apps (same controls, fewer features) that run on the
+RG35XXSP, the R36S and in the browser. See [rust/README.md](rust/README.md).
+
 ## Samples
 
 Sample audio is not committed to this repo (see `.gitignore`) — it's distributed
