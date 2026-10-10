@@ -9,6 +9,7 @@ static CONFIG: GridConfig = GridConfig {
     key_overlay: false,
     multiselect: false,
     drum_filter: true,
+    decay: false,
     help: &[
         ("PLAYBACK", ""),
         ("START", "play / pause"),

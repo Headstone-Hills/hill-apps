@@ -37,6 +37,10 @@ pub struct Mixer {
     pub max_secs: Option<f32>,
     /// One beat in seconds. How long a sound plays, in beats, picks its fade (`fade_secs`).
     pub beat_secs: Option<f32>,
+    /// Sequencer sounds longer than a beat: full level for the first beat, then a smooth
+    /// decay to silence at the end of the sound (or the `max_secs` cap, whichever is first).
+    /// The decay is spread over that remaining time, so longer samples decay more slowly.
+    pub decay: bool,
 }
 
 /// Fade out by how long the sound plays (`beats` at the current tempo), however it
@@ -80,6 +84,7 @@ impl Mixer {
             release_secs: 0.08,
             max_secs: None,
             beat_secs: None,
+            decay: false,
         }
     }
 
@@ -184,9 +189,19 @@ impl Mixer {
         let frames = out.len() / 2;
         let master = self.master;
         let max_frames = self.max_secs.map(|s| (s * self.rate) as u64);
+        let beat_frames = self.beat_secs.map(|b| (b * self.rate) as f64);
         for v in self.voices.iter_mut() {
             let Some(s) = v.sample.as_ref() else { continue };
             let n = s.frames();
+            // (frames at full level, frames the decay lasts) for a sound longer than a beat
+            let decay = match (self.decay, beat_frames) {
+                (true, Some(b)) => {
+                    let len = n as f64 / v.step;
+                    let end = max_frames.map_or(len, |m| len.min(m as f64));
+                    (len > b && end > b).then_some((b, end - b))
+                }
+                _ => None,
+            };
             // a voice that sounds longer than a beat fades out at its own end, over the
             // same length as its release (the fade is in source frames: step per output frame)
             let tail = if v.tail && v.rel > 0.0 { (1.0 / v.rel) as f64 * v.step } else { 0.0 };
@@ -204,6 +219,12 @@ impl Mixer {
                 let l = l0 + (l1 - l0) * fr;
                 let r = r0 + (r1 - r0) * fr;
                 let mut g = v.gain * smooth(v.env) * master;
+                if let Some((full, span)) = decay {
+                    let t = v.played as f64;
+                    if t > full {
+                        g *= smooth(1.0 - ((t - full) / span) as f32);
+                    }
+                }
                 if tail > 0.0 {
                     let left = (n - 1) as f64 - pos;
                     if left < tail {
@@ -288,6 +309,42 @@ mod tests {
                 assert!((at(frames - f / 2) - 0.25).abs() < 0.04, "{}s: S-curve midpoint {}", secs, at(frames - f / 2));
             }
         }
+    }
+
+    #[test]
+    fn long_sounds_decay_smoothly_after_the_first_beat_over_their_length() {
+        let mk = |secs: f32| Arc::new(Sample::new(vec![0.5; 2 * (secs * 1000.0) as usize], 1000));
+        let run = |secs: f32, cap: Option<f32>| {
+            let mut m = Mixer::new(1000.0);
+            m.beat_secs = Some(0.5);
+            m.max_secs = cap;
+            m.decay = true;
+            m.master = 1.0;
+            m.trigger(&mk(secs), 1.0, 1.0, 1, 0);
+            let mut out = vec![0.0; 2 * (secs * 1000.0) as usize];
+            m.render(&mut out);
+            out.chunks(2).map(|p| p[0]).collect::<Vec<f32>>()
+        };
+        // 4 s sound, 0.5 s beat: full level to 0.5 s, then an S-curve down to silence at 4 s
+        let a = run(4.0, None);
+        assert!((a[400] - 0.5).abs() < 1e-3, "full in the first beat");
+        assert!((a[500] - 0.5).abs() < 0.01, "decay starts after the first beat");
+        let mid = 500 + 3500 / 2;
+        assert!((a[mid] - 0.25).abs() < 0.02, "halfway through the decay: {}", a[mid]);
+        assert!(a[3990] < 0.01, "silent at the end: {}", a[3990]);
+        assert!(a[500..].windows(2).all(|w| w[1] <= w[0] + 1e-6), "never rises again");
+        let biggest_step = a[500..].windows(2).map(|w| (w[0] - w[1]).abs()).fold(0.0, f32::max);
+        assert!(biggest_step < 0.002, "no jumps in level: {}", biggest_step);
+        // an 8 s sound decays over a longer time: at 4 s it is still well above silence
+        let b = run(8.0, None);
+        assert!((b[500 + 7500 / 2] - 0.25).abs() < 0.02, "the midpoint moves out with the length");
+        assert!(b[2500] > a[2500], "longer sample, slower decay");
+        // a 10 s sound with a 4 s cap decays to silence by the cap, not by its own end
+        let c = run(10.0, Some(4.0));
+        assert!(c[3900] < 0.02 && c[500] > 0.45, "cap sets the end of the decay: {}", c[3900]);
+        // a sound of one beat or less is untouched
+        let d = run(0.4, None);
+        assert!((d[390] - 0.5).abs() < 1e-3);
     }
 
     #[test]

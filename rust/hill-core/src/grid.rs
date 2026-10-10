@@ -33,6 +33,8 @@ pub struct GridConfig {
     pub multiselect: bool,
     /// Pre-filter the browser to drum sounds when assigning a drum track.
     pub drum_filter: bool,
+    /// Sounds longer than a beat decay smoothly after the first beat (see `Mixer::decay`).
+    pub decay: bool,
     pub help: &'static [(&'static str, &'static str)],
 }
 
@@ -973,6 +975,7 @@ impl App for GridApp {
         self.toast.tick(dt);
         self.mixer.max_secs = Some(4.0 * 4.0 * 60.0 / self.tr.bpm.max(1.0)); // 4 measures
         self.mixer.beat_secs = Some(60.0 / self.tr.bpm.max(1.0));
+        self.mixer.decay = self.cfg.decay;
         if let Some((ti, left)) = self.preview {
             if left <= dt {
                 self.mixer.release_quick(ti as u32);
