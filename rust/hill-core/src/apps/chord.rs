@@ -38,12 +38,12 @@ const HELP: &[(&str, &str)] = &[
     ("NOTE MODE", ""),
     ("D-pad", "notes 1-4: up, right, down, left"),
     ("X / A / B / Y", "notes 5 / 6 / 7 / 8 (clockwise, after the D-pad)"),
-    ("A+B / A+X", "octave down / up"),
+    ("L1 / R1", "octave down / up (instead of instrument, in note mode)"),
     ("hold a button", "note sustains; release stops it"),
     ("D-pad (chord mode, chord held)", "L sus2, R sus4, D add9, U 7th"),
     ("D-pad Up (chord mode, alone)", "major / minor"),
     ("D-pad L/R (chord mode, alone)", "BPM - / + (hold repeats)"),
-    ("L1 / R1", "previous / next instrument"),
+    ("L1 / R1 (chord mode)", "previous / next instrument"),
     ("START", "instrument library (Y star, X favorites)"),
     ("FN+Left/Right", "octave down / up"),
     ("FN+Up/Down", "key root up / down"),
@@ -396,22 +396,6 @@ impl ChordApp {
         }
     }
 
-    /// Note mode: A+B shifts the octave down, A+X up (nothing sounds for the second
-    /// button). Returns true when the press was an octave shift.
-    fn note_octave_combo(&mut self, b: Btn) -> bool {
-        let h = |x: Btn| self.held.is(x);
-        let delta = match b {
-            Btn::B if h(Btn::A) => -1,
-            Btn::A if h(Btn::B) => -1,
-            Btn::X if h(Btn::A) => 1,
-            Btn::A if h(Btn::X) => 1,
-            _ => return false,
-        };
-        self.octave = (self.octave + delta).clamp(1, 6);
-        self.toast.say(&format!("Octave {}", self.octave));
-        true
-    }
-
     /// Switch between chord and note mode, re-voicing whatever is held.
     fn set_mode(&mut self, m: Mode) {
         self.mode = m;
@@ -717,15 +701,19 @@ impl ChordApp {
                         }
                     }
                 } else if !st && !fnh {
-                    if self.mode == Mode::Note && self.note_octave_combo(b) {
-                        return;
-                    }
                     self.face_on(f);
                 }
             }
             Btn::L1 | Btn::R1 => {
                 if !st && !se {
-                    self.step_instrument(if b == Btn::L1 { -1 } else { 1 });
+                    if self.mode == Mode::Note {
+                        // note mode: the shoulder buttons shift the octave, leaving both
+                        // hands free to play (held notes keep sounding at their pitch)
+                        self.octave = (self.octave + if b == Btn::L1 { -1 } else { 1 }).clamp(1, 6);
+                        self.toast.say(&format!("Octave {}", self.octave));
+                    } else {
+                        self.step_instrument(if b == Btn::L1 { -1 } else { 1 });
+                    }
                 }
             }
             Btn::R2 => {
@@ -1017,7 +1005,7 @@ impl App for ChordApp {
         } else if self.mode == Mode::Note {
             let n = |slot: usize| note_name(clamp_note(self.degree_note(Self::note_degree(slot))));
             fb.text_center(320, 200, &format!("D-pad  up {}  right {}  down {}  left {}", n(4), n(5), n(6), n(7)), 1, DIM);
-            fb.text_center(320, 218, "A+B octave down   A+X octave up   FN+SEL help", 1, DIM);
+            fb.text_center(320, 218, "L1 octave down   R1 octave up   FN+SEL help", 1, DIM);
         } else {
             fb.text_center(320, 206, "A B X Y   A+B ii   A+X iii   B+Y vii   FN+SEL help", 1, DIM);
         }
@@ -1026,7 +1014,8 @@ impl App for ChordApp {
         if let Some(m) = self.modifier.filter(|_| self.face.iter().any(|f| *f)) {
             fb.text(20, 340, &format!("mod: {}", Self::mod_suffix(Some(m))), 2, DRUM);
         }
-        fb.text(20, 440, "L2 loop  START library  L1/R1 sound  SEL+B arp  SEL+A click", 1, DIM);
+        let l1r1 = if self.mode == Mode::Note { "octave" } else { "sound" };
+        fb.text(20, 440, &format!("L2 loop  START library  L1/R1 {}  SEL+B arp  SEL+A click", l1r1), 1, DIM);
         self.toast.draw(fb);
         if self.ss && self.held.is(Btn::Start) && self.held.is(Btn::Select) {
             quit_bar(fb, self.ss_ms);
@@ -1193,16 +1182,27 @@ mod tests {
         assert_eq!(a.face_notes[0], vec![57]);
         a.event(Btn::A, false);
         a.event(Btn::Up, false);
-        // octave: A+B down, A+X up; the second button plays nothing
+        // face buttons now combine freely: A+B are two notes, not an octave shift
         a.event(Btn::A, true);
         a.event(Btn::B, true);
+        assert_eq!(a.octave, 3);
+        assert_eq!((a.face_notes[0].clone(), a.face_notes[1].clone()), (vec![57], vec![59]));
+        // L1 / R1 shift the octave; held notes keep their pitch, new ones follow it
+        a.event(Btn::L1, true);
+        a.event(Btn::L1, false);
         assert_eq!(a.octave, 2);
-        assert!(a.face_notes[1].is_empty(), "B made no note");
-        a.event(Btn::B, false);
+        assert_eq!(a.face_notes[0], vec![57], "a held note keeps sounding");
         a.event(Btn::X, true);
-        assert_eq!(a.octave, 3, "A+X is octave up");
+        assert_eq!(a.face_notes[2], vec![43], "a new note is an octave lower (G2)");
         a.event(Btn::X, false);
+        a.event(Btn::R1, true);
+        a.event(Btn::R1, false);
+        a.event(Btn::R1, true);
+        a.event(Btn::R1, false);
+        assert_eq!(a.octave, 4);
+        a.event(Btn::B, false);
         a.event(Btn::A, false);
+        a.octave = 3;
         // R2 again: back to chord mode, where the D-pad is not a note
         a.event(Btn::R2, true);
         a.event(Btn::R2, false);
