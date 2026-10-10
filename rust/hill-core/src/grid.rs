@@ -340,10 +340,16 @@ impl GridApp {
         self.pattern = k.usize("pattern").unwrap_or(0).min(PATTERNS - 1);
         self.cur_track = k.usize("cur_track").unwrap_or(0).min(self.nt() - 1);
         self.cur_step = k.usize("cur_step").unwrap_or(0).min(STEPS - 1);
+        // tracks often share one sound: load each distinct sound once and share it
+        let mut loaded: std::collections::HashMap<String, Option<Instrument>> = std::collections::HashMap::new();
         for i in 0..self.nt() {
             if let Some(key) = k.get(&format!("t{}.inst", i)) {
                 if let Some(e) = library::find_key(&self.catalog, key).cloned() {
-                    if let Some(inst) = library::load_entry(self.host.as_ref(), &e) {
+                    let inst = loaded
+                        .entry(e.key.clone())
+                        .or_insert_with(|| library::load_entry(self.host.as_ref(), &e, library::BUDGET_GRID))
+                        .clone();
+                    if let Some(inst) = inst {
                         self.tracks[i].inst = Some(inst);
                         self.tracks[i].inst_key = e.key.clone();
                     }
@@ -497,7 +503,7 @@ impl GridApp {
                 kind: library::Kind::Files(vec![(path.clone(), None)]),
                 pitched: false,
             };
-            if let Some(inst) = library::load_entry(self.host.as_ref(), &one) {
+            if let Some(inst) = library::load_entry(self.host.as_ref(), &one, library::BUDGET_GRID) {
                 let t = &mut self.tracks[ti];
                 t.inst = Some(inst);
                 t.inst_key = path.clone();
@@ -518,7 +524,7 @@ impl GridApp {
             self.assign_kit(files);
             return;
         }
-        match library::load_entry(self.host.as_ref(), e) {
+        match library::load_entry(self.host.as_ref(), e, library::BUDGET_GRID) {
             Some(inst) => {
                 let name = inst.name.clone();
                 for &ti in targets {

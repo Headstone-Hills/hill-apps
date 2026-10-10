@@ -148,14 +148,18 @@ pub fn build_catalog(paths: &[String]) -> Vec<Entry> {
     // group by (dir, stem-without-pitch)
     type Group = (String, String, Vec<(String, Option<u8>)>);
     let mut groups: Vec<Group> = Vec::new();
+    let mut at: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
     for p in files {
         let (dir, file) = split_path(p);
         let stem = strip_ext(file);
         let g = instr_stem(stem);
         let pitch = parse_pitch(stem);
-        match groups.iter_mut().find(|(d, s, _)| d == dir && *s == g) {
-            Some((_, _, v)) => v.push((p.clone(), pitch)),
-            None => groups.push((dir.to_string(), g, vec![(p.clone(), pitch)])),
+        match at.get(&(dir.to_string(), g.clone())) {
+            Some(&i) => groups[i].2.push((p.clone(), pitch)),
+            None => {
+                at.insert((dir.to_string(), g.clone()), groups.len());
+                groups.push((dir.to_string(), g, vec![(p.clone(), pitch)]));
+            }
         }
     }
 
@@ -300,14 +304,50 @@ pub fn kit_entries(paths: &[String]) -> Vec<Entry> {
         .collect()
 }
 
+/// Decoded-audio budgets (bytes) for `load_entry`. The handheld has under 1 GB of
+/// RAM; a sequencer holds a sound per track, so each one must stay small.
+pub const BUDGET_GRID: usize = 12 << 20;
+pub const BUDGET_CHORD: usize = 80 << 20;
+
+/// Which files of a multisample to load: all if they fit `budget` once decoded
+/// (about twice the file size, as 16-bit becomes f32), otherwise an even spread
+/// across the range, always including the lowest and highest. Pitch-shifting
+/// fills the gaps.
+fn choose_files(files: &[(String, Option<u8>)], sizes: &[u64], budget: usize) -> Vec<usize> {
+    let n = files.len();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| files[i].1.unwrap_or(60));
+    let est = |idx: &[usize]| idx.iter().map(|&i| sizes[i] as usize * 2).sum::<usize>();
+    if n <= 1 || est(&order) <= budget {
+        return order;
+    }
+    for k in (2..n).rev() {
+        let mut pick: Vec<usize> = (0..k).map(|j| order[j * (n - 1) / (k - 1)]).collect();
+        pick.dedup();
+        if est(&pick) <= budget {
+            return pick;
+        }
+    }
+    vec![order[(n - 1) / 2]]
+}
+
 /// Load an entry's audio. Unpitched single files get root C4 (midi 60).
-pub fn load_entry(host: &dyn Host, e: &Entry) -> Option<Instrument> {
+/// Big multisamples are thinned to fit `budget` (see `choose_files`).
+pub fn load_entry(host: &dyn Host, e: &Entry, budget: usize) -> Option<Instrument> {
     match &e.kind {
         Kind::Builtin(i) => synth::builtin(*i),
         Kind::Kit(_) => None, // applied per track by the app, one file each
         Kind::Files(files) => {
+            let sizes: Vec<Option<u64>> = files.iter().map(|(p, _)| host.sample_len(p)).collect();
+            let pick: Vec<usize> = if sizes.iter().all(|s| s.is_some()) {
+                let known: Vec<u64> = sizes.iter().map(|s| s.unwrap_or(0)).collect();
+                choose_files(files, &known, budget)
+            } else {
+                (0..files.len()).collect()
+            };
             let mut samples = Vec::new();
-            for (path, pitch) in files {
+            for i in pick {
+                let (path, pitch) = &files[i];
                 if let Some(s) = host.read_sample(path).as_deref().and_then(wav::parse) {
                     samples.push((pitch.unwrap_or(60), s));
                 }
@@ -427,6 +467,20 @@ mod tests {
         let n: Vec<_> = f.iter().take(4).map(|x| x.rsplit('/').next().unwrap()).collect();
         assert_eq!(n, ["BD 909 A 01.wav", "Rim 909 01.wav", "CH 909 01.wav", "Tom 909 Lo.wav"]);
         assert!(!f.iter().any(|x| x.contains("Chime")), "ch is an exact word, not a prefix");
+    }
+
+    #[test]
+    fn big_multisamples_are_thinned_to_the_budget() {
+        let files: Vec<(String, Option<u8>)> = (0..39).map(|i| (format!("f{}.wav", i), Some(36 + i as u8))).collect();
+        let sizes = vec![1_000_000u64; 39]; // ~2 MB decoded each
+        let pick = choose_files(&files, &sizes, 12 << 20);
+        assert!(pick.len() >= 2 && pick.len() <= 6, "got {}", pick.len());
+        assert_eq!(pick.first(), Some(&0));
+        assert_eq!(pick.last(), Some(&38));
+        // everything fits: everything loads
+        assert_eq!(choose_files(&files, &sizes, 1 << 30).len(), 39);
+        // a single huge file still loads
+        assert_eq!(choose_files(&files[..1], &[900_000_000], 1 << 20).len(), 1);
     }
 
     #[test]

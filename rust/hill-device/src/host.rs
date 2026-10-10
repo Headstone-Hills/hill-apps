@@ -50,7 +50,9 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
             continue; // hidden files and macOS ._ sidecars
         }
         let path = e.path();
-        if path.is_dir() {
+        // file_type() comes with the directory read; is_dir() would stat every file
+        let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or_else(|_| path.is_dir());
+        if is_dir {
             walk(root, &path, depth + 1, out);
         } else if name.to_lowercase().ends_with(".wav") {
             if let Ok(rel) = path.strip_prefix(root) {
@@ -63,9 +65,11 @@ fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<String>) {
 impl Host for FsHost {
     fn list_samples(&self) -> Vec<String> {
         let mut out = Vec::new();
+        let t0 = std::time::Instant::now();
         if let Some(root) = &self.sample_root {
             walk(root, root, 0, &mut out);
         }
+        eprintln!("[hill] scanned {} wavs in {} ms", out.len(), t0.elapsed().as_millis());
         out
     }
 
@@ -73,7 +77,17 @@ impl Host for FsHost {
         if name.contains("..") {
             return None;
         }
-        fs::read(self.sample_root.as_ref()?.join(name)).ok()
+        let t0 = std::time::Instant::now();
+        let r = fs::read(self.sample_root.as_ref()?.join(name)).ok();
+        let ms = t0.elapsed().as_millis();
+        if ms >= 150 {
+            eprintln!("[hill] slow read {} ms: {}", ms, name);
+        }
+        r
+    }
+
+    fn sample_len(&self, name: &str) -> Option<u64> {
+        fs::metadata(self.sample_root.as_ref()?.join(name)).ok().map(|m| m.len())
     }
 
     fn load_state(&self, app: &str) -> Option<String> {

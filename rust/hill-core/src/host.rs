@@ -6,6 +6,10 @@ pub trait Host: Send {
     /// Relative sample paths (forward slashes), e.g. `Kit/Kick/kick1.wav`.
     fn list_samples(&self) -> Vec<String>;
     fn read_sample(&self, name: &str) -> Option<Vec<u8>>;
+    /// File size in bytes, if cheap to know. Lets big instruments load within a memory budget.
+    fn sample_len(&self, _name: &str) -> Option<u64> {
+        None
+    }
     fn load_state(&self, app: &str) -> Option<String>;
     fn save_state(&mut self, app: &str, data: &str);
 }
@@ -25,6 +29,9 @@ impl Host for MemHost {
     }
     fn read_sample(&self, name: &str) -> Option<Vec<u8>> {
         self.samples.get(name).cloned()
+    }
+    fn sample_len(&self, name: &str) -> Option<u64> {
+        self.samples.get(name).map(|v| v.len() as u64)
     }
     fn load_state(&self, app: &str) -> Option<String> {
         self.state.get(app).cloned()

@@ -473,7 +473,7 @@ impl ChordApp {
     // ---- instruments -----------------------------------------------------
 
     fn load_entry(&mut self, e: &Entry) -> bool {
-        match library::load_entry(self.host.as_ref(), e) {
+        match library::load_entry(self.host.as_ref(), e, library::BUDGET_CHORD) {
             Some(i) => {
                 self.inst = Some(i);
                 self.inst_key = e.key.clone();

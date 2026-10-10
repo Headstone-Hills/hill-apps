@@ -381,3 +381,54 @@ fn setting_a_step_on_a_long_sound_does_not_drone() {
     run(a.as_mut(), 0.6); // 450 ms cut plus the release fade
     assert!(peak(&run(a.as_mut(), 1.0)) < 1e-4, "audition note must not keep droning");
 }
+
+/// Counts how many sample files the app reads.
+struct Counting(Arc<Mutex<MemHost>>, Arc<Mutex<usize>>);
+impl Host for Counting {
+    fn list_samples(&self) -> Vec<String> {
+        self.0.lock().unwrap().list_samples()
+    }
+    fn read_sample(&self, n: &str) -> Option<Vec<u8>> {
+        *self.1.lock().unwrap() += 1;
+        self.0.lock().unwrap().read_sample(n)
+    }
+    fn sample_len(&self, n: &str) -> Option<u64> {
+        self.0.lock().unwrap().sample_len(n)
+    }
+    fn load_state(&self, n: &str) -> Option<String> {
+        self.0.lock().unwrap().load_state(n)
+    }
+    fn save_state(&mut self, n: &str, d: &str) {
+        self.0.lock().unwrap().save_state(n, d)
+    }
+}
+
+#[test]
+fn tracks_sharing_a_sound_load_it_once() {
+    let wav = encode16(&(0..2000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect::<Vec<_>>(), 1, 44100);
+    let store = shared();
+    for n in ["C3", "C4", "C5"] {
+        store.lock().unwrap().samples.insert(format!("Keys/Piano/Piano_{}.wav", n), wav.clone());
+    }
+    let reads = Arc::new(Mutex::new(0usize));
+    let mut a = apps::create("hillsequencer", Box::new(Counting(store.clone(), reads.clone()))).unwrap();
+    chord(a.as_mut(), &[Btn::Start], Btn::R2); // all tracks
+    chord(a.as_mut(), &[Btn::Start], Btn::B);
+    tap(a.as_mut(), Btn::B);
+    tap(a.as_mut(), Btn::Down);
+    tap(a.as_mut(), Btn::A); // enter Keys... (folder chain)
+    tap(a.as_mut(), Btn::A);
+    a.save();
+    let state = saved(&store, "hillsequencer");
+    assert_eq!(state.get("t7.inst"), Some("Keys/Piano/Piano*"));
+    let st = store.lock().unwrap().load_state("hillsequencer").unwrap();
+    let mut b = apps::create("hillsequencer", Box::new(Counting(store.clone(), reads.clone()))).unwrap();
+    let before = *reads.lock().unwrap();
+    // restart with the saved state: 8 tracks, one sound
+    store.lock().unwrap().state.insert("hillsequencer".into(), st);
+    drop(b);
+    b = apps::create("hillsequencer", Box::new(Counting(store.clone(), reads.clone()))).unwrap();
+    let after = *reads.lock().unwrap();
+    assert_eq!(after - before, 3, "3 files read once, not 8 times");
+    let _ = b;
+}
