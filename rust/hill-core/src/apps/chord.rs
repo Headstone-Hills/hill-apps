@@ -37,8 +37,7 @@ const HELP: &[(&str, &str)] = &[
     ("SELECT+X", "chord mode / note mode (same)"),
     ("NOTE MODE", ""),
     ("D-pad", "notes 1-4: up, right, down, left"),
-    ("A / B / X", "notes 5 / 6 / 7"),
-    ("Y", "note 1, an octave up"),
+    ("X / A / B / Y", "notes 5 / 6 / 7 / 8 (clockwise, after the D-pad)"),
     ("A+B / A+X", "octave down / up"),
     ("hold a button", "note sustains; release stops it"),
     ("D-pad (chord mode, chord held)", "L sus2, R sus4, D add9, U 7th"),
@@ -258,10 +257,12 @@ impl ChordApp {
         self.root_midi() + self.scale()[d % 7] + 12 * (d / 7) as i32
     }
 
-    /// Note mode (the original layout): D-pad Up/Right/Down/Left = scale notes 1-4,
-    /// A/B/X = notes 5-7, Y = the tonic an octave up. Returns the 0-based degree.
+    /// Note mode: the notes climb clockwise round the D-pad (Up, Right, Down, Left =
+    /// 1-4) and on round the face buttons (X top, A right, B bottom, Y left = 5-8,
+    /// where 8 is the tonic an octave up). Slots are A B X Y Up Right Down Left;
+    /// returns the 0-based scale degree.
     fn note_degree(slot: usize) -> usize {
-        [4, 5, 6, 7, 0, 1, 2, 3][slot.min(7)]
+        [5, 6, 4, 7, 0, 1, 2, 3][slot.min(7)]
     }
 
     /// Chord mode: the chord degree for a set of held face buttons (the original
@@ -978,8 +979,10 @@ impl App for ChordApp {
 
         // four chord tiles
         let roman = if self.minor { &ROMAN_MIN } else { &ROMAN_MAJ };
-        for f in 0..4 {
-            let x = 20 + f as i32 * 152;
+        // note mode lists the buttons clockwise (X A B Y) so the numbers climb 5 6 7 8
+        let order: [usize; 4] = if self.mode == Mode::Note { [2, 0, 1, 3] } else { [0, 1, 2, 3] };
+        for (pos, &f) in order.iter().enumerate() {
+            let x = 20 + pos as i32 * 152;
             let held = self.face[f];
             let col = FACE_COLS[f];
             fb.rect(x, 80, 140, 110, if held { scale(col, 0.55) } else { PANEL });
@@ -1178,16 +1181,16 @@ mod tests {
         assert_eq!(sound(&mut a, Btn::Right, 5), vec![50]);
         assert_eq!(sound(&mut a, Btn::Down, 6), vec![52]);
         assert_eq!(sound(&mut a, Btn::Left, 7), vec![53]);
-        // A/B/X = notes 5/6/7 = G A B, Y = the tonic an octave up
-        assert_eq!(sound(&mut a, Btn::A, 0), vec![55]);
-        assert_eq!(sound(&mut a, Btn::B, 1), vec![57]);
-        assert_eq!(sound(&mut a, Btn::X, 2), vec![59]);
+        // clockwise on from the D-pad: X=5 G, A=6 A, B=7 B, Y=8 the tonic an octave up
+        assert_eq!(sound(&mut a, Btn::X, 2), vec![55]);
+        assert_eq!(sound(&mut a, Btn::A, 0), vec![57]);
+        assert_eq!(sound(&mut a, Btn::B, 1), vec![59]);
         assert_eq!(sound(&mut a, Btn::Y, 3), vec![60]);
         // notes can be held together (a drone plus a melody)
         a.event(Btn::Up, true);
         a.event(Btn::A, true);
         assert_eq!(a.face_notes[4], vec![48]);
-        assert_eq!(a.face_notes[0], vec![55]);
+        assert_eq!(a.face_notes[0], vec![57]);
         a.event(Btn::A, false);
         a.event(Btn::Up, false);
         // octave: A+B down, A+X up; the second button plays nothing
@@ -1227,7 +1230,7 @@ mod tests {
         assert_eq!(a.chord_label(3, None), "Am");
         assert_eq!(a.chord_label(0, Some(Btn::Up)), "C7");
         a.mode = Mode::Note;
-        assert_eq!(a.chord_label(0, None), "G3"); // note mode: A is note 5
+        assert_eq!(a.chord_label(0, None), "A3"); // note mode: A is note 6
     }
 
     #[test]
