@@ -241,7 +241,9 @@ pub fn mapping_wizard() -> Result<(), String> {
                 Event::Quit { .. } | Event::KeyDown { keycode: Some(Keycode::Escape), .. } => break 'main,
                 Event::JoyButtonDown { button_idx, .. } => {
                     last_seen = format!("button {}", button_idx);
-                    if stick_ask {
+                    if finished {
+                        break 'main; // any button closes the "Saved" screen
+                    } else if stick_ask {
                         // A (just mapped) = yes, anything else = no
                         let a = done.iter().find(|(b, _)| *b == Btn::A).map(|(_, i)| *i);
                         stick = Some(button_idx) == a;
@@ -285,7 +287,7 @@ pub fn mapping_wizard() -> Result<(), String> {
             fbuf.text(20, 160, "Saved buttons.cfg", 3, fb::WHITE);
             fbuf.text(20, 220, &fb::clip(&path.to_string_lossy(), 50), 1, fb::DIM);
             fbuf.text(20, 260, &format!("D-pad: {}   left stick as D-pad: {}", if dpad_is_hat { "hat" } else { "buttons" }, if stick { "yes" } else { "no" }), 1, fb::TEXT);
-            fbuf.text(20, 300, "Close this and start an app. (ESC / power to exit)", 1, fb::DIM);
+            fbuf.text(20, 300, "Press any button to close.", 1, fb::DIM);
         } else if stick_ask {
             fbuf.text(20, 160, "Use the left stick as a", 3, fb::WHITE);
             fbuf.text(20, 200, "second D-pad?", 3, fb::WHITE);
