@@ -37,8 +37,9 @@ pub struct Mixer {
     pub max_secs: Option<f32>,
     /// One beat in seconds. How long a sound plays, in beats, picks its fade (`fade_secs`).
     pub beat_secs: Option<f32>,
-    /// Sequencer sounds longer than a beat: full level for the first beat, then a smooth
-    /// decay to silence at the end of the sound (or the `max_secs` cap, whichever is first).
+    /// Sequencer sounds longer than a beat: full level for the first beat, then a decay
+    /// to silence at the end of the sound (or the `max_secs` cap, whichever is first).
+    /// It falls steeply at first and eases out (`(1 - x)^3`), with no jumps in level.
     /// The decay is spread over that remaining time, so longer samples decay more slowly.
     pub decay: bool,
 }
@@ -222,7 +223,8 @@ impl Mixer {
                 if let Some((full, span)) = decay {
                     let t = v.played as f64;
                     if t > full {
-                        g *= smooth(1.0 - ((t - full) / span) as f32);
+                        let left = (1.0 - (t - full) / span).clamp(0.0, 1.0) as f32;
+                        g *= left * left * left;
                     }
                 }
                 if tail > 0.0 {
@@ -325,19 +327,23 @@ mod tests {
             m.render(&mut out);
             out.chunks(2).map(|p| p[0]).collect::<Vec<f32>>()
         };
-        // 4 s sound, 0.5 s beat: full level to 0.5 s, then an S-curve down to silence at 4 s
+        // 4 s sound, 0.5 s beat: full level for the whole first beat, then a steep fall
         let a = run(4.0, None);
-        assert!((a[400] - 0.5).abs() < 1e-3, "full in the first beat");
-        assert!((a[500] - 0.5).abs() < 0.01, "decay starts after the first beat");
+        assert!(a[..=500].iter().all(|v| (v - 0.5).abs() < 1e-3), "full level for exactly the first beat");
+        // the decay is at its steepest at the start: a quarter of the way through it is already
+        // under half level, and halfway through it is nearly gone
+        let q = 500 + 3500 / 4;
+        assert!((a[q] - 0.5 * 0.75f32.powi(3)).abs() < 0.01, "quarter point {}", a[q]);
+        assert!(a[q] < 0.25, "aggressive early: {}", a[q]);
         let mid = 500 + 3500 / 2;
-        assert!((a[mid] - 0.25).abs() < 0.02, "halfway through the decay: {}", a[mid]);
-        assert!(a[3990] < 0.01, "silent at the end: {}", a[3990]);
+        assert!((a[mid] - 0.5 * 0.125).abs() < 0.01, "halfway {}", a[mid]);
+        assert!(a[3990] < 0.001, "silent at the end: {}", a[3990]);
         assert!(a[500..].windows(2).all(|w| w[1] <= w[0] + 1e-6), "never rises again");
         let biggest_step = a[500..].windows(2).map(|w| (w[0] - w[1]).abs()).fold(0.0, f32::max);
         assert!(biggest_step < 0.002, "no jumps in level: {}", biggest_step);
         // an 8 s sound decays over a longer time: at 4 s it is still well above silence
         let b = run(8.0, None);
-        assert!((b[500 + 7500 / 2] - 0.25).abs() < 0.02, "the midpoint moves out with the length");
+        assert!((b[500 + 7500 / 4] - 0.5 * 0.75f32.powi(3)).abs() < 0.01, "the same shape, stretched over the longer length");
         assert!(b[2500] > a[2500], "longer sample, slower decay");
         // a 10 s sound with a 4 s cap decays to silence by the cap, not by its own end
         let c = run(10.0, Some(4.0));
