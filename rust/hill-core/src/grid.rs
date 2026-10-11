@@ -474,6 +474,19 @@ impl GridApp {
         self.plain.select = false;
     }
 
+    /// The key of the drum kit whose sounds the drum tracks currently hold, in order, if any
+    /// (a kit fills the drum tracks in order; a single sound chosen since breaks the match).
+    fn applied_kit(&self) -> Option<String> {
+        let drums: Vec<usize> = (0..self.nt()).filter(|&i| self.tracks[i].kind == TrackKind::Drum).collect();
+        self.catalog.iter().find_map(|e| match &e.kind {
+            library::Kind::Kit(files) if !files.is_empty() => {
+                let all = drums.iter().zip(files).all(|(&t, f)| self.tracks[t].inst_key == *f);
+                all.then(|| e.key.clone())
+            }
+            _ => None,
+        })
+    }
+
     fn open_browser(&mut self) {
         let mut targets: Vec<usize> = (0..self.nt()).filter(|&i| self.sel[i]).collect();
         if targets.is_empty() {
@@ -482,7 +495,13 @@ impl GridApp {
         let first = targets[0];
         let drum = self.cfg.drum_filter && self.tracks[first].kind == TrackKind::Drum;
         let title = if targets.len() > 1 { format!("Sound for {} tracks", targets.len()) } else { format!("Sound for track {}", first + 1) };
-        let cur = self.tracks[first].inst_key.clone();
+        let mut cur = self.tracks[first].inst_key.clone();
+        if drum {
+            // a whole kit is applied: open on the kit's row, not inside its folder
+            if let Some(kit) = self.applied_kit() {
+                cur = kit;
+            }
+        }
         self.browser.open(&title, &self.catalog, drum, false, &[], Some(&cur));
         self.overlay = Overlay::Browse(targets);
     }
@@ -1126,5 +1145,72 @@ impl App for GridApp {
 
     fn save(&mut self) {
         self.save_now();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wav::encode16;
+    use crate::{App, MemHost};
+
+    fn tap(a: &mut dyn App, b: Btn) {
+        a.event(b, true);
+        a.event(b, false);
+    }
+
+    fn app_with_two_kits() -> GridApp {
+        let wav = encode16(&(0..2000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect::<Vec<_>>(), 1, 44100);
+        let mut host = MemHost::default();
+        for kit in ["Dusty", "Crisp"] {
+            for s in ["kick", "snare", "hat", "perc"] {
+                host.samples.insert(format!("Packs/{}/{}_01.wav", kit, s), wav.clone());
+            }
+        }
+        crate::apps::beat::new(Box::new(host))
+    }
+
+    #[test]
+    fn reopening_the_browser_after_a_kit_lands_on_the_kit_row() {
+        let mut a = app_with_two_kits();
+        // open, go up to the root, into Packs, apply the first kit (Crisp sorts before Dusty)
+        a.event(Btn::Start, true);
+        tap(&mut a, Btn::B);
+        a.event(Btn::Start, false);
+        tap(&mut a, Btn::B);
+        tap(&mut a, Btn::Down);
+        tap(&mut a, Btn::A);
+        assert_eq!(a.browser.cwd(), "Packs", "two kit rows, no kit folders");
+        tap(&mut a, Btn::A);
+        assert!(a.applied_kit().is_some(), "the drum tracks hold a whole kit");
+        // open it again: it opens in Packs on the kit, not inside the kit's folder
+        a.event(Btn::Start, true);
+        tap(&mut a, Btn::B);
+        a.event(Btn::Start, false);
+        assert_eq!(a.browser.cwd(), "Packs");
+        // pick the other kit with a single A press from the cursor's new position
+        tap(&mut a, Btn::Down);
+        tap(&mut a, Btn::A);
+        let k = a.applied_kit().unwrap();
+        assert!(k.ends_with("Dusty"), "second kit applied: {}", k);
+    }
+
+    #[test]
+    fn after_changing_one_voice_it_opens_at_that_single_sound() {
+        let mut a = app_with_two_kits();
+        a.event(Btn::Start, true);
+        tap(&mut a, Btn::B);
+        a.event(Btn::Start, false);
+        tap(&mut a, Btn::B);
+        tap(&mut a, Btn::Down);
+        tap(&mut a, Btn::A);
+        tap(&mut a, Btn::A); // a kit
+        // replace voice 1 with a built-in sound: no longer exactly a kit
+        a.tracks[0].inst_key = "builtin:Kick".into();
+        assert!(a.applied_kit().is_none());
+        a.event(Btn::Start, true);
+        tap(&mut a, Btn::B);
+        a.event(Btn::Start, false);
+        assert_eq!(a.browser.cwd(), "Built-in", "opens where the current sound lives");
     }
 }

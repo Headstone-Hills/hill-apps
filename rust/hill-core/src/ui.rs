@@ -104,6 +104,11 @@ impl Browser {
         }
     }
 
+    /// The folder the browser is showing (for tests).
+    pub fn cwd(&self) -> &str {
+        &self.cwd
+    }
+
     pub fn open(&mut self, title: &str, cat: &[Entry], drum_filter: bool, favs_enabled: bool, favs: &[String], current: Option<&str>) {
         self.open = true;
         self.title = title.to_string();
