@@ -44,7 +44,7 @@ Compared with the Python apps: all effects (reverb, delay, chorus, bitcrush, wet
 
 ## Samples
 
-Each app finds WAVs under the first of these that exists: `$HILL_SAMPLES`, `/mnt/sdcard/ROMs/Samples`, `/mnt/sdcard/ROMS/Samples`, `/mnt/mmc/ROMS/Samples`, `<app dir>/samples`. The PortMaster launcher also tries a few `/roms` paths (guesses for ArkOS, unverified); set `HILL_SAMPLES` in the launcher if yours differs.
+Each app finds WAVs under the first of these that exists: `$HILL_SAMPLES`, `/mnt/sdcard/ROMS/Hill Apps/Samples`, `/mnt/sdcard/ROMs/Samples`, `/mnt/sdcard/ROMS/Samples`, `/mnt/mmc/ROMS/Samples`, `<app dir>/samples`. The PortMaster launcher also tries a few `/roms` paths (guesses for ArkOS, unverified); set `HILL_SAMPLES` in the launcher if yours differs.
 
 - Folders are scanned recursively; `._*` and other hidden files are skipped.
 - A folder with several files of one instrument and different note names (`Piano_C3.wav`, `Piano_C4.wav`, `HoveFlute_midi036_C2.wav`) becomes one multisample instrument. Anything else is listed per file.

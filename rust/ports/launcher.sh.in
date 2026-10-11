@@ -38,7 +38,7 @@ export HILL_BUTTONS="${HILL_BUTTONS:-$GAMEDIR/../hill-buttons.cfg}"
 # Shared sample library. HILL_SAMPLES wins if you set it yourself; otherwise the
 # first folder below that exists is used (the /roms ones are guesses for ArkOS).
 if [ -z "$HILL_SAMPLES" ]; then
-  for d in /mnt/sdcard/ROMs/Samples /mnt/sdcard/ROMS/Samples /mnt/mmc/ROMS/Samples \
+  for d in "/mnt/sdcard/ROMS/Hill Apps/Samples" /mnt/sdcard/ROMs/Samples /mnt/sdcard/ROMS/Samples /mnt/mmc/ROMS/Samples \
            /roms/Samples /roms/samples /roms2/Samples /roms2/samples "$GAMEDIR/samples"; do
     if [ -d "$d" ]; then export HILL_SAMPLES="$d"; break; fi
   done

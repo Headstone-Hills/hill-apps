@@ -26,7 +26,12 @@ impl FsHost {
         if let Ok(p) = std::env::var("HILL_SAMPLES") {
             candidates.push(PathBuf::from(p));
         }
-        for p in ["/mnt/sdcard/ROMs/Samples", "/mnt/sdcard/ROMS/Samples", "/mnt/mmc/ROMS/Samples"] {
+        for p in [
+            "/mnt/sdcard/ROMS/Hill Apps/Samples",
+            "/mnt/sdcard/ROMs/Samples",
+            "/mnt/sdcard/ROMS/Samples",
+            "/mnt/mmc/ROMS/Samples",
+        ] {
             candidates.push(PathBuf::from(p));
         }
         candidates.push(exe.join("samples"));
