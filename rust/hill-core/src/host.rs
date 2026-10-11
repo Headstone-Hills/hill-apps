@@ -6,6 +6,10 @@ pub trait Host: Send {
     /// Relative sample paths (forward slashes), e.g. `Kit/Kick/kick1.wav`.
     fn list_samples(&self) -> Vec<String>;
     fn read_sample(&self, name: &str) -> Option<Vec<u8>>;
+    /// Write a file under the sample folder (HillSynth's export). False if it cannot.
+    fn write_sample(&mut self, _name: &str, _data: &[u8]) -> bool {
+        false
+    }
     fn load_state(&self, app: &str) -> Option<String>;
     fn save_state(&mut self, app: &str, data: &str);
 }
@@ -25,6 +29,10 @@ impl Host for MemHost {
     }
     fn read_sample(&self, name: &str) -> Option<Vec<u8>> {
         self.samples.get(name).cloned()
+    }
+    fn write_sample(&mut self, name: &str, data: &[u8]) -> bool {
+        self.samples.insert(name.to_string(), data.to_vec());
+        true
     }
     fn load_state(&self, app: &str) -> Option<String> {
         self.state.get(app).cloned()

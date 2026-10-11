@@ -14,6 +14,7 @@ pub mod instrument;
 pub mod kv;
 pub mod library;
 pub mod mixer;
+pub mod subtractive;
 pub mod synth;
 pub mod theory;
 pub mod transport;

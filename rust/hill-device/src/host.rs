@@ -78,6 +78,20 @@ impl Host for FsHost {
         out
     }
 
+    fn write_sample(&mut self, name: &str, data: &[u8]) -> bool {
+        if name.contains("..") {
+            return false;
+        }
+        let Some(root) = self.sample_root.as_ref() else { return false };
+        let path = root.join(name);
+        if let Some(dir) = path.parent() {
+            if fs::create_dir_all(dir).is_err() {
+                return false;
+            }
+        }
+        fs::write(path, data).is_ok()
+    }
+
     fn read_sample(&self, name: &str) -> Option<Vec<u8>> {
         if name.contains("..") {
             return None;

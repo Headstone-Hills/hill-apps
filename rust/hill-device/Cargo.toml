@@ -25,5 +25,9 @@ name = "hillchord"
 path = "src/bin/hillchord.rs"
 
 [[bin]]
+name = "hillsynth"
+path = "src/bin/hillsynth.rs"
+
+[[bin]]
 name = "hillmap"
 path = "src/bin/hillmap.rs"
