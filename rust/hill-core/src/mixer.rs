@@ -88,7 +88,7 @@ pub struct EnvParams {
 
 impl Default for EnvParams {
     fn default() -> Self {
-        EnvParams { hold: 1.0, decay: 0.75, sustain: 0.25, release: 1.0 }
+        EnvParams { hold: 0.5, decay: 0.5, sustain: 0.25, release: 1.0 }
     }
 }
 
@@ -414,24 +414,24 @@ mod tests {
     #[test]
     fn long_sounds_attack_decay_to_a_low_sustain_then_release() {
         let a = env_run(4.0, None); // 8 beats
-        // attack: full level for exactly the first beat
-        assert!(a[..=500].iter().all(|v| (v - 0.5).abs() < 1e-3), "full level for the first beat");
+        // attack: full level for exactly the first half beat (250 frames)
+        assert!(a[..=250].iter().all(|v| (v - 0.5).abs() < 1e-3), "full level for the attack hold");
         // decay: falls steeply right after it (already well down a fifth of the way in)...
-        assert!(a[575] < 0.5 * 0.65 && a[575] > 0.5 * EnvParams::default().sustain, "steep early fall: {}", a[575]);
-        // ...to a lower sustain (a quarter of the attack level) once the 0.75-beat decay is over
+        assert!(a[300] < 0.5 * 0.65 && a[300] > 0.5 * EnvParams::default().sustain, "steep early fall: {}", a[300]);
+        // ...to a lower sustain (a quarter of the attack level) once the half-beat decay is over
         let sustain = 0.5 * EnvParams::default().sustain;
-        assert!((a[875] - sustain).abs() < 0.002 && (a[2000] - sustain).abs() < 0.002, "sustain {}", a[2000]);
+        assert!((a[500] - sustain).abs() < 0.002 && (a[2000] - sustain).abs() < 0.002, "sustain {}", a[2000]);
         // release: a long fade to silence at the end
         assert!(a[3990] < 0.003, "silent at the end: {}", a[3990]);
         // never rises, never steps
-        assert!(a[500..].windows(2).all(|w| w[1] <= w[0] + 1e-6), "monotone");
-        // (the 500-frame beat of this test makes the designed slope 0.003 a frame at its steepest)
-        let biggest = a[500..].windows(2).map(|w| (w[0] - w[1]).abs()).fold(0.0, f32::max);
-        assert!(biggest < 0.0035, "no jumps in level: {}", biggest);
+        assert!(a[250..].windows(2).all(|w| w[1] <= w[0] + 1e-6), "monotone");
+        // (the 500-frame beat of this test makes the designed slope 0.0045 a frame at its steepest)
+        let biggest = a[250..].windows(2).map(|w| (w[0] - w[1]).abs()).fold(0.0, f32::max);
+        assert!(biggest < 0.0055, "no jumps in level: {}", biggest);
         // at the real 44.1 kHz rate (a 22050-frame beat) every step is tiny
         let real = env_run_at(44100, 4.0, None);
-        let biggest = real[22050..].windows(2).map(|w| (w[0] - w[1]).abs()).fold(0.0, f32::max);
-        assert!(biggest < 0.0001, "no jumps in level at 44.1 kHz: {}", biggest);
+        let biggest = real[11025..].windows(2).map(|w| (w[0] - w[1]).abs()).fold(0.0, f32::max);
+        assert!(biggest < 0.00015, "no jumps in level at 44.1 kHz: {}", biggest);
         // a sound of one beat or less is untouched
         let d = env_run(0.4, None);
         assert!((d[390] - 0.5).abs() < 1e-3);
@@ -455,7 +455,7 @@ mod tests {
     fn envelope_ends_at_the_cap() {
         // a 10 s sound with a 4 s cap releases to silence by the cap, not by its own end
         let c = env_run(10.0, Some(4.0));
-        assert!(c[3990] < 0.003 && c[500] > 0.49 && c[2000] > 0.1, "{} {} {}", c[3990], c[500], c[2000]);
+        assert!(c[3990] < 0.003 && c[200] > 0.49 && c[2000] > 0.1, "{} {} {}", c[3990], c[200], c[2000]);
     }
 
     #[test]

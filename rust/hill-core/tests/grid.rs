@@ -477,9 +477,9 @@ fn envelope_screen_steps_resets_and_switches_off() {
     let store = shared();
     let mut a = apps::create("hillband", Box::new(Shared(store.clone()))).unwrap();
     chord(a.as_mut(), &[Btn::Start], Btn::X);
-    tap(a.as_mut(), Btn::Right); // Attack hold 1.00 -> 1.25
+    tap(a.as_mut(), Btn::Right); // Attack hold 0.50 -> 0.75
     tap(a.as_mut(), Btn::Down);
-    tap(a.as_mut(), Btn::Right); // Decay 0.75 -> 0.875
+    tap(a.as_mut(), Btn::Right); // Decay 0.500 -> 0.625
     tap(a.as_mut(), Btn::Down);
     tap(a.as_mut(), Btn::Down);
     tap(a.as_mut(), Btn::Right); // Release x1.00 -> x1.25
@@ -488,14 +488,15 @@ fn envelope_screen_steps_resets_and_switches_off() {
         a.save();
         saved(&store, "hillband").get(key).and_then(|v| v.parse::<f32>().ok()).unwrap()
     };
-    assert_eq!(f(a.as_mut(), "env.hold"), 1.25);
-    assert_eq!(f(a.as_mut(), "env.decay"), 0.875);
+    assert_eq!(f(a.as_mut(), "env.hold"), 0.75);
+    assert_eq!(f(a.as_mut(), "env.decay"), 0.625);
     assert_eq!(f(a.as_mut(), "env.release"), 1.25);
     // X resets everything
     chord(a.as_mut(), &[Btn::Start], Btn::X);
     tap(a.as_mut(), Btn::X);
     tap(a.as_mut(), Btn::B);
-    assert_eq!(f(a.as_mut(), "env.hold"), 1.0);
+    assert_eq!(f(a.as_mut(), "env.hold"), 0.5);
+    assert_eq!(f(a.as_mut(), "env.decay"), 0.5);
     assert_eq!(f(a.as_mut(), "env.release"), 1.0);
     // the top line switches it off
     chord(a.as_mut(), &[Btn::Start], Btn::X);
