@@ -272,6 +272,12 @@ pub fn kit_entries(paths: &[String]) -> Vec<Entry> {
     }
     dirs.into_iter()
         .filter(|(_, v)| v.len() >= 2)
+        // a big folder whose files are named by pitch is a chromatic multisample (Metal Desk
+        // Lamp "Percussion", a "Boat Ride" synth), not a kit
+        .filter(|(_, v)| {
+            let pitched = v.iter().filter(|p| parse_pitch(strip_ext(split_path(p).1)).is_some()).count();
+            !(v.len() > 16 && pitched * 5 >= v.len() * 4)
+        })
         .map(|(dir, mut v)| {
             v = interleave_by_role(v);
             let (parent, name) = split_path(&dir);
@@ -491,6 +497,23 @@ mod tests {
         assert!((3..=6).contains(&few.samples.len()), "{}", few.samples.len());
         assert_eq!(few.samples.first().unwrap().0, 36);
         assert_eq!(few.samples.last().unwrap().0, 74);
+    }
+
+    #[test]
+    fn big_pitched_folders_are_not_kits() {
+        let mut files = Vec::new();
+        for n in 36..60 {
+            files.push(format!("Lamp/Percussion/Lamp_Percussion_midi{:03}_C2.wav", n));
+        }
+        for n in ["kick", "snare", "hat"] {
+            files.push(format!("Kits/Real/{}_01.wav", n));
+        }
+        files.push("Univox/Drum Machine/U_midi036_C2.wav".into());
+        files.push("Univox/Drum Machine/U_midi038_D2.wav".into());
+        let kits: Vec<String> = kit_entries(&files).into_iter().map(|k| k.key).collect();
+        assert!(kits.contains(&"kit:Kits/Real".to_string()));
+        assert!(kits.contains(&"kit:Univox/Drum Machine".to_string()), "small note-named drum machine stays a kit");
+        assert!(!kits.contains(&"kit:Lamp/Percussion".to_string()), "49 chromatic notes is a multisample: {:?}", kits);
     }
 
     #[test]

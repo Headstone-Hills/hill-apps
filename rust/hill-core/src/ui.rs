@@ -71,6 +71,12 @@ impl Browser {
         let mut rows: Vec<Row> = Vec::new();
         dirs.sort_by_key(|d| d.0.to_lowercase());
         for (name, count, last) in dirs {
+            // a drum kit shows as one row (A applies it; Right opens its folder), not as
+            // a folder row next to a kit row
+            let kit_key = format!("kit:{}{}", prefix, name);
+            if items.iter().any(|&i| cat[i].key == kit_key) {
+                continue;
+            }
             if count == 1 {
                 items.push(last); // a folder holding one sound: show the sound itself
             } else {
@@ -132,7 +138,11 @@ impl Browser {
         let mut to = parent_of(&from);
         loop {
             self.go(to.clone(), None, cat, favs);
-            let found = self.rows.iter().position(|r| matches!(r, Row::Dir(_, full, _) if *full == from));
+            let kit_key = format!("kit:{}", from);
+            let found = self.rows.iter().position(|r| match r {
+                Row::Dir(_, full, _) => *full == from,
+                Row::Item(i) => cat[*i].key == kit_key,
+            });
             if let Some(p) = found {
                 self.sel = p;
                 self.scroll_to_sel();
@@ -162,7 +172,12 @@ impl Browser {
                     self.open = false;
                     return BrowserOut::Pick(i);
                 }
-                Row::Item(_) => {}
+                // Right on a kit opens its folder, to pick one of its single sounds
+                Row::Item(i) => {
+                    if let Some(folder) = cat[i].key.strip_prefix("kit:") {
+                        self.go(folder.to_string(), None, cat, favs);
+                    }
+                }
             },
             Btn::B => {
                 if !self.up(cat, favs) {
@@ -240,7 +255,10 @@ impl Browser {
         let path = if self.cwd.is_empty() { "/".to_string() } else { format!("/{}", self.cwd) };
         let shown: String = if path.chars().count() > 26 { format!("..{}", path.chars().skip(path.chars().count() - 24).collect::<String>()) } else { path };
         fb.text(34, 446, &shown, 1, ACCENT);
-        let hint = if self.favs_enabled {
+        let on_kit = matches!(self.rows.get(self.sel), Some(Row::Item(i)) if cat[*i].key.starts_with("kit:"));
+        let hint = if on_kit {
+            "A apply kit  RIGHT browse its sounds  B back"
+        } else if self.favs_enabled {
             "A pick/open  B back  Y fav  X filter  L1/R1 page"
         } else if self.drum_filter {
             "A pick/open  B back  X all sounds  L1/R1 page"

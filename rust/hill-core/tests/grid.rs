@@ -526,3 +526,48 @@ fn hillbeat_has_no_envelope_screen() {
     a.save();
     assert!(saved(&store, "hillbeat").get("env.hold").is_none());
 }
+
+#[test]
+fn a_kit_is_one_row_and_right_opens_its_sounds() {
+    let tone: Vec<f32> = (0..2000).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+    let wav = encode16(&tone, 1, 44100);
+    let new_app = || {
+        let store = shared();
+        for f in ["Packs/Dusty/kick_01.wav", "Packs/Dusty/snare_01.wav", "Packs/Dusty/hat_01.wav", "Packs/Dusty/perc_01.wav"] {
+            store.lock().unwrap().samples.insert(f.into(), wav.clone());
+        }
+        let mut a = apps::create("hillbeat", Box::new(Shared(store.clone()))).unwrap();
+        chord(a.as_mut(), &[Btn::Start], Btn::B);
+        tap(a.as_mut(), Btn::B); // root: Built-in, Packs
+        tap(a.as_mut(), Btn::Down);
+        tap(a.as_mut(), Btn::A); // into Packs
+        (a, store)
+    };
+    // Packs holds just the kit row (no separate "Dusty" folder row): A applies the whole kit
+    let (mut a, store) = new_app();
+    tap(a.as_mut(), Btn::A);
+    a.save();
+    let k = saved(&store, "hillbeat");
+    assert_eq!(k.get("t0.inst"), Some("Packs/Dusty/kick_01.wav"));
+    assert_eq!(k.get("t1.inst"), Some("Packs/Dusty/snare_01.wav"));
+    assert_eq!(k.get("t2.inst"), Some("Packs/Dusty/hat_01.wav"));
+    assert_eq!(k.get("t3.inst"), Some("Packs/Dusty/perc_01.wav"));
+    // Right opens the kit's folder to pick one sound for the current voice
+    let (mut b, store) = new_app();
+    tap(b.as_mut(), Btn::Right); // open the kit's folder
+    tap(b.as_mut(), Btn::Down); // second sound in it
+    tap(b.as_mut(), Btn::A);
+    b.save();
+    let k = saved(&store, "hillbeat");
+    let t0 = k.get("t0.inst").unwrap().to_string();
+    assert!(t0.starts_with("Packs/Dusty/"), "one single sound from the kit's folder: {}", t0);
+    assert_ne!(k.get("t1.inst"), Some("Packs/Dusty/snare_01.wav"), "the other voices are untouched");
+    assert_ne!(k.get("t3.inst"), Some("Packs/Dusty/perc_01.wav"), "the kit was not applied");
+    // B from inside returns to the kit row
+    let (mut c, store) = new_app();
+    tap(c.as_mut(), Btn::Right);
+    tap(c.as_mut(), Btn::B);
+    tap(c.as_mut(), Btn::A); // back on the kit row: applies the kit
+    c.save();
+    assert_eq!(saved(&store, "hillbeat").get("t3.inst"), Some("Packs/Dusty/perc_01.wav"));
+}
