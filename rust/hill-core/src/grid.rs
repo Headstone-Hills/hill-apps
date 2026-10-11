@@ -7,7 +7,7 @@ use crate::input::{Btn, Held, Repeat, TapTempo};
 use crate::instrument::Instrument;
 use crate::kv::{from_hex, to_hex, Kv};
 use crate::library::{self, Entry};
-use crate::mixer::Mixer;
+use crate::mixer::{EnvParams, Envelope, Mixer};
 use crate::theory::*;
 use crate::transport::Transport;
 use crate::ui::{modal, quit_bar, Browser, BrowserOut, Help, Toast, QUIT_HOLD_MS};
@@ -59,6 +59,8 @@ enum Overlay {
     Browse(Vec<usize>),
     Chord { track: usize, chord: usize, scale: usize },
     Key { root: usize, scale: usize },
+    /// The envelope settings screen; `row` is the highlighted line.
+    Env { row: usize },
 }
 
 /// "Pressed alone and not yet used as a modifier" flags.
@@ -97,6 +99,9 @@ pub struct GridApp {
     rep: Repeat,
     tap: TapTempo,
     ms: u64,
+    /// Envelope for long sounds (HillSequencer / HillBand), one setting for the whole app.
+    env: EnvParams,
+    env_on: bool,
     /// (track, ms left): a sustained audition note to cut off.
     preview: Option<(usize, u32)>,
     last_vel: u8,
@@ -133,6 +138,8 @@ impl GridApp {
             ss_ms: 0,
             quit: false,
             preview: None,
+            env: EnvParams::default(),
+            env_on: true,
             overlay: Overlay::None,
             browser: Browser::default(),
             help: Help::default(),
@@ -292,6 +299,13 @@ impl GridApp {
         let mut k = Kv::new();
         k.set("bpm", self.tr.bpm);
         k.set("swing", self.tr.swing);
+        if self.cfg.decay {
+            k.set_bool("env.on", self.env_on);
+            k.set("env.hold", self.env.hold);
+            k.set("env.decay", self.env.decay);
+            k.set("env.sustain", self.env.sustain);
+            k.set("env.release", self.env.release);
+        }
         k.set_bool("swing_on", self.tr.swing_on);
         k.set("pattern", self.pattern);
         k.set("cur_track", self.cur_track);
@@ -315,6 +329,17 @@ impl GridApp {
         let k = Kv::parse(text);
         if let Some(v) = k.f32("bpm") {
             self.tr.set_bpm(v);
+        }
+        if self.cfg.decay {
+            let d = EnvParams::default();
+            self.env_on = k.bool("env.on").unwrap_or(true);
+            self.env = EnvParams {
+                hold: k.f32("env.hold").unwrap_or(d.hold),
+                decay: k.f32("env.decay").unwrap_or(d.decay),
+                sustain: k.f32("env.sustain").unwrap_or(d.sustain),
+                release: k.f32("env.release").unwrap_or(d.release),
+            }
+            .clamped();
         }
         if let Some(v) = k.f32("swing") {
             self.tr.swing = v.clamp(0.0, 0.25);
@@ -532,6 +557,21 @@ impl GridApp {
         self.host.save_state(self.cfg.file, &s);
     }
 
+    /// Step one line of the envelope screen up (+1) or down (-1).
+    fn adjust_env(&mut self, row: usize, dir: i32) {
+        let d = dir as f32;
+        let e = &mut self.env;
+        let step = |v: f32, r: (f32, f32, f32)| ((v + d * r.2).clamp(r.0, r.1) / r.2).round() * r.2;
+        match row {
+            0 => self.env_on = dir > 0,
+            1 => e.hold = step(e.hold, EnvParams::HOLD),
+            2 => e.decay = step(e.decay, EnvParams::DECAY),
+            3 => e.sustain = step(e.sustain, EnvParams::SUSTAIN),
+            _ => e.release = step(e.release, EnvParams::RELEASE),
+        }
+        self.env = self.env.clamped();
+    }
+
     // ---- input -----------------------------------------------------------
 
     fn press(&mut self, b: Btn) {
@@ -583,6 +623,9 @@ impl GridApp {
             Btn::X => {
                 if st {
                     self.use_mods();
+                    if self.cfg.decay {
+                        self.overlay = Overlay::Env { row: 1 };
+                    }
                 } else if se {
                     self.use_mods();
                     self.tr.swing_on = !self.tr.swing_on;
@@ -759,6 +802,28 @@ impl GridApp {
                     _ => {}
                 }
                 self.overlay = Overlay::Chord { track, chord, scale };
+            }
+            Overlay::Env { mut row } => {
+                match b {
+                    Btn::Up => row = (row + 4) % 5,
+                    Btn::Down => row = (row + 1) % 5,
+                    Btn::Left | Btn::Right => {
+                        self.adjust_env(row, if b == Btn::Left { -1 } else { 1 });
+                        self.rep.start(b);
+                    }
+                    Btn::X => {
+                        self.env = EnvParams::default();
+                        self.env_on = true;
+                        self.toast.say("Envelope reset");
+                    }
+                    Btn::A | Btn::B => {
+                        self.rep.clear();
+                        self.save_now();
+                        return;
+                    }
+                    _ => {}
+                }
+                self.overlay = Overlay::Env { row };
             }
             Overlay::Key { mut root, mut scale } => {
                 match b {
@@ -959,6 +1024,45 @@ impl App for GridApp {
                 fb.text(x + 130, y + 44, &format!("^ {} v", SCALE_MODES[*scale].name), 2, WHITE);
                 fb.text(x, y + 100, "L/R chord  U/D scale  A apply  B cancel", 1, DIM);
             }
+            Overlay::Env { row } => {
+                let (x, y) = modal(fb, 520, 360, "Envelope: long sounds");
+                let e = &self.env;
+                let lines: [(&str, String); 5] = [
+                    ("Envelope", if self.env_on { "ON".into() } else { "OFF".into() }),
+                    ("Attack hold", format!("{:.2} beats", e.hold)),
+                    ("Decay", format!("{:.3} beats", e.decay)),
+                    ("Sustain", format!("{:.0}%", e.sustain * 100.0)),
+                    ("Release", format!("x{:.2}", e.release)),
+                ];
+                for (i, (name, val)) in lines.iter().enumerate() {
+                    let ly = y + i as i32 * 30;
+                    if i == *row {
+                        fb.rect(x - 6, ly - 4, 492, 28, scale(MELODIC, 0.45));
+                    }
+                    let dim = i > 0 && !self.env_on;
+                    fb.text(x, ly, name, 2, if dim { DIM } else { TEXT });
+                    fb.text(x + 230, ly, &format!("< {} >", val), 2, if i == *row { WHITE } else if dim { DIM } else { ACCENT });
+                }
+                // the curve for a sound 8 beats long (one bar of x = one pixel column)
+                let (gx, gy, gw, gh) = (x, y + 160, 480, 70);
+                fb.rect(gx, gy, gw, gh, scale(PANEL, 0.6));
+                if self.env_on {
+                    if let Some(env) = Envelope::new(1.0, 8.0, e) {
+                        for px in 0..gw {
+                            let g = env.gain(px as f64 / gw as f64 * 8.0);
+                            let h = ((gh - 4) as f32 * g) as i32;
+                            fb.rect(gx + px, gy + gh - 2 - h, 1, h.max(1), MELODIC);
+                        }
+                    }
+                } else {
+                    fb.text(gx + 150, gy + 26, "envelope off", 2, DIM);
+                }
+                for k in 1..8 {
+                    fb.rect(gx + gw * k / 8, gy, 1, gh, DIM);
+                }
+                fb.text(x, y + 236, "example: a sound 8 beats long (lines = beats)", 1, DIM);
+                fb.text(x, y + 256, "U/D line   L/R change (hold repeats)   X reset   A/B close", 1, DIM);
+            }
             Overlay::Key { root, scale } => {
                 let (x, y) = modal(fb, 440, 200, "Key / scale");
                 fb.text(x, y + 4, "Root", 2, DIM);
@@ -975,7 +1079,7 @@ impl App for GridApp {
         self.toast.tick(dt);
         self.mixer.max_secs = Some(4.0 * 4.0 * 60.0 / self.tr.bpm.max(1.0)); // 4 measures
         self.mixer.beat_secs = Some(60.0 / self.tr.bpm.max(1.0));
-        self.mixer.decay = self.cfg.decay;
+        self.mixer.env = (self.cfg.decay && self.env_on).then_some(self.env);
         if let Some((ti, left)) = self.preview {
             if left <= dt {
                 self.mixer.release_quick(ti as u32);
@@ -1000,6 +1104,10 @@ impl App for GridApp {
                 } else {
                     self.change_bpm(if b == Btn::L2 { -1.0 } else { 1.0 });
                 }
+            }
+        } else if let Overlay::Env { row } = self.overlay {
+            if let Some(b) = self.rep.tick(dt) {
+                self.adjust_env(row, if b == Btn::Left { -1 } else { 1 });
             }
         } else {
             self.rep.clear();

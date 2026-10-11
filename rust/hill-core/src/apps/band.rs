@@ -37,6 +37,7 @@ static CONFIG: GridConfig = GridConfig {
         ("START+B", "pick a sound (drum tracks start on DRUM filter)"),
         ("  X in browser", "clear the drum filter"),
         ("START+R2", "select all melodic or all drum tracks (toggle), then START+B"),
+        ("START+X", "envelope: attack hold / decay / sustain / release"),
         ("START+Y", "save"),
         ("FN+SELECT", "this help"),
     ],

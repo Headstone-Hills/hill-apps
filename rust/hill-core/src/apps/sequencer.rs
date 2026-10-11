@@ -33,6 +33,7 @@ static CONFIG: GridConfig = GridConfig {
         ("START+R2", "select all tracks / clear selection"),
         ("  then START+B", "assigns the sound to every selected track"),
         ("START+L2", "key / scale: spreads a scale over all tracks"),
+        ("START+X", "envelope: attack hold / decay / sustain / release"),
         ("START+Y", "save"),
         ("FN+SELECT", "this help"),
     ],

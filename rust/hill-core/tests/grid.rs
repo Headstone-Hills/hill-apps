@@ -429,3 +429,99 @@ fn sustained_sound_holds_past_four_steps_until_the_next_note() {
     let window = run(a.as_mut(), 0.5);
     assert!(peak(&window) > 0.05, "held past four steps");
 }
+
+/// A 6 s steady pad on track 1 with one step set, the envelope screen adjusted by `edit`,
+/// then played. Returns the peak between 1.2 s and 1.9 s after the hit (in the sustain).
+fn sustain_peak(app: &str, edit: &dyn Fn(&mut dyn App)) -> (f32, Arc<Mutex<MemHost>>) {
+    let tone: Vec<f32> = (0..44100 * 6).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+    let store = shared();
+    store.lock().unwrap().samples.insert("Pads/pad.wav".into(), encode16(&tone, 1, 44100));
+    let mut a = apps::create(app, Box::new(Shared(store.clone()))).unwrap();
+    chord(a.as_mut(), &[Btn::Start], Btn::B);
+    tap(a.as_mut(), Btn::B);
+    tap(a.as_mut(), Btn::Down);
+    tap(a.as_mut(), Btn::A); // the pad
+    tap(a.as_mut(), Btn::A); // a step
+    run(a.as_mut(), 1.0);
+    edit(a.as_mut());
+    a.save();
+    tap(a.as_mut(), Btn::Start);
+    run(a.as_mut(), 1.2);
+    (peak(&run(a.as_mut(), 0.7)), store)
+}
+
+#[test]
+fn envelope_screen_changes_the_sound_and_is_saved() {
+    let default = |_: &mut dyn App| {};
+    let no_sustain = |a: &mut dyn App| {
+        chord(a, &[Btn::Start], Btn::X); // open the envelope screen (on the Attack hold line)
+        tap(a, Btn::Down); // Decay
+        tap(a, Btn::Down); // Sustain
+        for _ in 0..6 {
+            tap(a, Btn::Left); // 25% -> 0%
+        }
+        tap(a, Btn::A); // close (and save)
+    };
+    let (loud, _) = sustain_peak("hillsequencer", &default);
+    let (quiet, store) = sustain_peak("hillsequencer", &no_sustain);
+    assert!(loud > 0.03, "default sustain is audible: {}", loud);
+    assert!(quiet < loud * 0.1, "0% sustain is much quieter: {} vs {}", quiet, loud);
+    // saved with the app's state
+    let k = saved(&store, "hillsequencer");
+    assert_eq!(k.get("env.sustain").and_then(|v| v.parse::<f32>().ok()), Some(0.0));
+    assert_eq!(k.get("env.on"), Some("1"));
+}
+
+#[test]
+fn envelope_screen_steps_resets_and_switches_off() {
+    let store = shared();
+    let mut a = apps::create("hillband", Box::new(Shared(store.clone()))).unwrap();
+    chord(a.as_mut(), &[Btn::Start], Btn::X);
+    tap(a.as_mut(), Btn::Right); // Attack hold 1.00 -> 1.25
+    tap(a.as_mut(), Btn::Down);
+    tap(a.as_mut(), Btn::Right); // Decay 0.75 -> 0.875
+    tap(a.as_mut(), Btn::Down);
+    tap(a.as_mut(), Btn::Down);
+    tap(a.as_mut(), Btn::Right); // Release x1.00 -> x1.25
+    tap(a.as_mut(), Btn::A);
+    let f = |a: &mut dyn App, key: &str| {
+        a.save();
+        saved(&store, "hillband").get(key).and_then(|v| v.parse::<f32>().ok()).unwrap()
+    };
+    assert_eq!(f(a.as_mut(), "env.hold"), 1.25);
+    assert_eq!(f(a.as_mut(), "env.decay"), 0.875);
+    assert_eq!(f(a.as_mut(), "env.release"), 1.25);
+    // X resets everything
+    chord(a.as_mut(), &[Btn::Start], Btn::X);
+    tap(a.as_mut(), Btn::X);
+    tap(a.as_mut(), Btn::B);
+    assert_eq!(f(a.as_mut(), "env.hold"), 1.0);
+    assert_eq!(f(a.as_mut(), "env.release"), 1.0);
+    // the top line switches it off
+    chord(a.as_mut(), &[Btn::Start], Btn::X);
+    tap(a.as_mut(), Btn::Up); // Envelope line
+    tap(a.as_mut(), Btn::Left);
+    tap(a.as_mut(), Btn::A);
+    a.save();
+    assert_eq!(saved(&store, "hillband").get("env.on"), Some("0"));
+    // the settings come back when the app restarts
+    let mut st = store.lock().unwrap().load_state("hillband").unwrap();
+    st.push_str("\nenv.sustain=0.6\nenv.hold=2\n"); // later keys win
+    store.lock().unwrap().state.insert("hillband".into(), st);
+    let mut b = apps::create("hillband", Box::new(Shared(store.clone()))).unwrap();
+    b.save();
+    let k = saved(&store, "hillband");
+    assert_eq!(k.get("env.on"), Some("0"), "the on/off setting is restored");
+    assert_eq!(k.get("env.sustain").and_then(|v| v.parse::<f32>().ok()), Some(0.6), "values are restored");
+    assert_eq!(k.get("env.hold").and_then(|v| v.parse::<f32>().ok()), Some(2.0));
+}
+
+#[test]
+fn hillbeat_has_no_envelope_screen() {
+    let store = shared();
+    let mut a = apps::create("hillbeat", Box::new(Shared(store.clone()))).unwrap();
+    chord(a.as_mut(), &[Btn::Start], Btn::X);
+    tap(a.as_mut(), Btn::Right); // would adjust a setting if a screen were open
+    a.save();
+    assert!(saved(&store, "hillbeat").get("env.hold").is_none());
+}

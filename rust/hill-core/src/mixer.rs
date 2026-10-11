@@ -37,10 +37,8 @@ pub struct Mixer {
     pub max_secs: Option<f32>,
     /// One beat in seconds. How long a sound plays, in beats, picks its fade (`fade_secs`).
     pub beat_secs: Option<f32>,
-    /// Sequencer sounds longer than a beat follow an envelope (see `Envelope`): full level
-    /// for the first beat (attack), a steep decay to a low sustain, and a release that is
-    /// longer for samples that go on past two beats.
-    pub decay: bool,
+    /// Sequencer sounds longer than a beat follow this envelope (see `Envelope`); None = off.
+    pub env: Option<EnvParams>,
 }
 
 /// Fade out by how long the sound plays (`beats` at the current tempo), however it
@@ -74,52 +72,83 @@ fn smooth(x: f32) -> f32 {
     x * x * (3.0 - 2.0 * x)
 }
 
+/// Settings for the envelope given to long sounds in the sequencer apps (see `Envelope`).
+/// All times are in beats, so they follow the tempo.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct EnvParams {
+    /// Attack: how long the sound stays at full level before it starts to decay.
+    pub hold: f32,
+    /// Decay: how long the fall from full level to the sustain level takes.
+    pub decay: f32,
+    /// Sustain level, 0..1 of the full level.
+    pub sustain: f32,
+    /// Release length scale: 1 is the standard length (see `Envelope`).
+    pub release: f32,
+}
+
+impl Default for EnvParams {
+    fn default() -> Self {
+        EnvParams { hold: 1.0, decay: 0.75, sustain: 0.25, release: 1.0 }
+    }
+}
+
+impl EnvParams {
+    pub const HOLD: (f32, f32, f32) = (0.25, 4.0, 0.25); // min, max, step
+    pub const DECAY: (f32, f32, f32) = (0.125, 4.0, 0.125);
+    pub const SUSTAIN: (f32, f32, f32) = (0.0, 1.0, 0.05);
+    pub const RELEASE: (f32, f32, f32) = (0.25, 4.0, 0.25);
+
+    pub fn clamped(self) -> Self {
+        let c = |v: f32, r: (f32, f32, f32)| v.clamp(r.0, r.1);
+        EnvParams { hold: c(self.hold, Self::HOLD), decay: c(self.decay, Self::DECAY), sustain: c(self.sustain, Self::SUSTAIN), release: c(self.release, Self::RELEASE) }
+    }
+}
+
 /// The shape given to long sounds in the sequencer apps, in frames.
-///   attack  : full level for the first beat
-///   decay   : from full to `SUSTAIN` over `DECAY_BEATS`, steep at first then easing out (cubic)
-///   sustain : held at `SUSTAIN` of the attack level
+///   attack  : full level for `hold` beats
+///   decay   : from full to `sustain` over `decay` beats, steep at first then easing out (cubic)
+///   sustain : held at the sustain level
 ///   release : fades the held level to silence at the end of the sound (or the cap)
-/// The release is short (`SHORT_RELEASE_BEATS`) for sounds up to two beats, and for longer ones
-/// grows with the sound's length. Nothing steps: every part joins the next at the same level.
-struct Envelope {
-    beat: f64,
+/// The release is short (a quarter beat) for sounds up to two beats, and for longer ones grows with
+/// the sound's length (0.5 + 0.2 x its beats, up to 3), all times `release`. Nothing steps:
+/// every part joins the next at the same level.
+pub struct Envelope {
+    hold: f64,
     decay: f64,
+    sustain: f32,
     release_start: f64,
     release: f64,
     base_at_release: f32,
 }
 
-const SUSTAIN: f32 = 0.25;
-const DECAY_BEATS: f64 = 0.75;
-const SHORT_RELEASE_BEATS: f64 = 0.25;
-
 impl Envelope {
     /// For a sound that plays `end` frames at `beat` frames per beat; None if it is no
     /// longer than a beat.
-    fn new(beat: f64, end: f64) -> Option<Envelope> {
+    pub fn new(beat: f64, end: f64, p: &EnvParams) -> Option<Envelope> {
         if end <= beat {
             return None;
         }
         let beats = end / beat;
-        let release_beats = if beats <= 2.0 { SHORT_RELEASE_BEATS } else { (0.5 + 0.2 * beats).min(3.0) };
-        let release = (release_beats * beat).min(end - beat);
+        let release_beats = if beats <= 2.0 { 0.25 } else { (0.5 + 0.2 * beats).min(3.0) } * p.release as f64;
+        let release = (release_beats * beat).min(end - beat).max(1.0);
         let release_start = end - release;
-        let decay = (DECAY_BEATS * beat).min(release_start - beat).max(1.0);
-        let mut e = Envelope { beat, decay, release_start, release, base_at_release: 1.0 };
+        let hold = p.hold as f64 * beat;
+        let decay = (p.decay as f64 * beat).min((release_start - hold).max(0.0)).max(1.0);
+        let mut e = Envelope { hold, decay, sustain: p.sustain, release_start, release, base_at_release: 1.0 };
         e.base_at_release = e.base(release_start);
         Some(e)
     }
 
-    /// Level before the release: 1 for the first beat, then SUSTAIN + (1 - SUSTAIN)(1 - x)^3.
+    /// Level before the release: full for the hold, then sustain + (1 - sustain)(1 - x)^3.
     fn base(&self, t: f64) -> f32 {
-        if t <= self.beat {
+        if t <= self.hold {
             return 1.0;
         }
-        let left = (1.0 - (t - self.beat) / self.decay).clamp(0.0, 1.0) as f32;
-        SUSTAIN + (1.0 - SUSTAIN) * left * left * left
+        let left = (1.0 - (t - self.hold) / self.decay).clamp(0.0, 1.0) as f32;
+        self.sustain + (1.0 - self.sustain) * left * left * left
     }
 
-    fn gain(&self, t: f64) -> f32 {
+    pub fn gain(&self, t: f64) -> f32 {
         if t < self.release_start {
             self.base(t)
         } else {
@@ -139,7 +168,7 @@ impl Mixer {
             release_secs: 0.08,
             max_secs: None,
             beat_secs: None,
-            decay: false,
+            env: None,
         }
     }
 
@@ -249,10 +278,10 @@ impl Mixer {
             let Some(s) = v.sample.as_ref() else { continue };
             let n = s.frames();
             // the envelope for a sound longer than a beat (it ends at its own end or the cap)
-            let env = match (self.decay, beat_frames) {
-                (true, Some(b)) => {
+            let env = match (&self.env, beat_frames) {
+                (Some(p), Some(b)) => {
                     let len = n as f64 / v.step;
-                    Envelope::new(b, max_frames.map_or(len, |m| len.min(m as f64)))
+                    Envelope::new(b, max_frames.map_or(len, |m| len.min(m as f64)), p)
                 }
                 _ => None,
             };
@@ -373,7 +402,7 @@ mod tests {
         let mut m = Mixer::new(rate as f32);
         m.beat_secs = Some(0.5);
         m.max_secs = cap;
-        m.decay = true;
+        m.env = Some(EnvParams::default());
         m.master = 1.0;
         let s = Arc::new(Sample::new(vec![0.5; 2 * frames], rate));
         m.trigger(&s, 1.0, 1.0, 1, 0);
@@ -388,9 +417,9 @@ mod tests {
         // attack: full level for exactly the first beat
         assert!(a[..=500].iter().all(|v| (v - 0.5).abs() < 1e-3), "full level for the first beat");
         // decay: falls steeply right after it (already well down a fifth of the way in)...
-        assert!(a[575] < 0.5 * 0.65 && a[575] > 0.5 * SUSTAIN, "steep early fall: {}", a[575]);
+        assert!(a[575] < 0.5 * 0.65 && a[575] > 0.5 * EnvParams::default().sustain, "steep early fall: {}", a[575]);
         // ...to a lower sustain (a quarter of the attack level) once the 0.75-beat decay is over
-        let sustain = 0.5 * SUSTAIN;
+        let sustain = 0.5 * EnvParams::default().sustain;
         assert!((a[875] - sustain).abs() < 0.002 && (a[2000] - sustain).abs() < 0.002, "sustain {}", a[2000]);
         // release: a long fade to silence at the end
         assert!(a[3990] < 0.003, "silent at the end: {}", a[3990]);
@@ -411,7 +440,7 @@ mod tests {
     #[test]
     fn release_is_longer_for_samples_over_two_beats() {
         // frames before the end at which the level has left the sustain level
-        let release_len = |v: &[f32]| v.len() - v.iter().rposition(|x| *x >= 0.5 * SUSTAIN * 0.99).unwrap();
+        let release_len = |v: &[f32]| v.len() - v.iter().rposition(|x| *x >= 0.5 * EnvParams::default().sustain * 0.99).unwrap();
         let two_beats = release_len(&env_run(1.0, None)); // exactly 2 beats: short release (0.25 beat)
         let six_beats = release_len(&env_run(3.0, None)); // 6 beats: 0.5 + 0.2 * 6 = 1.7 beats
         let sixteen_beats = release_len(&env_run(8.0, None)); // 16 beats: capped at 3 beats
