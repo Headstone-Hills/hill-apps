@@ -70,7 +70,7 @@ These are the raw joystick button numbers used in `constants.py`. They're the ca
 | A (tap) | Toggle step on/off |
 | A (hold) + U/D | Adjust step velocity |
 | Y | Mute / unmute voice |
-| Y (hold) + U/D | Adjust voice volume |
+| Y (hold) + U/D | Adjust voice volume (0–400%; above 100% boosts, see below) |
 | B | Select voice (for library) |
 
 ### Overlays
@@ -108,6 +108,8 @@ samples/
 **Variant deduplication:** Multiple round-robin / velocity-layer variants of the same hit (e.g. `snare_x_l1_rr1.wav`, `snare_x_l2_rr3.wav`) are collapsed into one entry by `_base_stem()` using `_VARIANT_TRAIL` regex, which strips `_rr\d+`, `_l\d+`, `_loud\d+`, `_[a-g]\d+`, dynamic markings (`_pp`, `_mf`, etc.) from filenames before deduplication. The first alphabetical representative is stored and loaded.
 
 **Normalization:** All 492 WAV files under `Cassette Drums/` are peak-normalized to –3 dBFS (peak ≈ 23 200 / 32767) for consistent volume across kits. One corrupted file (`perc_noisebox_03_rattles_36.wav`) is skipped.
+
+**Voice boost (volume above 100%):** pygame's `Channel.set_volume()` only accepts 0.0–1.0, so channel volume alone can never play a sample louder than the file. Voice volume therefore goes up to 4.0 (+12 dB): above 1.0, `sequencer._boosted_sound()` multiplies the sample data by the gain and runs it through a soft-knee limiter (linear below `BOOST_KNEE` = 0.8 of full scale, `tanh` above it), so peaks saturate instead of hard-clipping. The boosted copy is re-rendered when the volume changes (`Sequencer.update_voice_gain()`), not per hit. Velocity and volume ≤ 1.0 are still applied as channel volume. The volume pip under the voice name turns orange while boosted.
 
 **Relevant functions in `library.py`:**
 - `_base_stem(path)` — strips variant suffixes, returns the canonical instrument name

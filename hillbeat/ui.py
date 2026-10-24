@@ -17,6 +17,7 @@ from constants import (
     CLR_TEXT, CLR_TEXT_DIM, CLR_WHITE, CLR_BLACK,
     CLR_BADGE_PLAY, CLR_BADGE_PAUSE, CLR_BADGE_STOP,
     CLR_BADGE_CHAIN, CLR_BADGE_LOOP, CLR_WARNING,
+    VOICE_VOLUME_MAX,
     FONT_SIZE_SMALL, FONT_SIZE_NORMAL, FONT_SIZE_LARGE,
 )
 
@@ -156,14 +157,19 @@ class UI:
             lbl_y = y0 + (row_h - lbl.get_height()) // 2
             surface.blit(lbl, (4, lbl_y))
 
-            # Volume pip: tiny bar below the name (only when not 100%)
+            # Volume pip: tiny bar below the name (only when not 100%).
+            # Above 100% the bar shows boost amount in the warning colour.
             if abs(vol - 1.0) > 0.01 and not voice_data["muted"]:
                 bar_x = 4
                 bar_y = lbl_y + lbl.get_height() + 1
-                bar_w = int((VOICE_LABEL_W - 8) * vol)
+                if vol > 1.0:
+                    frac, bar_clr = (vol - 1.0) / (VOICE_VOLUME_MAX - 1.0), CLR_WARNING
+                else:
+                    frac, bar_clr = vol, CLR_STEP_ON
+                bar_w = int((VOICE_LABEL_W - 8) * frac)
                 pygame.draw.rect(surface, CLR_TEXT_DIM,
                                  (bar_x, bar_y, VOICE_LABEL_W - 8, 3))
-                pygame.draw.rect(surface, CLR_STEP_ON,
+                pygame.draw.rect(surface, bar_clr,
                                  (bar_x, bar_y, max(1, bar_w), 3))
 
             # Steps

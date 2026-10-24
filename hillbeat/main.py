@@ -17,7 +17,7 @@ from constants import (
     HAT_LEFT, HAT_RIGHT, HAT_UP, HAT_DOWN,
     NUM_VOICES, NUM_STEPS,
     VELOCITY_MIN, VELOCITY_MAX, VELOCITY_STEP,
-    VOICE_VOLUME_MIN, VOICE_VOLUME_MAX, VOICE_VOLUME_STEP,
+    VOICE_VOLUME_MIN, VOICE_VOLUME_MAX, VOICE_VOLUME_STEP, VOICE_BOOST_STEP,
     SWING_MIN, SWING_MAX,
     BPM_HOLD_DELAY, BPM_HOLD_STEP,
     A_HOLD_THRESHOLD, Y_HOLD_THRESHOLD,
@@ -180,9 +180,12 @@ def main():
             vi = ui.cursor_voice
             vol = state.voices[vi].get("volume", 1.0)
             if hat_val == HAT_UP:
-                state.set_voice_volume(vi, vol + VOICE_VOLUME_STEP)
+                step = VOICE_BOOST_STEP if vol >= 1.0 else VOICE_VOLUME_STEP
+                state.set_voice_volume(vi, vol + step)
             elif hat_val == HAT_DOWN:
-                state.set_voice_volume(vi, vol - VOICE_VOLUME_STEP)
+                step = VOICE_BOOST_STEP if vol > 1.0 else VOICE_VOLUME_STEP
+                state.set_voice_volume(vi, vol - step)
+            sequencer.update_voice_gain(vi)
             return
 
         if hat_val == HAT_LEFT:

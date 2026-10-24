@@ -6,9 +6,30 @@ Drift-correcting playback thread; fires samples via pygame mixer.
 import os
 import threading
 import time
+import numpy as np
 import pygame
 
-from constants import NUM_VOICES, NUM_STEPS, VELOCITY_MAX, SAMPLE_ROOT
+from constants import NUM_VOICES, NUM_STEPS, VELOCITY_MAX, SAMPLE_ROOT, BOOST_KNEE
+
+
+def _boosted_sound(snd: pygame.mixer.Sound, gain: float) -> pygame.mixer.Sound:
+    """Return a copy of snd amplified by gain, with a soft-knee limiter.
+
+    Below BOOST_KNEE the signal is untouched; above it, peaks are squashed
+    with tanh so they approach full scale smoothly instead of hard-clipping.
+    The added saturation also brings out kick harmonics that small speakers
+    can reproduce.
+    """
+    arr = pygame.sndarray.array(snd)
+    if not np.issubdtype(arr.dtype, np.signedinteger):
+        return snd      # mixer is opened as signed 16-bit; anything else, skip
+    full = float(np.iinfo(arr.dtype).max)
+    x = arr.astype(np.float32) * (gain / full)
+    mag = np.abs(x)
+    over = mag > BOOST_KNEE
+    room = 1.0 - BOOST_KNEE
+    x[over] = np.sign(x[over]) * (BOOST_KNEE + room * np.tanh((mag[over] - BOOST_KNEE) / room))
+    return pygame.sndarray.make_sound((x * full).astype(arr.dtype))
 
 
 class Sequencer:
@@ -26,8 +47,11 @@ class Sequencer:
         self.state     = state
         self.transport = transport
 
-        # Loaded pygame.Sound objects, indexed [voice]
+        # Loaded pygame.Sound objects as read from disk, indexed [voice]
+        self._raw_sounds: list[pygame.mixer.Sound | None] = [None] * NUM_VOICES
+        # What actually plays: the raw sound, or a boosted copy when volume > 1
         self._sounds: list[pygame.mixer.Sound | None] = [None] * NUM_VOICES
+        self._baked_gain: list[float] = [1.0] * NUM_VOICES
 
         # One pygame channel per voice
         self._channels: list[pygame.mixer.Channel | None] = [None] * NUM_VOICES
@@ -46,14 +70,36 @@ class Sequencer:
         """Load (or unload) a WAV sample for a voice.  Thread-safe."""
         with self._lock:
             if filepath is None:
-                self._sounds[voice_index] = None
+                self._raw_sounds[voice_index] = None
             else:
                 try:
-                    snd = pygame.mixer.Sound(filepath)
-                    self._sounds[voice_index] = snd
+                    self._raw_sounds[voice_index] = pygame.mixer.Sound(filepath)
                 except Exception as e:
                     print(f"[sequencer] Failed to load {filepath}: {e}")
-                    self._sounds[voice_index] = None
+                    self._raw_sounds[voice_index] = None
+            self._bake(voice_index)
+
+    def update_voice_gain(self, voice_index: int):
+        """Re-render the boosted copy after the voice's volume changed."""
+        with self._lock:
+            self._bake(voice_index)
+
+    def _bake(self, voice_index: int):
+        """Caller holds self._lock.  Gain above 1.0 is baked into the sample
+        data; gain at or below 1.0 is applied via channel volume at play time."""
+        raw  = self._raw_sounds[voice_index]
+        gain = max(1.0, self.state.voices[voice_index].get("volume", 1.0))
+        if raw is None or gain <= 1.0:
+            self._sounds[voice_index] = raw
+            self._baked_gain[voice_index] = 1.0
+            return
+        try:
+            self._sounds[voice_index] = _boosted_sound(raw, gain)
+            self._baked_gain[voice_index] = gain
+        except Exception as e:
+            print(f"[sequencer] Boost failed for voice {voice_index}: {e}")
+            self._sounds[voice_index] = raw
+            self._baked_gain[voice_index] = 1.0
 
     def reload_all_voices(self):
         """Reload samples from current state.voices, resolving relative names via SAMPLE_ROOT.
@@ -147,7 +193,8 @@ class Sequencer:
                         if snd is not None:
                             ch = pygame.mixer.Channel(vi)
                             voice_vol = self.state.voices[vi].get("volume", 1.0)
-                            vol = (velocity / VELOCITY_MAX) * voice_vol
+                            # Gain above 1.0 is already baked into snd
+                            vol = (velocity / VELOCITY_MAX) * min(1.0, voice_vol)
                             ch.set_volume(vol)
                             ch.play(snd)
 

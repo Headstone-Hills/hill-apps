@@ -129,10 +129,15 @@ HAT_UP    = ( 0,  1)
 HAT_DOWN  = ( 0, -1)
 
 # ── Per-voice volume ──────────────────────────────────────────────────────────
+# Above 1.0 the sample data itself is amplified (pygame channels can only
+# attenuate) and run through a soft-knee limiter, so peaks saturate instead of
+# hard-clipping.  4.0 = +12 dB.
 VOICE_VOLUME_MIN  = 0.0
-VOICE_VOLUME_MAX  = 1.0
-VOICE_VOLUME_STEP = 0.05
+VOICE_VOLUME_MAX  = 4.0
+VOICE_VOLUME_STEP = 0.05    # per d-pad tick at or below 1.0
+VOICE_BOOST_STEP  = 0.25    # per d-pad tick above 1.0
 VOICE_VOLUME_DEFAULT = 1.0
+BOOST_KNEE        = 0.8     # limiter is linear below this (fraction of full scale)
 
 # Y-button hold threshold (same pattern as A for velocity)
 Y_HOLD_THRESHOLD = 0.3
