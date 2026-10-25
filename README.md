@@ -2,7 +2,7 @@
 
 A suite of four custom music apps for the RG35XXSP handheld (muOS / PortMaster):
 
-- **HillBeat** — step-sequencer drum machine
+- **HillBeat** — step-sequencer drum machine (the Rust edition has 8 drum tracks and a menu of 267 preset patterns that load with a matching drum kit)
 - **HillChord** — chord/note instrument with looper, arpeggiator, and effects
 - **HillSequencer** — 8-track step sequencer built on HillChord's instrument engine
 - **HillBand** — 8-track × 16-step hybrid (4 melodic tracks + 4 drum tracks)

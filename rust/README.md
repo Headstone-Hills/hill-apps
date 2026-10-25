@@ -38,6 +38,8 @@ Every app has a built-in cheat sheet: hold **FN** and tap **SELECT**.
   - Each sounding row of the pattern gets its own track (at most 7, plus the accent row), top to bottom as the book and the preview list them. Loading also sets the tracks' sounds from a drum kit picked for the style (`STYLE_KITS` in `hill-core/src/presets.rs`); a kit that has the pattern's sounds wins over one that doesn't, and spare tracks get other sounds from the same kit. Without kits, the built-in sounds are used. A kit with a single tom plays it pitched for high/mid/low toms (`TOM_SEMIS`). `cargo run -p hill-core --example preset_kits -- <list of sample paths>` shows what every preset gets.
   - `AC` (accent) is not a sound: hits on its steps get velocity 127 instead of 96. A flam (`F`) plays a grace note 30 ms early at 40% level. The button combo is `PRESET_MENU_COMBO` in `grid.rs`.
   - 12-step presets (triplets, 12/8, 3/4) make that pattern 12 steps long, with the beat split in 3 (or in 4 for 3/4). Clearing a pattern (SELECT+L1) makes it 16 steps again.
+  - Preset menu buttons: Up/Down move (hold to repeat), A opens a style / loads a pattern, B goes back (closes from the style list), X listens / stops, L1/R1 previous / next style, START+L1 closes. In the preview, a taller cell is an accent and a white mark is a flam; the kit and each track's sound are listed under the grid.
+  - Saved state from the 4-track HillBeat loads onto tracks 1-4; tracks 5-8 start empty with built-in sounds.
 - **HillSequencer**: 8 pitched tracks, 16 steps, 8 patterns. Per-track transpose, a key/scale overlay (START+L2) that spreads a scale across the tracks, multi-select to give several tracks one instrument.
 - **HillBand**: 4 melodic + 4 drum tracks. Chord types (14) and scale modes (11) per melodic track, multi-select.
 - **HillChord**: play chords or single notes live. Looper with overdub (stored as an event list, so BPM changes cost nothing), arpeggiator, metronome, favorites.
@@ -54,6 +56,8 @@ Each app finds WAVs under the first of these that exists: `$HILL_SAMPLES`, `/mnt
 - A folder with several files of one instrument and different note names (`Piano_C3.wav`, `Piano_C4.wav`, `HoveFlute_midi036_C2.wav`) becomes one multisample instrument. Anything else is listed per file.
 - Without any samples the apps use built-in synthesized sounds.
 - In the browser, add `.wav` files or a folder from the menu. They are stored in your browser (IndexedDB) and stay on the device.
+
+On the device this file is also `README.md` in each app's folder (`/mnt/sdcard/ports/<app>-rs/`).
 
 State is saved next to the executable as `<app>_state.txt` (override with `HILL_DATA`). The device autosaves every 30 s and on quit.
 

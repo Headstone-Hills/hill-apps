@@ -68,6 +68,7 @@ do_device() {
     sed -e "s|@NAME@|$t|g" -e "s|@DIR@|$a|g" -e "s|@DESC@|${DESC[$b]}|g" ports/launcher.sh.in > "$stage/$t.sh"
     chmod +x "$stage/$t.sh"
     cp "$bin/$b" "$stage/$a/$a"
+    cp README.md "$stage/$a/README.md"
     cat > "$stage/$a/port.json" <<JSON
 {
   "version": 1,
