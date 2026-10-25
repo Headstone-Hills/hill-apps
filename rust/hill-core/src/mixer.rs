@@ -18,11 +18,12 @@ struct Voice {
     rel: f32,  // per-frame decrement to use when this voice is released
     tail: bool, // longer than a beat: fades smoothly at its own end too (length = rel)
     played: u64, // frames rendered so far, for the maximum-length cap
+    delay: u64, // output frames of silence before it starts (a flam's grace note)
 }
 
 impl Voice {
     fn idle() -> Self {
-        Voice { sample: None, pos: 0.0, step: 1.0, gain: 0.0, key: 0, age: 0, env: 1.0, fade: 0.0, rel: 0.0, tail: false, played: 0 }
+        Voice { sample: None, pos: 0.0, step: 1.0, gain: 0.0, key: 0, age: 0, env: 1.0, fade: 0.0, rel: 0.0, tail: false, played: 0, delay: 0 }
     }
 }
 
@@ -183,15 +184,22 @@ impl Mixer {
     /// Start a voice. `key` groups voices for `release`/limiting; at most
     /// `limit` voices with the same key sound at once (oldest is cut).
     pub fn trigger(&mut self, s: &Arc<Sample>, ratio: f64, gain: f32, key: u32, limit: usize) {
+        self.trigger_in(s, ratio, gain, key, limit, 0);
+    }
+
+    /// `trigger`, starting `delay` output frames from now. A delayed voice leaves the
+    /// voices already sounding alone: it is scheduled a whole step ahead (a flam's grace
+    /// note), and the hit on the step before it must not be cut.
+    pub fn trigger_in(&mut self, s: &Arc<Sample>, ratio: f64, gain: f32, key: u32, limit: usize, delay: u64) {
         self.counter += 1;
         // Triggering a sound that is already sounding restarts it (a loop), not a second copy on top.
         let step = ratio * s.rate as f64 / self.rate as f64;
-        for v in self.voices.iter_mut() {
+        for v in self.voices.iter_mut().filter(|_| delay == 0) {
             if v.key == key && v.fade == 0.0 && v.sample.as_ref().is_some_and(|o| Arc::ptr_eq(o, s)) && (v.step - step).abs() < 1e-9 {
                 v.fade = v.rel;
             }
         }
-        if limit > 0 {
+        if limit > 0 && delay == 0 {
             let mut same: Vec<usize> = (0..self.voices.len())
                 .filter(|&i| self.voices[i].sample.is_some() && self.voices[i].key == key && self.voices[i].fade == 0.0)
                 .collect();
@@ -230,6 +238,7 @@ impl Mixer {
             rel,
             tail,
             played: 0,
+            delay,
         };
     }
 
@@ -276,6 +285,13 @@ impl Mixer {
         let beat_frames = self.beat_secs.map(|b| (b * self.rate) as f64);
         for v in self.voices.iter_mut() {
             let Some(s) = v.sample.as_ref() else { continue };
+            // not started yet: released before it began (pause) means it never sounds
+            if v.delay > 0 && v.fade > 0.0 {
+                v.sample = None;
+                continue;
+            }
+            let wait = v.delay.min(frames as u64) as usize;
+            v.delay -= wait as u64;
             let n = s.frames();
             // the envelope for a sound longer than a beat (it ends at its own end or the cap)
             let env = match (&self.env, beat_frames) {
@@ -290,7 +306,7 @@ impl Mixer {
             let tail = if env.is_none() && v.tail && v.rel > 0.0 { (1.0 / v.rel) as f64 * v.step } else { 0.0 };
             let mut pos = v.pos;
             let mut done = false;
-            for f in 0..frames {
+            for f in wait..frames {
                 let i = pos as usize;
                 if i + 1 >= n {
                     done = true;

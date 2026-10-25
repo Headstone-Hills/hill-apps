@@ -10,6 +10,7 @@ static CONFIG: GridConfig = GridConfig {
     multiselect: false,
     drum_filter: true,
     decay: false,
+    presets: true,
     help: &[
         ("PLAYBACK", ""),
         ("START", "play / pause"),
@@ -28,6 +29,8 @@ static CONFIG: GridConfig = GridConfig {
         ("SELECT+L1", "clear pattern"),
         ("SOUNDS & LOOP", ""),
         ("START+B", "drum sounds (X: show all). [KIT] fills all voices"),
+        ("START+L1", "drum pattern presets (again: close)"),
+        ("  in presets", "A open/load  B back  X listen  L1/R1 style"),
         ("START+Y", "save"),
         ("FN+SELECT", "this help"),
     ],

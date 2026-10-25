@@ -34,6 +34,9 @@ The apps implement one trait (`hill_core::App`): feed it button events, ask it f
 Every app has a built-in cheat sheet: hold **FN** and tap **SELECT**.
 
 - **HillBeat**: 4 drum voices, 16 steps, 8 patterns. Swing, tap tempo, per-step velocity, voice mute/volume, drum kits, save/load.
+  - **Preset patterns** (START+L1, again to close): 267 patterns in 22 styles, from `hill-core/data/presets.json` (compiled in; check it with `python3 hill-core/data/validate_presets.py hill-core/data/presets.json`). A style, then its rhythms / breaks / endings with a step-grid preview; A loads into the current pattern (asks first if it has notes), X listens while the sequencer is paused, L1/R1 change style. Loading while playing takes effect at the next bar line. Tempo, swing, mute, volume and sounds are kept.
+  - The data's 12 rows go onto the 4 voices: BD to 1; SD, RS to 2; CH, OH, CY, TAM to 3; CPS, CB and the toms (HT, MT, LT) to 4. Rows sharing a voice are merged. `AC` (accent) is not a sound: hits on its steps get velocity 127 instead of 96. A flam (`F`) plays a grace note 30 ms early at 40% level. The mapping and those numbers are constants at the top of `hill-core/src/presets.rs`; the button combo is `PRESET_MENU_COMBO` in `grid.rs`.
+  - 12-step presets (triplets, 12/8, 3/4) make that pattern 12 steps long, with the beat split in 3 (or in 4 for 3/4). Clearing a pattern (SELECT+L1) makes it 16 steps again.
 - **HillSequencer**: 8 pitched tracks, 16 steps, 8 patterns. Per-track transpose, a key/scale overlay (START+L2) that spreads a scale across the tracks, multi-select to give several tracks one instrument.
 - **HillBand**: 4 melodic + 4 drum tracks. Chord types (14) and scale modes (11) per melodic track, multi-select.
 - **HillChord**: play chords or single notes live. Looper with overdub (stored as an event list, so BPM changes cost nothing), arpeggiator, metronome, favorites.

@@ -1,4 +1,4 @@
-//! Sample-accurate step clock: 16th-note steps with optional swing.
+//! Sample-accurate step clock: 16th-note steps (or triplets, see `div`) with optional swing.
 
 pub struct Transport {
     pub bpm: f32,
@@ -7,6 +7,8 @@ pub struct Transport {
     pub swing_on: bool,
     pub playing: bool,
     pub steps: usize,
+    /// Steps per beat: 4 = sixteenths, 3 = triplets / 12/8 eighths.
+    pub div: u32,
     next: usize,
     pos: f64,
     rate: f32,
@@ -15,7 +17,7 @@ pub struct Transport {
 
 impl Transport {
     pub fn new(rate: f32, steps: usize) -> Self {
-        Transport { bpm: 120.0, swing: 0.1, swing_on: false, playing: false, steps, next: 0, pos: 0.0, rate, last: None }
+        Transport { bpm: 120.0, swing: 0.1, swing_on: false, playing: false, steps, div: 4, next: 0, pos: 0.0, rate, last: None }
     }
 
     pub fn set_rate(&mut self, rate: f32) {
@@ -23,7 +25,7 @@ impl Transport {
     }
 
     fn step_len(&self) -> f64 {
-        self.rate as f64 * 60.0 / self.bpm as f64 / 4.0
+        self.rate as f64 * 60.0 / self.bpm as f64 / self.div.max(1) as f64
     }
 
     /// Change tempo, keeping the current phase within the bar.
@@ -158,6 +160,16 @@ mod tests {
         let sl = 5512.5;
         assert!((ev[1].0 as f64 - (sl * 1.2)).abs() < 2.0);
         assert!((ev[2].0 as f64 - (sl * 2.0)).abs() < 2.0);
+    }
+
+    #[test]
+    fn twelve_triplet_steps_fill_one_bar() {
+        let mut t = Transport::new(44100.0, 12);
+        t.div = 3;
+        t.playing = true;
+        let ev = run(&mut t, 88200 * 2 + 10);
+        let starts: Vec<u64> = ev.iter().filter(|e| e.1 == 0).map(|e| e.0).collect();
+        assert_eq!(starts, vec![0, 88200, 176400]);
     }
 
     #[test]

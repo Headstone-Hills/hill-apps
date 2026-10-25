@@ -14,6 +14,8 @@ pub mod instrument;
 pub mod kv;
 pub mod library;
 pub mod mixer;
+pub mod preset_menu;
+pub mod presets;
 pub mod subtractive;
 pub mod synth;
 pub mod theory;

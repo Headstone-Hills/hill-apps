@@ -8,6 +8,8 @@ use crate::instrument::Instrument;
 use crate::kv::{from_hex, to_hex, Kv};
 use crate::library::{self, Entry};
 use crate::mixer::{EnvParams, Envelope, Mixer};
+use crate::preset_menu::{MenuOut, PresetMenu};
+use crate::presets::{self, FLAM_BIT, FLAM_GRACE_LEVEL, FLAM_GRACE_MS};
 use crate::theory::*;
 use crate::transport::Transport;
 use crate::ui::{modal, quit_bar, Browser, BrowserOut, Help, Toast, QUIT_HOLD_MS};
@@ -15,6 +17,11 @@ use crate::{App, SAMPLE_RATE};
 
 pub const STEPS: usize = 16;
 pub const PATTERNS: usize = 8;
+
+/// Opens and closes the preset pattern menu (HillBeat): hold the first, press the
+/// second. The first must be START or SELECT. Free alternatives on the main screen
+/// of every grid app: (Start, R1), (Start, A), (Select, A), (Select, Y).
+pub const PRESET_MENU_COMBO: (Btn, Btn) = (Btn::Start, Btn::L1);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
@@ -35,6 +42,8 @@ pub struct GridConfig {
     pub drum_filter: bool,
     /// Sounds longer than a beat decay smoothly after the first beat (see `Mixer::decay`).
     pub decay: bool,
+    /// The preset drum pattern menu (PRESET_MENU_COMBO).
+    pub presets: bool,
     pub help: &'static [(&'static str, &'static str)],
 }
 
@@ -61,6 +70,22 @@ enum Overlay {
     Key { root: usize, scale: usize },
     /// The envelope settings screen; `row` is the highlighted line.
     Env { row: usize },
+    Presets,
+}
+
+/// A preset waiting for the next bar line (loaded while playing).
+struct Staged {
+    pattern: usize,
+    rows: Vec<Vec<u8>>,
+    len: usize,
+    div: u32,
+}
+
+/// The preset menu's own little player: the main sequencer is stopped while it runs.
+struct Audition {
+    preset: usize,
+    tr: Transport,
+    rows: Vec<Vec<u8>>,
 }
 
 /// "Pressed alone and not yet used as a modifier" flags.
@@ -81,7 +106,13 @@ pub struct GridApp {
     mixer: Mixer,
     tr: Transport,
     tracks: Vec<Track>,
+    /// Cell value: velocity 1..=127 (0 = off), plus `FLAM_BIT` for a flam.
     cells: Vec<u8>,
+    /// Per pattern: (steps, steps per beat). 16/4 unless a 12-step preset was loaded.
+    lens: Vec<(usize, u32)>,
+    staged: Option<Staged>,
+    pm: PresetMenu,
+    aud: Option<Audition>,
     pattern: usize,
     pending: Option<usize>,
     cur_step: usize,
@@ -127,6 +158,10 @@ impl GridApp {
             tr: Transport::new(SAMPLE_RATE, STEPS),
             tracks: Vec::new(),
             cells: vec![0; PATTERNS * nt * STEPS],
+            lens: vec![(STEPS, 4); PATTERNS],
+            staged: None,
+            pm: PresetMenu::default(),
+            aud: None,
             pattern: 0,
             pending: None,
             cur_step: 0,
@@ -271,6 +306,10 @@ impl GridApp {
             if let Some(p) = self.pending.take() {
                 self.pattern = p;
             }
+            if let Some(st) = self.staged.take() {
+                self.write_preset(st);
+            }
+            self.sync_len();
             for t in self.tracks.iter_mut() {
                 t.scale_pos = 0;
             }
@@ -282,7 +321,7 @@ impl GridApp {
                     self.mixer.release(ti as u32);
                 }
             }
-            let v = self.cells[self.idx(self.pattern, ti, step)];
+            let v = self.cells[self.idx(self.pattern, ti, step)] & !FLAM_BIT;
             if v > 0 && !self.tracks[ti].mute {
                 if let Some(g) = self.gate_of(ti) {
                     self.mixer.release(ti as u32); // legato: the new note replaces the held one
@@ -291,6 +330,52 @@ impl GridApp {
                 Self::play_track(&mut self.mixer, &mut self.tracks[ti], ti, v);
             }
         }
+        // the grace notes of flams on the next step start before it, so they go out now
+        let (np, ns) = if step + 1 < self.tr.steps { (self.pattern, step + 1) } else { (self.pending.unwrap_or(self.pattern), 0) };
+        let next: Vec<u8> = (0..self.nt())
+            .map(|ti| match &self.staged {
+                Some(st) if ns == 0 && st.pattern == np => st.rows[ti][0],
+                _ => self.cells[self.idx(np, ti, ns)],
+            })
+            .collect();
+        let delay = self.tr.until_due().saturating_sub(self.grace_lead());
+        Self::play_graces(&mut self.mixer, &mut self.tracks, &next, delay);
+    }
+
+    fn grace_lead(&self) -> u64 {
+        (FLAM_GRACE_MS / 1000.0 * self.rate) as u64
+    }
+
+    /// Schedule a flam's grace note, `delay` frames from now, for each flagged cell.
+    fn play_graces(mixer: &mut Mixer, tracks: &mut [Track], cells: &[u8], delay: u64) {
+        for (ti, t) in tracks.iter_mut().enumerate() {
+            let c = cells[ti];
+            if c & FLAM_BIT == 0 || t.mute || t.kind != TrackKind::Drum {
+                continue;
+            }
+            let gain = (c & !FLAM_BIT) as f32 / 127.0 * t.vol * 0.9 * FLAM_GRACE_LEVEL;
+            if let Some(s) = t.inst.as_ref().and_then(|i| i.first()) {
+                mixer.trigger_in(s, 1.0, gain, ti as u32, 4, delay);
+            }
+        }
+    }
+
+    /// Point the clock at the current pattern's length. A length change while
+    /// stopped or paused rewinds to step 1, so the clock never sits past the end.
+    fn sync_len(&mut self) {
+        let (len, div) = self.lens[self.pattern];
+        if (self.tr.steps, self.tr.div) != (len, div) {
+            self.tr.steps = len;
+            self.tr.div = div;
+            if !self.tr.playing {
+                self.tr.stop_reset();
+            }
+        }
+        self.cur_step = self.cur_step.min(len - 1);
+    }
+
+    fn len(&self) -> usize {
+        self.lens[self.pattern].0
     }
 
     // ---- state -----------------------------------------------------------
@@ -320,6 +405,19 @@ impl GridApp {
             for p in 0..PATTERNS {
                 let a = self.idx(p, i, 0);
                 k.set(&format!("p{}.t{}", p, i), to_hex(&self.cells[a..a + STEPS]));
+            }
+        }
+        for (p, &(len, div)) in self.lens.iter().enumerate() {
+            if (len, div) != (STEPS, 4) {
+                k.set(&format!("p{}.len", p), len);
+                k.set(&format!("p{}.div", p), div);
+            }
+        }
+        if self.cfg.presets {
+            let (style, pat) = self.pm.position();
+            k.set("presets.style", style);
+            if let Some(i) = pat {
+                k.set("presets.pattern", &presets::builtin().patterns[i].id);
             }
         }
         k.render()
@@ -382,10 +480,21 @@ impl GridApp {
                     let bytes = from_hex(h);
                     let a = (p * self.tracks.len() + i) * STEPS;
                     for (s, b) in bytes.iter().take(STEPS).enumerate() {
-                        self.cells[a + s] = (*b).min(127);
+                        self.cells[a + s] = if *b & !FLAM_BIT == 0 { 0 } else { *b };
                     }
                 }
             }
+        }
+        for p in 0..PATTERNS {
+            let len = k.usize(&format!("p{}.len", p)).unwrap_or(STEPS).clamp(1, STEPS);
+            let div = k.usize(&format!("p{}.div", p)).unwrap_or(4).clamp(1, 8) as u32;
+            self.lens[p] = (len, div);
+        }
+        self.sync_len();
+        if self.cfg.presets {
+            let ps = presets::builtin();
+            let pat = k.get("presets.pattern").and_then(|id| ps.patterns.iter().position(|x| x.id == id));
+            self.pm.restore(ps, k.usize("presets.style").unwrap_or(0), pat);
         }
     }
 
@@ -394,7 +503,7 @@ impl GridApp {
     fn toggle_step(&mut self) {
         let a = self.idx(self.pattern, self.cur_track, self.cur_step);
         if self.cells[a] > 0 {
-            self.last_vel = self.cells[a];
+            self.last_vel = self.cells[a] & !FLAM_BIT;
             self.cells[a] = 0;
         } else {
             self.cells[a] = self.last_vel.max(8);
@@ -409,16 +518,17 @@ impl GridApp {
 
     fn adjust_velocity(&mut self, d: i32) {
         let a = self.idx(self.pattern, self.cur_track, self.cur_step);
-        let cur = if self.cells[a] == 0 { self.last_vel as i32 } else { self.cells[a] as i32 };
+        let flam = self.cells[a] & FLAM_BIT;
+        let cur = if self.cells[a] == 0 { self.last_vel as i32 } else { (self.cells[a] & !FLAM_BIT) as i32 };
         let v = (cur + d).clamp(1, 127) as u8;
-        self.cells[a] = v;
+        self.cells[a] = v | flam;
         self.last_vel = v;
     }
 
     fn move_cursor(&mut self, b: Btn) {
         match b {
-            Btn::Left => self.cur_step = (self.cur_step + STEPS - 1) % STEPS,
-            Btn::Right => self.cur_step = (self.cur_step + 1) % STEPS,
+            Btn::Left => self.cur_step = (self.cur_step + self.len() - 1) % self.len(),
+            Btn::Right => self.cur_step = (self.cur_step + 1) % self.len(),
             Btn::Up => self.cur_track = (self.cur_track + self.nt() - 1) % self.nt(),
             Btn::Down => self.cur_track = (self.cur_track + 1) % self.nt(),
             _ => {}
@@ -450,6 +560,7 @@ impl GridApp {
         } else {
             self.pattern = p;
             self.pending = None;
+            self.sync_len();
         }
     }
 
@@ -457,6 +568,12 @@ impl GridApp {
         let a = self.idx(self.pattern, 0, 0);
         let n = self.nt() * STEPS;
         self.cells[a..a + n].fill(0);
+        // a cleared pattern is a plain 16-step one again (while playing, the clock
+        // follows at the next bar line)
+        self.lens[self.pattern] = (STEPS, 4);
+        if !self.tr.playing {
+            self.sync_len();
+        }
         self.toast.say("Pattern cleared");
     }
 
@@ -571,6 +688,130 @@ impl GridApp {
         self.toast.say(&format!("Key {} {}", PC_NAMES[root], SCALE_MODES[scale].name));
     }
 
+    // ---- preset patterns (HillBeat) -----------------------------------------
+
+    /// Replace a pattern's notes with a preset's. Tempo, swing, mute, volume and
+    /// sounds are left alone.
+    fn write_preset(&mut self, st: Staged) {
+        for ti in 0..self.nt() {
+            let a = self.idx(st.pattern, ti, 0);
+            self.cells[a..a + STEPS].fill(0);
+            if let Some(row) = st.rows.get(ti) {
+                self.cells[a..a + row.len()].copy_from_slice(row);
+            }
+        }
+        self.lens[st.pattern] = (st.len, st.div);
+    }
+
+    fn load_preset(&mut self, pi: usize) {
+        let x = &presets::builtin().patterns[pi];
+        let st = Staged { pattern: self.pattern, rows: x.to_cells(self.nt()), len: x.steps, div: x.div };
+        if self.tr.playing {
+            // at the next bar line, so the groove does not jump mid-bar
+            self.staged = Some(st);
+            self.toast.say(&format!("{}: next bar", clip(&x.name, 18)));
+        } else {
+            self.write_preset(st);
+            self.sync_len();
+            self.toast.say(&format!("Loaded {}", clip(&x.name, 18)));
+        }
+    }
+
+    fn pattern_has_notes(&self) -> bool {
+        let a = self.idx(self.pattern, 0, 0);
+        self.cells[a..a + self.nt() * STEPS].iter().any(|&c| c != 0)
+    }
+
+    fn open_presets(&mut self) {
+        self.pm.open(presets::builtin());
+        self.overlay = Overlay::Presets;
+    }
+
+    fn close_presets(&mut self) {
+        self.stop_audition();
+        self.pm.confirm = None;
+        self.rep.clear();
+        self.overlay = Overlay::None;
+    }
+
+    fn start_audition(&mut self, pi: usize) {
+        let x = &presets::builtin().patterns[pi];
+        let mut tr = Transport::new(self.rate, x.steps);
+        tr.div = x.div;
+        tr.bpm = self.tr.bpm;
+        tr.swing = self.tr.swing;
+        tr.swing_on = self.tr.swing_on;
+        tr.playing = true;
+        self.mixer.release_all();
+        self.aud = Some(Audition { preset: pi, tr, rows: x.to_cells(self.nt()) });
+    }
+
+    fn stop_audition(&mut self) {
+        if self.aud.take().is_some() {
+            self.mixer.release_all();
+        }
+    }
+
+    /// One press in the preset menu (also re-fired by hold-to-repeat).
+    fn preset_nav(&mut self, b: Btn) {
+        let ps = presets::builtin();
+        if let Some(pi) = self.pm.confirm {
+            match b {
+                Btn::A => {
+                    self.close_presets();
+                    self.load_preset(pi);
+                }
+                Btn::B => self.pm.confirm = None,
+                _ => {}
+            }
+            return;
+        }
+        self.pm.note.clear();
+        match self.pm.event(b, ps) {
+            MenuOut::None => {}
+            MenuOut::Close => self.close_presets(),
+            MenuOut::Load(pi) => {
+                if self.pattern_has_notes() {
+                    self.pm.confirm = Some(pi);
+                } else {
+                    self.close_presets();
+                    self.load_preset(pi);
+                }
+                return;
+            }
+            MenuOut::Audition => {
+                if self.aud.is_some() {
+                    self.stop_audition();
+                } else if self.tr.playing {
+                    // the menu's player shares the mixer: never under the running sequence
+                    self.pm.note = "Pause the sequencer to listen".into();
+                } else if let Some(pi) = self.pm.highlighted() {
+                    self.start_audition(pi);
+                }
+            }
+        }
+        // listening follows the cursor; leaving the pattern list stops it
+        if let Some(cur) = self.aud.as_ref().map(|a| a.preset) {
+            match self.pm.highlighted() {
+                Some(pi) if pi != cur => self.start_audition(pi),
+                None => self.stop_audition(),
+                _ => {}
+            }
+        }
+    }
+
+    fn preset_event(&mut self, b: Btn) {
+        let (m0, m1) = PRESET_MENU_COMBO;
+        if b == m1 && self.held.is(m0) {
+            self.close_presets();
+            return;
+        }
+        self.preset_nav(b);
+        if matches!(self.overlay, Overlay::Presets) && matches!(b, Btn::Up | Btn::Down) {
+            self.rep.start(b);
+        }
+    }
+
     fn save_now(&mut self) {
         let s = self.state_string();
         self.host.save_state(self.cfg.file, &s);
@@ -594,6 +835,12 @@ impl GridApp {
     // ---- input -----------------------------------------------------------
 
     fn press(&mut self, b: Btn) {
+        let (m0, m1) = PRESET_MENU_COMBO;
+        if self.cfg.presets && b == m1 && self.held.is(m0) {
+            self.use_mods();
+            self.open_presets();
+            return;
+        }
         let st = self.held.is(Btn::Start);
         let se = self.held.is(Btn::Select);
         let fnh = self.held.is(Btn::Fn);
@@ -789,6 +1036,10 @@ impl GridApp {
         let overlay = std::mem::replace(&mut self.overlay, Overlay::None);
         match overlay {
             Overlay::None => {}
+            Overlay::Presets => {
+                self.overlay = Overlay::Presets;
+                self.preset_event(b);
+            }
             Overlay::Help => {
                 self.help.event(b, self.cfg.help.len());
                 if self.help.open {
@@ -871,10 +1122,14 @@ impl GridApp {
         let y0 = 58;
         let rh = row_h(nt);
         let play = self.tr.playhead().filter(|_| self.tr.playing);
+        // a 12-step preset shows 12 columns, grouped by beat (3 for triplets and 12/8)
+        let (len, div) = self.lens[self.pattern];
+        let div = div.max(1) as usize;
+        let col_x = |s: usize| x0 + s as i32 * 30 + (s / div) as i32 * 4;
 
         // step numbers + playhead
-        for s in 0..STEPS {
-            let x = x0 + s as i32 * 30 + (s as i32 / 4) * 4;
+        for s in 0..len {
+            let x = col_x(s);
             let on = play == Some(s);
             if on {
                 fb.rect(x, y0 - 16, cw, 12, ACCENT);
@@ -912,17 +1167,22 @@ impl GridApp {
             fb.rect(10, y + rh - 8, 100, 4, CELL_OFF);
             fb.rect(10, y + rh - 8, vb, 4, scale(base, if t.mute { 0.3 } else { 0.8 }));
 
-            for s in 0..STEPS {
-                let x = x0 + s as i32 * 30 + (s as i32 / 4) * 4;
-                let v = self.cells[self.idx(self.pattern, ti, s)];
+            for s in 0..len {
+                let x = col_x(s);
+                let c = self.cells[self.idx(self.pattern, ti, s)];
+                let v = c & !FLAM_BIT;
                 let head = play == Some(s);
-                let off = if (s / 4) % 2 == 0 { CELL_BEAT } else { CELL_OFF };
+                let off = if (s / div) % 2 == 0 { CELL_BEAT } else { CELL_OFF };
                 fb.rect(x, y, cw, rh, if head { scale(off, 1.5) } else { off });
                 if v > 0 {
                     let dimf = if t.mute { 0.35 } else { 1.0 };
                     fb.rect(x, y, cw, rh, scale(base, 0.25 * dimf));
                     let fh = (rh * v as i32 / 127).max(3);
                     fb.rect(x, y + rh - fh, cw, fh, scale(base, dimf * if head { 1.2 } else { 1.0 }));
+                    if c & FLAM_BIT != 0 {
+                        // flam: a grace mark at the left of the hit
+                        fb.rect(x + 3, y + 4, 4, rh - 8, WHITE);
+                    }
                 }
                 if sel_cur && s == self.cur_step {
                     fb.frame(x - 2, y - 2, cw + 4, rh + 4, 2, WHITE);
@@ -958,8 +1218,10 @@ impl GridApp {
             l1.push_str(&format!("  note {}", note_name(t.note)));
         }
         fb.text(14, y + 8, &l1, 2, TEXT);
-        let v = self.cells[self.idx(self.pattern, self.cur_track, self.cur_step)];
-        let l2 = format!("Step {}  {}   vol {}%", self.cur_step + 1, if v > 0 { format!("vel {}", v) } else { "off".into() }, (t.vol * 100.0).round());
+        let c = self.cells[self.idx(self.pattern, self.cur_track, self.cur_step)];
+        let v = c & !FLAM_BIT;
+        let flam = if c & FLAM_BIT != 0 { " flam" } else { "" };
+        let l2 = format!("Step {}  {}   vol {}%", self.cur_step + 1, if v > 0 { format!("vel {}{}", v, flam) } else { "off".into() }, (t.vol * 100.0).round());
         fb.text(14, y + 30, &l2, 2, DIM);
         let mut l3 = String::new();
         if self.cfg.chords && t.kind == TrackKind::Pitched {
@@ -1007,14 +1269,32 @@ impl App for GridApp {
         out.iter_mut().for_each(|x| *x = 0.0);
         let frames = out.len() / 2;
         let mut done = 0usize;
+        let lead = self.grace_lead();
         while done < frames {
             while let Some(s) = self.tr.take_due() {
                 self.fire_step(s);
             }
-            let chunk = (self.tr.until_due().min((frames - done) as u64) as usize).max(1);
+            if let Some(a) = self.aud.as_mut() {
+                while let Some(s) = a.tr.take_due() {
+                    for ti in 0..self.tracks.len() {
+                        let v = a.rows[ti][s] & !FLAM_BIT;
+                        if v > 0 && !self.tracks[ti].mute {
+                            Self::play_track(&mut self.mixer, &mut self.tracks[ti], ti, v);
+                        }
+                    }
+                    let ns = (s + 1) % a.tr.steps;
+                    let next: Vec<u8> = a.rows.iter().map(|r| r[ns]).collect();
+                    Self::play_graces(&mut self.mixer, &mut self.tracks, &next, a.tr.until_due().saturating_sub(lead));
+                }
+            }
+            let due = self.tr.until_due().min(self.aud.as_ref().map_or(u64::MAX, |a| a.tr.until_due()));
+            let chunk = (due.min((frames - done) as u64) as usize).max(1);
             let seg = &mut out[done * 2..(done + chunk) * 2];
             self.mixer.render(seg);
             self.tr.advance(chunk as u64);
+            if let Some(a) = self.aud.as_mut() {
+                a.tr.advance(chunk as u64);
+            }
             done += chunk;
         }
         for x in out.iter_mut() {
@@ -1035,6 +1315,10 @@ impl App for GridApp {
             Overlay::None => {}
             Overlay::Help => self.help.draw(fb, self.cfg.name, self.cfg.help),
             Overlay::Browse(_) => self.browser.draw(fb, &self.catalog, &[]),
+            Overlay::Presets => {
+                let voices: Vec<String> = self.tracks.iter().map(|t| t.inst.as_ref().map_or("-".to_string(), |i| i.name.clone())).collect();
+                self.pm.draw(fb, presets::builtin(), &voices, self.aud.is_some());
+            }
             Overlay::Chord { chord, scale, .. } => {
                 let (x, y) = modal(fb, 440, 200, "Chord / scale");
                 fb.text(x, y + 4, "Chord", 2, DIM);
@@ -1128,6 +1412,10 @@ impl App for GridApp {
             if let Some(b) = self.rep.tick(dt) {
                 self.adjust_env(row, if b == Btn::Left { -1 } else { 1 });
             }
+        } else if matches!(self.overlay, Overlay::Presets) {
+            if let Some(b) = self.rep.tick(dt) {
+                self.preset_nav(b);
+            }
         } else {
             self.rep.clear();
         }
@@ -1193,6 +1481,184 @@ mod tests {
         tap(&mut a, Btn::A);
         let k = a.applied_kit().unwrap();
         assert!(k.ends_with("Dusty"), "second kit applied: {}", k);
+    }
+
+    fn beat() -> GridApp {
+        crate::apps::beat::new(Box::new(MemHost::default()))
+    }
+
+    fn combo(a: &mut GridApp) {
+        let (m0, m1) = PRESET_MENU_COMBO;
+        a.event(m0, true);
+        tap(a, m1);
+        a.event(m0, false);
+    }
+
+    /// Render `frames` of audio; index of the first frame louder than `thr`.
+    fn first_sound(a: &mut GridApp, frames: usize, thr: f32) -> Option<usize> {
+        let mut buf = vec![0.0f32; frames * 2];
+        for c in buf.chunks_mut(512) {
+            a.audio(c);
+        }
+        buf.chunks(2).position(|f| f[0].abs() > thr || f[1].abs() > thr)
+    }
+
+    #[test]
+    fn every_preset_lands_on_its_mapped_voices() {
+        let ps = presets::builtin();
+        for (pi, x) in ps.patterns.iter().enumerate() {
+            let mut a = beat();
+            a.load_preset(pi);
+            assert_eq!(a.lens[0], (x.steps, x.div), "{}", x.id);
+            assert_eq!((a.tr.steps, a.tr.div), (x.steps, x.div), "{} clock", x.id);
+            let accent = x.tracks.iter().find(|(k, _)| k == "AC").map(|(_, s)| s.as_bytes());
+            for v in 0..4 {
+                for s in 0..STEPS {
+                    let c = a.cells[a.idx(0, v, s)];
+                    let rows: Vec<u8> = x.tracks.iter().filter(|(k, _)| presets::voice_of(k) == Some(v)).map(|(_, p)| p.as_bytes().get(s).copied().unwrap_or(b'.')).collect();
+                    let hit = rows.iter().any(|&r| r != b'.');
+                    assert_eq!(c != 0, hit, "{} voice {} step {}: cell {}", x.id, v + 1, s + 1, c);
+                    if hit {
+                        let flam = rows.contains(&b'F');
+                        assert_eq!(c & FLAM_BIT != 0, flam, "{} voice {} step {} flam", x.id, v + 1, s + 1);
+                        let acc = accent.is_some_and(|ac| ac[s] != b'.');
+                        let vel = if acc { presets::ACCENT_VEL } else { presets::NORMAL_VEL };
+                        assert_eq!(c & !FLAM_BIT, vel, "{} voice {} step {} velocity", x.id, v + 1, s + 1);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_combo_opens_and_closes_the_menu_and_b_backs_out() {
+        let mut a = beat();
+        combo(&mut a);
+        assert!(matches!(a.overlay, Overlay::Presets));
+        combo(&mut a);
+        assert!(matches!(a.overlay, Overlay::None));
+        // START was used as a modifier: releasing it did not start playback
+        assert!(!a.tr.playing);
+        combo(&mut a);
+        tap(&mut a, Btn::A); // into the first style
+        tap(&mut a, Btn::B); // back to the styles
+        assert!(matches!(a.overlay, Overlay::Presets));
+        tap(&mut a, Btn::B); // close
+        assert!(matches!(a.overlay, Overlay::None));
+        // the main screen works as before: A toggles a step
+        tap(&mut a, Btn::A);
+        assert!(a.cells[a.idx(0, 0, 0)] > 0);
+    }
+
+    #[test]
+    fn load_a_12_step_pattern_then_reopen_at_the_same_place() {
+        let mut a = beat();
+        combo(&mut a);
+        tap(&mut a, Btn::Down); // Blues (12/8)
+        tap(&mut a, Btn::A);
+        tap(&mut a, Btn::Down); // Blues 2
+        tap(&mut a, Btn::A); // the pattern is empty: loads at once and closes
+        assert!(matches!(a.overlay, Overlay::None));
+        assert_eq!(a.lens[0], (12, 3));
+        assert_eq!(presets::builtin().patterns[a.pm.highlighted().unwrap()].id, "blues-r2");
+        // reopen: same pattern highlighted; loading over notes asks first
+        combo(&mut a);
+        tap(&mut a, Btn::Down); // Blues 3
+        tap(&mut a, Btn::A);
+        assert!(a.pm.confirm.is_some());
+        tap(&mut a, Btn::B); // keep
+        assert!(a.pm.confirm.is_none() && matches!(a.overlay, Overlay::Presets));
+        tap(&mut a, Btn::A);
+        tap(&mut a, Btn::A); // replace
+        assert!(matches!(a.overlay, Overlay::None));
+        let x = &presets::builtin().patterns[a.pm.highlighted().unwrap()];
+        assert_eq!(x.id, "blues-r3");
+        // the cursor moves within the 12 steps
+        tap(&mut a, Btn::Left);
+        assert_eq!(a.cur_step, 11);
+        // clearing makes it a 16-step pattern again
+        a.event(Btn::Select, true);
+        tap(&mut a, Btn::L1);
+        a.event(Btn::Select, false);
+        assert_eq!((a.lens[0], a.tr.steps), ((16, 4), 16));
+    }
+
+    #[test]
+    fn position_and_lengths_survive_save_and_load() {
+        let mut a = beat();
+        combo(&mut a);
+        for _ in 0..20 {
+            tap(&mut a, Btn::Down); // Waltz (3/4)
+        }
+        tap(&mut a, Btn::A);
+        tap(&mut a, Btn::A);
+        let text = a.state_string();
+        let mut host = MemHost::default();
+        host.state.insert("hillbeat".into(), text);
+        let b = crate::apps::beat::new(Box::new(host));
+        assert_eq!(b.lens[0], (12, 4));
+        assert_eq!(b.tr.steps, 12);
+        assert_eq!(b.cells[..STEPS * 4], a.cells[..STEPS * 4]);
+        assert_eq!(presets::builtin().patterns[b.pm.highlighted().unwrap()].id, "waltz-r1");
+    }
+
+    #[test]
+    fn loading_while_playing_waits_for_the_bar_line() {
+        let mut a = beat();
+        a.tr.playing = true;
+        let _ = first_sound(&mut a, 6000, 2.0); // into step 2
+        let funk = presets::builtin().patterns.iter().position(|x| x.id == "funk-r1").unwrap();
+        a.load_preset(funk);
+        assert!(a.cells[..STEPS * 4].iter().all(|&c| c == 0), "not yet");
+        let _ = first_sound(&mut a, 88200, 2.0); // past the bar line
+        assert!(a.cells[..STEPS * 4].iter().any(|&c| c != 0), "applied at step 1");
+        assert!(a.staged.is_none());
+    }
+
+    #[test]
+    fn a_flam_sounds_its_grace_note_30ms_early() {
+        let step = 5512; // a 16th at 120 bpm
+        let at = 4 * step;
+        let lead = (FLAM_GRACE_MS / 1000.0 * SAMPLE_RATE) as usize;
+        for (cell, expect) in [(presets::NORMAL_VEL, at), (presets::NORMAL_VEL | FLAM_BIT, at - lead)] {
+            let mut a = beat();
+            let i = a.idx(0, 1, 4);
+            a.cells[i] = cell;
+            a.tr.playing = true;
+            let first = first_sound(&mut a, at + 4000, 1e-4).expect("sound");
+            assert!((first as i64 - expect as i64).abs() <= 2, "cell {:#x}: first sound at {} expected {}", cell, first, expect);
+        }
+    }
+
+    #[test]
+    fn listening_in_the_menu_plays_without_touching_the_pattern() {
+        let mut a = beat();
+        combo(&mut a);
+        tap(&mut a, Btn::A); // Afro-Cuban
+        tap(&mut a, Btn::X);
+        assert!(a.aud.is_some());
+        assert!(first_sound(&mut a, 44100, 1e-3).is_some(), "the audition is audible");
+        assert!(a.cells.iter().all(|&c| c == 0) && !a.tr.playing);
+        tap(&mut a, Btn::Down); // follows the cursor
+        assert_eq!(a.aud.as_ref().map(|x| x.preset), a.pm.highlighted());
+        tap(&mut a, Btn::B); // leaving the list stops it
+        assert!(a.aud.is_none());
+        // while the sequencer plays, listening is refused
+        a.overlay = Overlay::None;
+        a.tr.playing = true;
+        combo(&mut a);
+        tap(&mut a, Btn::A);
+        tap(&mut a, Btn::X);
+        assert!(a.aud.is_none() && !a.pm.note.is_empty());
+    }
+
+    #[test]
+    fn hillband_and_hillsequencer_ignore_the_combo() {
+        for mut a in [crate::apps::band::new(Box::new(MemHost::default())), crate::apps::sequencer::new(Box::new(MemHost::default()))] {
+            combo(&mut a);
+            assert!(matches!(a.overlay, Overlay::None));
+            assert_eq!(a.pattern, 0, "START+L1 does not change the pattern");
+        }
     }
 
     #[test]
