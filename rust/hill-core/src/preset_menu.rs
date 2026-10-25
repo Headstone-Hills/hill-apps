@@ -4,7 +4,7 @@
 
 use crate::fb::*;
 use crate::input::Btn;
-use crate::presets::{voice_of, Kind, Preset, Presets, FLAM_BIT};
+use crate::presets::{Kind, Plan, Preset, Presets, Sound, FLAM_BIT};
 
 pub enum MenuOut {
     None,
@@ -164,8 +164,8 @@ impl PresetMenu {
         MenuOut::None
     }
 
-    /// `voices`: the names of HillBeat's voices, to label the preview rows.
-    pub fn draw(&self, fb: &mut Fb, p: &Presets, voices: &[String], auditioning: bool) {
+    /// `plan`: the highlighted pattern as it will load (tracks, sounds, kit).
+    pub fn draw(&self, fb: &mut Fb, p: &Presets, plan: Option<&Plan>, auditioning: bool) {
         fb.dim(0.35);
         fb.rect(20, 14, 600, 452, PANEL);
         fb.frame(20, 14, 600, 452, 2, DIM);
@@ -207,8 +207,8 @@ impl PresetMenu {
                 }
                 y += 24;
             }
-            if let Some(i) = self.highlighted() {
-                draw_preview(fb, &p.patterns[i], voices);
+            if let (Some(i), Some(plan)) = (self.highlighted(), plan) {
+                draw_preview(fb, &p.patterns[i], plan);
             }
             let hint = if auditioning { "A load  X stop  B back  L1/R1 style" } else { "A load  X listen  B back  L1/R1 style" };
             fb.text_right(606, 446, hint, 1, DIM);
@@ -258,8 +258,8 @@ impl PresetMenu {
     }
 }
 
-/// Mini step grid: one line per used row (as in the data), with the voice it plays on.
-fn draw_preview(fb: &mut Fb, x: &Preset, voices: &[String]) {
+/// Mini step grid of the tracks as they will load: same order, same sounds.
+fn draw_preview(fb: &mut Fb, x: &Preset, plan: &Plan) {
     let (px, py) = (316, 56);
     fb.text(px, py, &clip(&x.name, 18), 2, WHITE);
     let kind = match x.kind {
@@ -268,57 +268,61 @@ fn draw_preview(fb: &mut Fb, x: &Preset, voices: &[String]) {
         Kind::Ending => "ending",
     };
     let feel = x.tag().unwrap_or("16ths");
-    fb.text(px, py + 24, &format!("{}  {}  {} steps  {}  p.{}", kind, x.time_sig, x.steps, feel, x.book_page), 1, DIM);
+    fb.text(px, py + 22, &format!("{}  {}  {} steps  {}  p.{}", kind, x.time_sig, x.steps, feel, x.book_page), 1, DIM);
+    let kit = plan.kit.as_deref().unwrap_or("built-in sounds");
+    fb.text(px, py + 36, &clip(&format!("kit: {}", kit), 36), 1, ACCENT);
 
-    let gx = px + 34;
+    let gx = px + 30;
     let cw = (256 / x.steps as i32).min(16);
-    let rh = 16;
-    let mut y = py + 46;
-    // beat numbers over the grid
+    let rh = 14;
+    let mut y = py + 54;
     for s in (0..x.steps).step_by(x.div as usize) {
-        let cx = gx + s as i32 * cw;
-        fb.text(cx + 1, y, &format!("{}", s / x.div as usize + 1), 1, DIM);
+        fb.text(gx + s as i32 * cw + 1, y, &format!("{}", s / x.div as usize + 1), 1, DIM);
     }
     y += 12;
-    let cells = x.to_cells(voices.len());
-    for (key, pat) in &x.tracks {
-        let v = voice_of(key);
-        let base = if v.is_some() { DRUM } else { ACCENT };
-        fb.text(px, y + 4, key, 1, if v.is_some() { TEXT } else { ACCENT });
-        for (s, c) in pat.chars().enumerate() {
+    let grid_top = y;
+    for (ti, v) in plan.voices.iter().enumerate() {
+        let used = !v.rows.is_empty();
+        fb.text(px, y + 3, &format!("{}", ti + 1), 1, if used { DRUM } else { DIM });
+        for s in 0..x.steps {
             let cx = gx + s as i32 * cw;
             let beat = (s / x.div as usize) % 2 == 0;
             fb.rect(cx, y, cw - 1, rh - 2, if beat { CELL_BEAT } else { CELL_OFF });
-            if c != '.' {
-                fb.rect(cx, y, cw - 1, rh - 2, base);
+            let c = plan.cells[ti][s];
+            let vel = (c & !FLAM_BIT) as i32;
+            if vel > 0 {
+                // taller = accented; lighter = a higher tom
+                let h = ((rh - 2) * vel / 127).max(3);
+                let col = scale(DRUM, 1.0 + plan.pitch[ti][s] as f32 * 0.06);
+                fb.rect(cx, y + rh - 2 - h, cw - 1, h, col);
             }
-            if c == 'F' {
-                // flam: a small white grace mark on the left of the hit
+            if c & FLAM_BIT != 0 {
                 fb.rect(cx + 1, y + 2, 3, rh - 6, WHITE);
             }
         }
         y += rh;
-        if y > 330 {
-            break;
-        }
     }
-    // which voice each sounding row lands on
-    let mut ly = y.max(py + 160) + 10;
-    for (vi, name) in voices.iter().enumerate() {
-        let rows: Vec<&str> = x.tracks.iter().filter(|(k, _)| voice_of(k) == Some(vi)).map(|(k, _)| k.as_str()).collect();
-        if rows.is_empty() {
-            continue;
-        }
-        let flams = cells[vi].iter().any(|c| c & FLAM_BIT != 0);
-        let line = format!("{} > {} {}{}", rows.join("+"), vi + 1, clip(name, 10), if flams { "  (flam)" } else { "" });
-        fb.text(px, ly, &clip(&line, 36), 1, TEXT);
-        ly += 14;
+    // what each track holds: its rows from the book, and the sound
+    let mut ly = y.max(grid_top + 8 * rh) + 8;
+    for (ti, v) in plan.voices.iter().enumerate() {
+        let sound = match &v.sound {
+            Sound::File(p) => {
+                let stem = p.rsplit('/').next().unwrap_or(p);
+                stem.rsplit_once('.').map_or(stem, |(s, _)| s).to_string()
+            }
+            Sound::Builtin(n) => format!("{} (built-in)", n),
+        };
+        let rows = if v.rows.is_empty() { "-".to_string() } else { v.rows.join("+") };
+        let line = format!("{} {:<8}{}", ti + 1, rows, sound);
+        fb.text(px, ly, &clip(&line, 36), 1, if v.rows.is_empty() { DIM } else { TEXT });
+        ly += 13;
     }
+    let mut notes = Vec::new();
     if x.tracks.iter().any(|(k, _)| k == "AC") {
-        fb.text(px, ly, "AC = accent: louder hits there", 1, ACCENT);
-        ly += 14;
+        notes.push("tall = accent");
     }
-    if ly < 420 {
-        fb.text(px, 422, "white mark = flam", 1, DIM);
+    if plan.cells.iter().flatten().any(|c| c & FLAM_BIT != 0) {
+        notes.push("white mark = flam");
     }
+    fb.text(px, 422, &notes.join("   "), 1, DIM);
 }

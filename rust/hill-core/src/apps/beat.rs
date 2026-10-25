@@ -4,7 +4,7 @@ use crate::Host;
 static CONFIG: GridConfig = GridConfig {
     name: "HillBeat",
     file: "hillbeat",
-    tracks: &[TrackKind::Drum, TrackKind::Drum, TrackKind::Drum, TrackKind::Drum],
+    tracks: &[TrackKind::Drum; 8],
     chords: false,
     key_overlay: false,
     multiselect: false,

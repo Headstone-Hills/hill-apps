@@ -18,7 +18,7 @@ DIST="$ROOT/dist"
 APPS=(hillbeat hillsequencer hillband hillchord hillsynth)
 declare -A TITLE=([hillbeat]=HillBeat [hillsequencer]=HillSequencer [hillband]=HillBand [hillchord]=HillChord [hillsynth]=HillSynth [hillmap]=HillMap)
 declare -A DESC=(
-  [hillbeat]="4-voice drum machine: 16 steps, 8 patterns, swing, drum kits, 267 preset patterns"
+  [hillbeat]="8-track drum machine: 16 steps, 8 patterns, swing, drum kits, 267 preset patterns"
   [hillsequencer]="8-track pitched step sequencer with a key/scale spreader"
   [hillband]="4 melodic + 4 drum tracks with chords, scale modes and drum kits"
   [hillchord]="Live chord/note instrument with looper, arpeggiator and metronome"

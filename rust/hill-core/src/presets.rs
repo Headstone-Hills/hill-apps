@@ -1,5 +1,5 @@
 //! HillBeat's preset drum patterns (`data/presets.json`, 22 styles, 267
-//! patterns) and how they map onto HillBeat's four voices.
+//! patterns), and how they go onto HillBeat's tracks with sounds from a drum kit.
 //!
 //! The JSON is compiled in, so it works the same on device, desktop and in the
 //! browser build, whatever directory the app is launched from. Check the data
@@ -9,24 +9,55 @@ use std::sync::OnceLock;
 
 pub const PRESETS_JSON: &str = include_str!("../data/presets.json");
 
-/// Data rows to HillBeat voices (track index: 0 Kick, 1 Snare, 2 Hat, 3 Perc,
-/// the order the built-ins and drum kits use). `None` = not a sound: `AC` is an
-/// accent on the other hits at that step. HillBeat has 4 voices and the data
-/// has 12 sounds, so several rows share a voice; their hits are merged.
-pub const ROW_TO_VOICE: &[(&str, Option<usize>)] = &[
-    ("BD", Some(0)),
-    ("SD", Some(1)),
-    ("RS", Some(1)),  // fallback: rim shot on the snare
-    ("CH", Some(2)),
-    ("OH", Some(2)),  // fallback: open hat on the hat
-    ("CY", Some(2)),  // fallback: cymbal on the hat
-    ("TAM", Some(2)), // fallback: tambourine on the hat
-    ("CPS", Some(3)), // claps: the default fourth voice is Clap
-    ("CB", Some(3)),  // fallback: cowbell on perc
-    ("HT", Some(3)),  // fallback: toms on perc
-    ("MT", Some(3)),
-    ("LT", Some(3)),
-    ("AC", None),
+/// Every row the data may use, top to bottom as the book lists them. The preview
+/// and the loaded tracks follow this order.
+pub const ROWS: [&str; 13] = ["AC", "CY", "CH", "OH", "HT", "MT", "SD", "RS", "LT", "CPS", "CB", "TAM", "BD"];
+
+/// When a pattern sounds more rows than HillBeat has tracks, rows join a related
+/// row, in this order, until it fits: (row, rows it may join; the first present wins).
+/// Every shipped pattern fits after the tom and hat steps. Toms keep their pitch
+/// when they share a track (see `TOM_SEMIS`).
+pub const MERGES: &[(&str, &[&str])] = &[
+    ("CY", &["OH", "CH"]),
+    ("HT", &["MT", "LT"]),
+    ("LT", &["MT", "HT"]),
+    ("TAM", &["CH", "OH"]),
+    ("OH", &["CH"]),
+    ("RS", &["SD"]),
+    ("CPS", &["SD"]),
+    ("CB", &["CH", "RS", "SD"]),
+];
+
+/// Tom pitches relative to the mid tom, in semitones: a shared or generic tom
+/// sample is pitched to these so tom fills still go high to low.
+pub const TOM_SEMIS: [(&str, i8); 3] = [("HT", 5), ("MT", 0), ("LT", -5)];
+
+/// Kits each style prefers (matched against the kit's folder, case-insensitive),
+/// best first. A kit that has the pattern's sounds wins over preference; these
+/// break ties. Names are kits in the SP's `Samples/Drums`; missing ones are skipped.
+pub const STYLE_KITS: &[(&str, &[&str])] = &[
+    ("Afro-Cuban", &["lm vinyl", "ampeg 808", "cleancut"]),
+    ("Bossa Nova", &["lm vinyl", "ampeg 808", "boogie classic"]),
+    ("Cha Cha", &["lm vinyl", "ampeg 808", "cleancut"]),
+    ("Samba", &["lm vinyl", "ampeg 808", "cleancut"]),
+    ("Blues", &["boogie classic", "83 on myrtle", "lm vinyl"]),
+    ("Boogie", &["boogie classic", "83 on myrtle", "lm vinyl"]),
+    ("Jazz", &["future retro", "boogie classic", "lm vinyl"]),
+    ("Swing", &["future retro", "boogie classic", "lm vinyl"]),
+    ("Shuffle", &["boogie classic", "lm vinyl", "future retro"]),
+    ("Slow", &["lm vinyl", "boogie classic", "future retro"]),
+    ("Waltz", &["future retro", "lm vinyl", "boogie classic"]),
+    ("March & Tango", &["lm vinyl", "future retro", "boogie classic"]),
+    ("Paso Doble & Charleston", &["future retro", "lm vinyl", "boogie classic"]),
+    ("Twist", &["boogie classic", "lm vinyl", "future retro"]),
+    ("Disco", &["909 tube", "cleancut", "ampeg 808"]),
+    ("Funk", &["boogie classic", "lm vinyl", "ampeg 808"]),
+    ("R&B", &["boogie classic", "ampeg 808", "lm vinyl"]),
+    ("Pop", &["lm vinyl", "909 tube", "mcmxciii"]),
+    ("Rock", &["lm vinyl", "909 tube", "mcmxciii"]),
+    ("Reggae", &["ampeg 808", "cleancut", "heavy sat"]),
+    ("Ska", &["ampeg 808", "boogie classic", "cleancut"]),
+    ("Ending", &["909 tube", "lm vinyl", "ampeg 808"]),
 ];
 
 /// Velocity of a normal hit and of an accented one (cells hold 1..=127).
@@ -81,36 +112,218 @@ impl Preset {
         }
     }
 
-    /// The pattern as HillBeat cells: `voices` rows of `steps` velocities, with
-    /// `FLAM_BIT` set on flams. Rows sharing a voice merge (a flam wins).
-    pub fn to_cells(&self, voices: usize) -> Vec<Vec<u8>> {
-        let mut out = vec![vec![0u8; self.steps]; voices];
-        let accent: Vec<bool> = match self.tracks.iter().find(|(k, _)| k == "AC") {
-            Some((_, s)) => s.chars().map(|c| c != '.').collect(),
+    /// How this pattern goes onto `voices` drum tracks with sounds from `kits`
+    /// (or the built-in sounds when no kit fits).
+    pub fn plan(&self, kits: &[Kit], voices: usize) -> Plan {
+        // sounding rows, top to bottom; fold related rows until they fit
+        let mut groups: Vec<Vec<&'static str>> = ROWS.iter().filter(|r| **r != "AC" && self.row(r).is_some()).map(|r| vec![*r]).collect();
+        for (row, into) in MERGES {
+            if groups.len() <= voices {
+                break;
+            }
+            let Some(gi) = groups.iter().position(|g| g.contains(row)) else { continue };
+            if let Some(ti) = into.iter().find_map(|t| groups.iter().position(|g| g.contains(t)).filter(|&ti| ti != gi)) {
+                let g = groups.remove(gi);
+                let ti = if ti > gi { ti - 1 } else { ti };
+                groups[ti].extend(g);
+                groups[ti].sort_by_key(|r| row_pos(r));
+            }
+        }
+        // a merged track sits where its top row is
+        groups.sort_by_key(|g| row_pos(g[0]));
+        while groups.len() > voices {
+            // not reached with the shipped data: fold the last row into the one above
+            let g = groups.pop().unwrap_or_default();
+            if let Some(last) = groups.last_mut() {
+                last.extend(g);
+            }
+        }
+        // each track plays the sound of its busiest row
+        let hits = |r: &str| self.row(r).map_or(0, |s| s.chars().filter(|c| *c != '.').count());
+        let leads: Vec<&'static str> = groups.iter().map(|g| *g.iter().max_by_key(|r| (hits(r), std::cmp::Reverse(row_pos(r)))).unwrap()).collect();
+        let pref: &[&str] = STYLE_KITS.iter().find(|(s, _)| *s == self.style).map_or(&[], |(_, k)| *k);
+        let rank = |k: &Kit| {
+            let cover: u32 = leads.iter().map(|r| k.pick(r).map_or(0, |(_, q, _)| q as u32)).sum();
+            let n = k.name.to_lowercase();
+            let liked = pref.iter().position(|p| n.contains(p)).map_or(0, |i| pref.len() - i);
+            (cover, liked)
+        };
+        let kit = kits.iter().filter(|k| rank(k).0 > 0).max_by_key(|k| rank(k));
+
+        let mut out = Plan {
+            kit: kit.map(|k| k.name.clone()),
+            voices: Vec::new(),
+            cells: vec![vec![0u8; self.steps]; voices],
+            pitch: vec![vec![0i8; self.steps]; voices],
+        };
+        let accent: Vec<bool> = match self.row("AC") {
+            Some(s) => s.chars().map(|c| c != '.').collect(),
             None => vec![false; self.steps],
         };
-        for (key, s) in &self.tracks {
-            let Some(v) = voice_of(key) else { continue };
-            if v >= voices {
-                continue;
-            }
-            for (i, c) in s.chars().enumerate().take(self.steps) {
-                if c == '.' {
-                    continue;
+        for (ti, (g, lead)) in groups.iter().zip(&leads).enumerate() {
+            let (sound, basis) = match kit.and_then(|k| k.pick(lead).map(|(f, _, b)| (Sound::File(k.files[f].path.clone()), b))) {
+                Some(x) => x,
+                None => builtin_for(lead),
+            };
+            for r in g {
+                let semis = match (tom_semis(r), basis.and_then(tom_semis)) {
+                    (Some(a), Some(b)) => a - b,
+                    _ => 0,
+                };
+                for (i, c) in self.row(r).unwrap_or("").chars().enumerate().take(self.steps) {
+                    if c == '.' {
+                        continue;
+                    }
+                    let vel = if accent[i] { ACCENT_VEL } else { NORMAL_VEL };
+                    let flam = if c == 'F' { FLAM_BIT } else { 0 };
+                    let cell = &mut out.cells[ti][i];
+                    if *cell == 0 {
+                        out.pitch[ti][i] = semis; // two rows on one step: the upper row's pitch
+                    }
+                    *cell = (*cell & !FLAM_BIT).max(vel) | (*cell & FLAM_BIT) | flam;
                 }
-                let vel = if accent[i] { ACCENT_VEL } else { NORMAL_VEL };
-                let flam = if c == 'F' { FLAM_BIT } else { 0 };
-                let cell = &mut out[v][i];
-                *cell = (*cell & !FLAM_BIT).max(vel) | (*cell & FLAM_BIT) | flam;
             }
+            out.voices.push(PlanVoice { rows: g.clone(), sound });
+        }
+        // spare tracks get other sounds of the same kit, so the kit stays whole
+        for role in ["BD", "SD", "CH", "OH", "CPS", "RS", "CB", "MT", "CY", "TAM"] {
+            if out.voices.len() >= voices {
+                break;
+            }
+            let taken = |s: &Sound| out.voices.iter().any(|v| v.sound == *s);
+            let sound = match kit.and_then(|k| k.pick(role)).filter(|(_, q, _)| *q == 2) {
+                Some((f, _, _)) => Sound::File(kit.unwrap().files[f].path.clone()),
+                None if kit.is_none() => builtin_for(role).0,
+                None => continue,
+            };
+            if !taken(&sound) {
+                out.voices.push(PlanVoice { rows: vec![], sound });
+            }
+        }
+        while out.voices.len() < voices {
+            out.voices.push(PlanVoice { rows: vec![], sound: Sound::Builtin("Clap") });
         }
         out
     }
+
+    fn row(&self, r: &str) -> Option<&str> {
+        self.tracks.iter().find(|(k, _)| k == r).map(|(_, s)| s.as_str())
+    }
 }
 
-/// The voice a data row plays on (`None` for `AC` and unknown rows).
-pub fn voice_of(row: &str) -> Option<usize> {
-    ROW_TO_VOICE.iter().find(|(k, _)| *k == row).and_then(|(_, v)| *v)
+fn row_pos(r: &str) -> usize {
+    ROWS.iter().position(|x| *x == r).unwrap_or(ROWS.len())
+}
+
+fn tom_semis(r: &str) -> Option<i8> {
+    TOM_SEMIS.iter().find(|(k, _)| *k == r).map(|(_, s)| *s)
+}
+
+/// The built-in sound for a row, and the row it stands for (for tom pitch).
+fn builtin_for(row: &str) -> (Sound, Option<&'static str>) {
+    match row {
+        "BD" => (Sound::Builtin("Kick"), None),
+        "SD" | "RS" => (Sound::Builtin("Snare"), None),
+        "CPS" => (Sound::Builtin("Clap"), None),
+        "HT" | "MT" | "LT" => (Sound::Builtin("Tom"), Some("MT")),
+        "CB" => (Sound::Builtin("Tom"), None),
+        _ => (Sound::Builtin("Hat"), None),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Sound {
+    /// A sample file (path as the host lists it).
+    File(String),
+    /// One of the built-in sounds, by name.
+    Builtin(&'static str),
+}
+
+#[derive(Clone, Debug)]
+pub struct PlanVoice {
+    /// Data rows on this track, top to bottom (empty for a spare track).
+    pub rows: Vec<&'static str>,
+    pub sound: Sound,
+}
+
+/// A preset laid out for HillBeat: one entry per track, in the preview's order.
+#[derive(Clone, Debug)]
+pub struct Plan {
+    /// The kit the sounds come from (`None`: built-in sounds).
+    pub kit: Option<String>,
+    pub voices: Vec<PlanVoice>,
+    /// Per track: velocities with `FLAM_BIT`, and semitones (toms sharing a sound).
+    pub cells: Vec<Vec<u8>>,
+    pub pitch: Vec<Vec<i8>>,
+}
+
+/// A drum kit folder, with each file's name split into lowercase words.
+pub struct Kit {
+    pub name: String,
+    pub files: Vec<KitFile>,
+}
+
+pub struct KitFile {
+    pub path: String,
+    words: Vec<String>,
+}
+
+impl Kit {
+    pub fn new(name: &str, paths: &[String]) -> Kit {
+        let mut files: Vec<KitFile> = paths
+            .iter()
+            .map(|p| {
+                let stem = p.rsplit('/').next().unwrap_or(p);
+                let stem = stem.rsplit_once('.').map_or(stem, |(s, _)| s);
+                KitFile { path: p.clone(), words: stem.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(String::from).collect() }
+            })
+            .collect();
+        // plain sounds before effected ones ("Tom FX Tremolo"), then by name
+        files.sort_by_key(|f| (f.words.iter().any(|w| w == "fx"), f.path.clone()));
+        Kit { name: name.to_string(), files }
+    }
+
+    /// The file for a row: (index, 2 = that sound / 1 = a stand-in, the row the
+    /// file really is, for tom pitch).
+    pub fn pick(&self, row: &str) -> Option<(usize, u8, Option<&'static str>)> {
+        let has = |f: &KitFile, ws: &[&str]| f.words.iter().any(|w| ws.contains(&w.as_str()));
+        let tom = |f: &KitFile| has(f, &["tom", "toms"]);
+        // a tom named without hi/mid/lo is a stand-in for any of them, pitched as a mid tom
+        let tom_role = |f: &KitFile| -> Option<&'static str> {
+            if has(f, &["hi", "high", "ht"]) {
+                Some("HT")
+            } else if has(f, &["lo", "low", "floor", "lt"]) {
+                Some("LT")
+            } else if has(f, &["mid", "mt"]) {
+                Some("MT")
+            } else {
+                None
+            }
+        };
+        let find = |q: u8, ok: &dyn Fn(&KitFile) -> bool| self.files.iter().position(ok).map(|i| (i, q));
+        let hat = ["hat", "hihat", "hh"];
+        let r = match row {
+            "BD" => find(2, &|f| has(f, &["bd", "kick", "bassdrum"])),
+            "SD" => find(2, &|f| has(f, &["sd", "snare"])).or_else(|| find(1, &|f| has(f, &["rim", "clap"]))),
+            "CH" => find(2, &|f| has(f, &["ch", "chh", "closed"])).or_else(|| find(1, &|f| has(f, &hat) && !has(f, &["open"]))),
+            "OH" => find(2, &|f| has(f, &["oh", "ohh", "open"])).or_else(|| find(1, &|f| has(f, &hat) || has(f, &["ch"]))),
+            "CY" => find(2, &|f| has(f, &["cym", "cymbal", "crash", "ride"])).or_else(|| find(1, &|f| has(f, &["oh", "open"]))),
+            "RS" => find(2, &|f| has(f, &["rim", "rimshot", "rs", "sidestick", "stick"])).or_else(|| find(1, &|f| has(f, &["clave", "sd", "snare"]))),
+            "CPS" => find(2, &|f| has(f, &["clap", "claps", "cp"])).or_else(|| find(1, &|f| has(f, &["snap", "sd", "snare"]))),
+            "CB" => find(2, &|f| has(f, &["cowbell", "cb"])).or_else(|| find(1, &|f| has(f, &["clave", "agogo", "rim"]))),
+            "TAM" => find(2, &|f| has(f, &["tamb", "tambourine"])).or_else(|| find(1, &|f| has(f, &["shaker", "maracas", "cabasa"]) || has(f, &["ch"]))),
+            "HT" | "MT" | "LT" => {
+                let exact = find(2, &|f| tom(f) && tom_role(f) == Some(row));
+                let any = || find(1, &|f| tom(f)).or_else(|| find(1, &|f| has(f, &["conga", "bongo"])));
+                return exact.or_else(any).map(|(i, q)| {
+                    let f = &self.files[i];
+                    (i, q, Some(if tom(f) { tom_role(f).unwrap_or("MT") } else { "MT" }))
+                });
+            }
+            _ => None,
+        };
+        r.map(|(i, q)| (i, q, None))
+    }
 }
 
 pub struct Presets {
@@ -161,7 +374,7 @@ pub fn load_presets(text: &str) -> Result<Presets, String> {
         if let Some(Json::Obj(t)) = p.get("tracks") {
             for (k, v) in t {
                 let pat = v.str().unwrap_or("");
-                if !ROW_TO_VOICE.iter().any(|(r, _)| r == k) {
+                if !ROWS.contains(&k.as_str()) {
                     warnings.push(format!("{}: unknown row {}, skipped", id, k));
                 } else if pat.chars().count() != steps {
                     warnings.push(format!("{}: row {} is not {} steps, skipped", id, k, steps));
@@ -415,9 +628,68 @@ mod tests {
     fn accent_raises_the_other_hits_and_flams_are_marked() {
         let j = r#"{"styles":["S"],"patterns":[{"id":"s-r1","name":"S 1","style":"S","kind":"rhythm","time_sig":"4/4","steps":4,"step_feel":"sixteenths","tracks":{"AC":"x...","SD":"xF..","BD":"x.x."}}]}"#;
         let p = load_presets(j).unwrap();
-        let c = p.patterns[0].to_cells(4);
-        assert_eq!(c[0], vec![ACCENT_VEL, 0, NORMAL_VEL, 0]);
-        assert_eq!(c[1], vec![ACCENT_VEL, NORMAL_VEL | FLAM_BIT, 0, 0]);
+        let plan = p.patterns[0].plan(&[], 4);
+        // top to bottom as the book lists them: SD above BD
+        assert_eq!(plan.voices[0].rows, vec!["SD"]);
+        assert_eq!(plan.voices[1].rows, vec!["BD"]);
+        let c = &plan.cells;
+        assert_eq!(c[0], vec![ACCENT_VEL, NORMAL_VEL | FLAM_BIT, 0, 0]);
+        assert_eq!(c[1], vec![ACCENT_VEL, 0, NORMAL_VEL, 0]);
         assert!(c[2].iter().chain(c[3].iter()).all(|&v| v == 0), "AC is not a sound");
+        assert!(plan.voices[2].rows.is_empty() && plan.kit.is_none());
+    }
+
+    fn kit(name: &str, files: &[&str]) -> Kit {
+        Kit::new(name, &files.iter().map(|f| format!("Drums/{}/{}.wav", name, f)).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn more_rows_than_tracks_fold_toms_and_keep_their_pitch() {
+        // Funk Break 5: SD, HT, MT, LT (+ AC) -> fits in 4 without folding
+        let ps = builtin();
+        let fb5 = ps.patterns.iter().find(|x| x.id == "funk-b5").unwrap();
+        assert!(fb5.plan(&[], 4).voices.iter().all(|v| v.rows.len() <= 1));
+        // every shipped pattern fits, and its tracks keep the book's top-to-bottom order
+        for x in &ps.patterns {
+            let plan = x.plan(&[], 4);
+            let firsts: Vec<usize> = plan.voices.iter().filter(|v| !v.rows.is_empty()).map(|v| row_pos(v.rows[0])).collect();
+            assert!(firsts.windows(2).all(|w| w[0] < w[1]), "{} order {:?}", x.id, plan.voices);
+            let sounding = x.tracks.iter().filter(|(k, _)| k != "AC").count();
+            assert_eq!(plan.voices.iter().map(|v| v.rows.len()).sum::<usize>(), sounding, "{}", x.id);
+        }
+        // a 7-row pattern: the three toms share one tom sound, pitched high/mid/low
+        let x = ps.patterns.iter().find(|x| x.tracks.iter().filter(|(k, _)| ["HT", "MT", "LT"].contains(&k.as_str())).count() == 3 && x.tracks.len() >= 7).unwrap();
+        let k = kit("Studio", &["BD 1", "SD 1", "CH 1", "OH 1", "Tom Mid 1", "Crash 1"]);
+        let plan = x.plan(&[k], 4);
+        let ti = plan.voices.iter().position(|v| v.rows.contains(&"MT")).unwrap();
+        let toms = &plan.voices[ti];
+        assert!(toms.rows.len() >= 2, "{}: {:?}", x.id, plan.voices);
+        assert_eq!(toms.sound, Sound::File("Drums/Studio/Tom Mid 1.wav".into()));
+        for r in &toms.rows {
+            let s = x.row(r).unwrap();
+            if let Some(i) = s.find(|c| c != '.') {
+                if plan.cells[ti][i] != 0 && toms.rows.iter().take_while(|o| *o != r).all(|o| x.row(o).unwrap().as_bytes()[i] == b'.') {
+                    assert_eq!(plan.pitch[ti][i], tom_semis(r).unwrap(), "{} {} step {}", x.id, r, i + 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_style_picks_a_kit_that_has_the_sounds() {
+        let ps = builtin();
+        let lm = kit("04. LM Vinyl", &["BD LM", "SD LM", "CH Crunch", "OH LM", "Cowbell LM", "Conga Mid", "Rim LM", "Tom LM Hi", "Tom LM Mid", "Clap LM"]);
+        let tube = kit("909 Tube Kit", &["BD 909", "SD 909", "CH 909", "OH 909", "Clap 909", "Rim 909", "Crash 909", "Tom 909 Hi", "Tom 909 Mid", "Tom 909 Lo"]);
+        let boogie = kit("Boogie Classic", &["BD Real", "Snare Smack", "CH Analog", "OH Short", "Clap Boogie", "Cowbell Proto", "Rim Thin"]);
+        let kits = [lm, tube, boogie];
+        let disco = ps.patterns.iter().find(|x| x.id == "disco-r1").unwrap();
+        assert_eq!(disco.plan(&kits, 4).kit.as_deref(), Some("909 Tube Kit"));
+        let funk = ps.patterns.iter().find(|x| x.id == "funk-r1").unwrap();
+        assert_eq!(funk.plan(&kits, 4).kit.as_deref(), Some("Boogie Classic"));
+        // a funk break with toms: Boogie Classic has none, so a kit with toms wins
+        let fb5 = ps.patterns.iter().find(|x| x.id == "funk-b5").unwrap();
+        let plan = fb5.plan(&kits, 4);
+        assert_ne!(plan.kit.as_deref(), Some("Boogie Classic"));
+        assert!(plan.voices.iter().all(|v| matches!(v.sound, Sound::File(_))));
     }
 }
