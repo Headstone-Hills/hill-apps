@@ -9,6 +9,7 @@ import { LyricPointer } from '../text/pointer';
 import { getVoice, VOICES } from '../synth/voices';
 import { VoiceLab } from './lab';
 import { MidiFilePanel } from './midifile';
+import { UtauLiveVoice } from '../utau/live';
 import { UtauSession } from '../utau/session';
 import { UtauPanel } from './utau';
 import { Spectrogram } from './spectrogram';
@@ -43,10 +44,13 @@ export function startApp(): void {
   let engine: SingerEngine | null = null;
   let lookup: PhonemeLookup = () => undefined; // until the dictionary loads: guessed pronunciations
 
+  // Live keys go to the sample-based voice when a UTAU voicebank is chosen, else to the formant synth.
+  const utauSession = new UtauSession();
+  let utauLive: UtauLiveVoice | null = null;
   const sink: VoiceSink = {
-    noteOn: (plan, f0, vel, legato) => engine?.noteOn(plan, f0, vel, legato),
-    noteOff: () => engine?.noteOff(),
-    setF0: (f0) => engine?.setF0(f0),
+    noteOn: (plan, f0, vel, legato) => (utauSession.active ? utauLive?.noteOn(plan, f0, vel, legato) : engine?.noteOn(plan, f0, vel, legato)),
+    noteOff: () => (utauSession.active ? utauLive?.noteOff() : engine?.noteOff()),
+    setF0: (f0) => (utauSession.active ? utauLive?.setF0(f0) : engine?.setF0(f0)),
   };
   const performance = new Performance(sink, pointer);
   const bindings = new NavBindings(storage);
@@ -236,6 +240,7 @@ export function startApp(): void {
     audioStatus.textContent = 'Starting audio…';
     try {
       engine = await SingerEngine.create();
+      utauLive = new UtauLiveVoice(engine.context, engine.audioInput, () => utauSession.bank);
       for (const [name, value] of paramValues) engine.setParam(name, value);
       engine.setVoice(voiceId);
       // The engine has one sequence slot: route its position/end events to whoever owns it.
@@ -270,7 +275,6 @@ export function startApp(): void {
   }
   startBtn.addEventListener('click', () => void startAudio());
 
-  const utauSession = new UtauSession();
   filePanel = new MidiFilePanel({
     utau: utauSession,
     syllables: () => pointer.current.syllables,
@@ -395,7 +399,7 @@ export function startApp(): void {
   function syncMainVoice(): void {
     mainVoice.value = utauSession.active ? 'utau' : voiceId;
     $('voice-main-desc').textContent = utauSession.active
-      ? `Sample-based: melodies (MIDI file or piano roll) are sung with this voicebank. Live keys and the Voice lab still use the formant voice ${getVoice(voiceId).name}.`
+      ? `Sample-based: live keys and melodies (MIDI file or piano roll) are sung with this voicebank. The Voice lab and its sliders still use the formant voice ${getVoice(voiceId).name}.`
       : getVoice(voiceId).description;
   }
   function fillMainVoice(): void {
@@ -431,7 +435,13 @@ export function startApp(): void {
     }
     mainVoice.blur();
   });
-  utauSession.onChange(fillMainVoice);
+  utauSession.onChange(() => {
+    // Switching between the voicebank and the formant voices: let go of anything still sounding.
+    performance.allNotesOff();
+    utauLive?.stop();
+    engine?.stop();
+    fillMainVoice();
+  });
   applyVoice(voiceId);
   fillMainVoice();
 

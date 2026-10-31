@@ -9,6 +9,7 @@ import { decodeText, frqPathFor, parseFrq, parseOto, parseWav } from '../src/uta
 import { estimateF0, mixInto, pitchMarks, renderSegment, type PsolaSource } from '../src/utau/psola';
 import { planUnits, xsampaVowel } from '../src/utau/planner';
 import { renderUtau } from '../src/utau/render';
+import { buildAttack, buildRelease, seamlessLoop } from '../src/utau/livenote';
 import { Voicebank, type BankFile } from '../src/utau/voicebank';
 import { buildLyrics } from '../src/text/lyrics';
 import { realLookup } from './helpers';
@@ -279,6 +280,55 @@ describe('alias planner', () => {
   });
 });
 
+describe('live notes', () => {
+  const file = (path: string, bytes: Uint8Array): BankFile => ({ path, read: async () => bytes });
+  async function liveBank() {
+    const x = tone(200, 1.2, 2205);
+    const oto = ['v.wav=- A,0,50,-900,40,20', 'v.wav=A d,600,60,-500,200,50', 'v.wav=A -,700,40,-400,150,40'].join('\n');
+    return Voicebank.load([file('B/oto.ini', new TextEncoder().encode(oto)), file('B/v.wav', wavBytes(x)), file('B/v_wav.frq', frqBytes(frqFor(200, x.length, 2205).f0))], 'B');
+  }
+
+  it('builds an attack plus a seamless, in-pitch loop for a held vowel', async () => {
+    const bank = await liveBank();
+    for (const target of [160, 220, 300]) {
+      const a = (await buildAttack(bank, { onset: [], nucleus: 'AA1', coda: [] }, target, null))!;
+      expect(a.aliases).toEqual(['- A']);
+      expect(a.samples.length).toBeGreaterThan(0.25 * SR);
+      expect(a.loop).not.toBeNull();
+      expect(a.loop!.length / SR).toBeGreaterThan(0.1);
+      // the loop repeats at the target pitch...
+      const twice = new Float32Array(a.loop!.length * 2);
+      twice.set(a.loop!);
+      twice.set(a.loop!, a.loop!.length);
+      expect(Math.abs(estimateF0(twice.subarray(0, Math.min(twice.length, 9000)), SR) / target - 1)).toBeLessThan(0.04);
+      // ...and has no jump where it wraps from its end back to its start
+      let maxStep = 0;
+      for (let i = 1; i < a.loop!.length; i++) maxStep = Math.max(maxStep, Math.abs(a.loop![i] - a.loop![i - 1]));
+      const wrap = Math.abs(a.loop![0] - a.loop![a.loop!.length - 1]);
+      expect(wrap, `wrap step at ${target} Hz`).toBeLessThan(maxStep * 1.5 + 1e-3);
+    }
+  });
+
+  it('smooths a loop seam', () => {
+    const x = Float32Array.from({ length: 4000 }, (_, i) => Math.sin((2 * Math.PI * 300 * i) / SR) * (i < 2000 ? 1 : 0.5));
+    const l = seamlessLoop(x, 400);
+    expect(l).toHaveLength(3600);
+    expect(Math.abs(l[0] - l[l.length - 1])).toBeLessThan(0.3);
+  });
+
+  it('builds a release from the final consonant sample, or from the vowel ending when there is no coda', async () => {
+    const bank = await liveBank();
+    const withCoda = (await buildRelease(bank, { onset: [], nucleus: 'AA1', coda: ['D'] }, 220))!;
+    expect(withCoda.aliases).toEqual(['A d']);
+    expect(withCoda.samples.length).toBeGreaterThan(0.05 * SR);
+    expect(withCoda.overlap).toBeGreaterThanOrEqual(0.06);
+    const noCoda = (await buildRelease(bank, { onset: [], nucleus: 'AA1', coda: [] }, 220))!;
+    expect(noCoda.aliases).toEqual(['A -']);
+    expect(await buildRelease(bank, { onset: [], nucleus: 'IY1', coda: [] }, 220)).toBeNull(); // nothing for this vowel
+    expect(await buildAttack(bank, { onset: [], nucleus: 'IY1', coda: [] }, 220, null)).toBeNull();
+  });
+});
+
 // ---- Optional: a real voicebank on this machine -------------------------------------------------------------
 const bankDir = process.env.HILLSING_UTAU_BANK;
 
@@ -343,5 +393,33 @@ describe.skipIf(!bankDir)('real voicebank (HILLSING_UTAU_BANK)', () => {
     }
     console.log(`pitch follows the notes on ${ok} of ${tested} vowels`);
     expect(ok).toBeGreaterThan(tested * 0.8);
+  });
+
+  it('builds live notes fast enough for a key press, with the loop at the played pitch', async () => {
+    const root = bankDir!;
+    const files: BankFile[] = walk(root).map((p) => ({ path: relative(root, p).split('\\').join('/'), read: async () => new Uint8Array(readFileSync(p)) }));
+    const bank = await Voicebank.load(files, 'real');
+    const t0 = performance.now();
+    await bank.preload();
+    console.log(`preload: ${(performance.now() - t0).toFixed(0)} ms for ${new Set(bank.entries.map((e) => e.wavPath)).size} files`);
+    const syllables = buildLyrics('hello world sing', realLookup()).syllables;
+    const times: number[] = [];
+    for (const [i, syl] of syllables.entries()) {
+      const note = [60, 64, 67, 72][i % 4];
+      const f0 = 440 * Math.pow(2, (note - 69) / 12);
+      const plan = { onset: syl.onset, nucleus: syl.nucleus, coda: syl.coda };
+      const t1 = performance.now();
+      const a = await buildAttack(bank, plan, f0, null);
+      const r = await buildRelease(bank, plan, f0);
+      const dt = performance.now() - t1;
+      times.push(dt);
+      expect(a, syl.label).not.toBeNull();
+      console.log(`${syl.label.padEnd(6)} attack ${a!.aliases.join('+').padEnd(14)} ${(a!.samples.length / SR).toFixed(2)} s, loop ${(a!.loop ? a!.loop.length / SR : 0).toFixed(2)} s; release ${r ? r.aliases.join('+') : '-'}; ${dt.toFixed(1)} ms`);
+      if (a!.loop) {
+        const f = estimateF0(a!.loop.subarray(0, Math.min(a!.loop.length, 9000)), SR, f0 * 0.6, f0 * 1.6);
+        expect(Math.abs(f / f0 - 1), `${syl.label} loop pitch`).toBeLessThan(0.06);
+      }
+    }
+    expect(Math.max(...times)).toBeLessThan(80);
   });
 });

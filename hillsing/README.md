@@ -273,7 +273,14 @@ A second voice source next to the formant synth: recorded UTAU samples, pitch-sh
 sampler. Load a bank in the *UTAU voicebank* panel, then choose it in the **Voice** chooser next to the lyrics (it lists the
 generated formant voices and, in its own group, the sample-based voicebank; picking it with none loaded opens the
 folder picker): Play renders the melody (from a MIDI file or the piano roll, with your English lyrics) into audio with the
-bank's samples. Live key-playing and the Voice lab stay on the formant synth.
+bank's samples. **Live keys (computer keyboard or MIDI) play the voicebank too** (`src/utau/live.ts`,
+`src/utau/livenote.ts`): a key press builds the syllable's consonants and the start of its vowel from the bank
+(1-4 ms of work), then a seamless loop of the steady vowel sustains it until release; release fades the loop under
+the syllable's ending samples (`E d`, or `E -` for a plain vowel). Holding one key and pressing another is legato
+(the previous vowel closes into the new consonant); pitch bend re-tunes what is sounding. All samples are decoded
+when the bank loads (about 0.3 s for the English Teto bank, roughly 190 MB of memory) so the first key press never
+waits. The Voice lab and its sliders stay on the formant synth, and the vowel is not on the beat live: it follows its
+consonant, as when a singer starts a word.
 
 **How English becomes samples.** Each dictionary syllable (ARPAbet) is mapped to X-SAMPA and to a chain of
 aliases (`src/utau/planner.ts`), e.g. *hello* = `- h@`, then `@ l` + `- loU`, ending `oU -`: a start from silence,

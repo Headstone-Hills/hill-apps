@@ -80,6 +80,11 @@ export class SingerEngine implements VoiceSink {
     this.post({ type: 'seqLoop', loop });
   }
 
+  /** Where other sound sources can plug in so the level meter and spectrogram see them too (it feeds the speakers). */
+  get audioInput(): AudioNode {
+    return this.analyser;
+  }
+
   /** Peak absolute sample of the most recent ~1024 output samples (0..1). */
   peakLevel(): number {
     const buf = new Float32Array(this.analyser.fftSize);

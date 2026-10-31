@@ -84,7 +84,16 @@ export class UtauPanel {
     }
     if (!this.el.alias.value || !b.has(this.el.alias.value)) this.el.alias.value = b.aliases().find((a) => a.length <= 3) ?? b.aliases()[0];
     this.el.play.disabled = false;
-    this.say(`${b.entries.length} entries, ${b.aliases().length} aliases from ${b.otoFiles.length} oto.ini. Pick an alias (type to search) and a pitch, then play.`);
+    const summary = `${b.entries.length} entries, ${b.aliases().length} aliases from ${b.otoFiles.length} oto.ini.`;
+    this.say(`${summary} Preparing samples for live playing…`);
+    // Decode every sample now so the first key press does not wait for a file.
+    void b
+      .preload((done, total) => {
+        if (this.bank === b) this.say(`${summary} Preparing samples for live playing… ${done}/${total}`);
+      })
+      .then(() => {
+        if (this.bank === b) this.say(`${summary} Ready: play live keys, run a melody, or audition an alias below.`);
+      });
   }
 
   private async play(): Promise<void> {

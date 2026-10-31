@@ -86,6 +86,24 @@ export class Voicebank {
     }
   }
 
+  /**
+   * Decode every sample ahead of time (for live playing, where a first key press must not wait for a file).
+   * Reports progress and yields to the browser between files so the page stays responsive.
+   */
+  async preload(onProgress?: (done: number, total: number) => void): Promise<void> {
+    const paths = [...new Set(this.entries.map((e) => e.wavPath))];
+    let done = 0;
+    for (const p of paths) {
+      await this.source(p);
+      done++;
+      if (done % 6 === 0) {
+        onProgress?.(done, paths.length);
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+    onProgress?.(paths.length, paths.length);
+  }
+
   /** The part of the file an oto entry uses, in samples: [start, end) and the length of its fixed (consonant) part. */
   region(e: OtoEntry, src: PsolaSource): { start: number; end: number; fixed: number } {
     const ms = src.sampleRate / 1000;
