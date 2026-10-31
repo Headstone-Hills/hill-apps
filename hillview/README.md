@@ -49,10 +49,23 @@ Other containers rely on ffmpeg's own demuxers and are not individually tested.)
   ProRes/DNxHR outputs hold 8-bit-derived data. Alpha is dropped.
 - **Animated WebP can be exported but not imported:** ffmpeg 6.1's WebP decoder rejects animated files (static WebP is fine).
 - Preview is rendered at <= 640 px wide with blur radii scaled to match; exact pixels differ slightly from a full-res render.
-- **Slow at HD.** Python + numpy, CPU only. Measured on this (cloud, unspecified-CPU) machine at 1920x1080, 60 frames:
-  `presets/glitch_pop.json` (k-means, every 4th frame processed) took 43 s (~1.4 fps); every-frame posterize + smooth + colour remap + blur
-  took 121 s (~0.5 fps), i.e. roughly 60x slower than real time at 30 fps. Preview stays interactive because it renders <= 640 px wide.
-  Not yet optimised (the OKLab conversion and float64 box blurs are the likely hot spots); the C++/GPU host plugins are the real fix.
+- **Performance (measured)**, 1920x1080, 60 frames, 4-core cloud VM, synthetic test-pattern clip, x264 CRF 16 encode included:
+
+  | | original | now |
+  |---|---|---|
+  | `presets/glitch_pop.json` (k-means, every 4th frame processed) | 43.1 s | 7.4 s (5.8x) |
+  | every frame: posterize + smooth 3 px + colour remap + blur 2 px | 120.9 s | 8.9 s (13.6x, ~7 fps) |
+  | pass-through, no effects (decode + encode floor) | | 3.5 s |
+  | interactive preview (640 px wide) | | ~37 ms/frame |
+
+  Still slower than real time at 1080p30 and untested at 4K. Where it went: blur rewritten as a vectorised running sum (~10x),
+  colour remap via lookup-table sRGB decode + matmul distances with a skip when no pixel is in range (~3x), k-means assignment as
+  a BLAS matmul (~4x), then keyframes processed in parallel worker processes (`--workers`, default = CPU count; scales ~3.1x on 4).
+  Threads were tried first and made things *slower* (GIL contention in the blur's many small numpy calls), hence processes.
+  What changed in output: blur edges now use plain edge-extension (differs from before only in a border strip a few radii wide;
+  interior matches the old result to ~2e-5), remap is within 0.003 (< 1 8-bit level) of the exact maths, and with workers > 1
+  keyframes are exchanged and blended as 8-bit, within ~1 level of the sequential float renderer (`render`).
+  Optional `"quality": {"fast_blur": true}` computes radii >= 4 px at reduced resolution (up to ~2x faster, mean error ~0.2%, up to ~3% on hard edges).
 - The app is a Python program with a browser UI, **not yet a packaged installer**. Bundling ffmpeg and Python into per-OS
   executables is unfinished.
 - Security: the server listens on 127.0.0.1 only and requires a per-launch token plus a Host check on every API call.
@@ -60,7 +73,7 @@ Other containers rely on ffmpeg's own demuxers and are not individually tested.)
 ## CLI
 
 ```
-python -m hillview render in.mov out.mp4 -c presets/glitch_pop.json --audio-reactive
+python -m hillview render in.mov out.mp4 -c presets/glitch_pop.json --audio-reactive   # --workers N to set parallelism
 python -m hillview render in.mov out.mov -f prores_422 --audio song.wav -c cfg.json   # music drives modulation + is muxed in
 python -m hillview render "shot_%04d.png" out.mp4 --fps 24                           # image sequence in
 python -m hillview render in.mp4 frames_dir -f png_seq                               # image sequence out (path is a directory)

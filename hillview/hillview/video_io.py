@@ -75,19 +75,39 @@ class Source:
                                    "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.nbytes, self.next, self.window = self.ow * self.oh * 3, 0, window
-        self.cache, self.last, self.eof = OrderedDict(), None, False
+        self.cache, self.last, self.eof = OrderedDict(), None, False   # cache holds uint8 frames
 
-    def get(self, n):
+    def _fill(self, n):
         while self.next <= n and not self.eof:
             buf = self.p.stdout.read(self.nbytes)
             if len(buf) < self.nbytes:
                 self.eof = True
                 break
-            self.last = np.frombuffer(buf, np.uint8).reshape(self.oh, self.ow, 3).astype(np.float32) / 255
+            self.last = np.frombuffer(buf, np.uint8).reshape(self.oh, self.ow, 3)
             self.cache[self.next] = self.last
             self.next += 1
             while len(self.cache) > self.window:
                 self.cache.popitem(last=False)
+
+    def ensure(self, n):
+        """True if frame n exists (decoding forward as needed)."""
+        self._fill(n)
+        return n < self.next
+
+    def get(self, n):
+        """Frame n as float32 RGB in [0,1]; clamps to the last frame at EOF."""
+        self._fill(n)
+        if n in self.cache:
+            f = self.cache[n]
+        elif self.eof and n >= self.next:
+            f = self.last
+        else:
+            raise KeyError(f"frame {n} fell out of the {self.window}-frame window")
+        return f.astype(np.float32) * np.float32(1 / 255)
+
+    def get_u8(self, n):
+        """Frame n as uint8 (no conversion); clamps to the last frame at EOF."""
+        self._fill(n)
         if n in self.cache:
             return self.cache[n]
         if self.eof and n >= self.next:
@@ -210,7 +230,10 @@ class Writer:
         self.p = subprocess.Popen(cmd + [output_path(path, fmt)], stdin=subprocess.PIPE)
 
     def write(self, img):
-        self.p.stdin.write((np.clip(img, 0, 1) * 255 + 0.5).astype(np.uint8).tobytes())
+        """img: uint8 (H,W,3) written as-is, or float RGB in [0,1]."""
+        if img.dtype != np.uint8:
+            img = (np.clip(img, 0, 1) * 255 + 0.5).astype(np.uint8)
+        self.p.stdin.write(np.ascontiguousarray(img).data)
 
     def close(self):
         try:
