@@ -41,6 +41,7 @@ class KlattProcessor extends AudioWorkletProcessor {
 
   constructor() {
     super();
+    this.voice.warmUp();
     this.seq.onEnded = () => this.port.postMessage({ type: 'seqEnded' } satisfies WorkletEvent);
     this.port.onmessage = (e: MessageEvent<WorkletMessage>) => {
       const m = e.data;

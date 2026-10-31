@@ -196,6 +196,10 @@ export function startApp(): void {
     { id: 'consonant', name: 'consonantScale', fmt: (v) => `${v.toFixed(2)}×` },
     { id: 'glide', name: 'portamento', fmt: (v) => `${Math.round(v)} ms` },
     { id: 'conlevel', name: 'consonantLevel', fmt: (v) => `${v.toFixed(2)}×` },
+    { id: 'noise', name: 'noiseRolloff', fmt: (v) => `${(v / 1000).toFixed(1)} kHz` },
+    { id: 'burst', name: 'burstLevel', fmt: (v) => `${v.toFixed(2)}×` },
+    { id: 'fric', name: 'fricLevel', fmt: (v) => `${v.toFixed(2)}×` },
+    { id: 'asp', name: 'aspLevel', fmt: (v) => `${v.toFixed(2)}×` },
     { id: 'breath', name: 'breathiness', fmt: (v) => `${Math.round(v * 100)}%` },
     { id: 'bright', name: 'brightness', fmt: (v) => (v > 0 ? `+${v.toFixed(2)}` : v.toFixed(2)) },
     { id: 'volume', name: 'volume', fmt: (v) => `${Math.round(v * 100)}%` },
@@ -342,7 +346,7 @@ export function startApp(): void {
   for (const v of VOICES) {
     const o = document.createElement('option');
     o.value = v.id;
-    o.textContent = v.name;
+    o.textContent = `${v.name} — ${v.model}`;
     voiceSelect.append(o);
   }
   function applyVoice(id: string): void {
@@ -360,8 +364,12 @@ export function startApp(): void {
     octave = Math.max(-2, Math.min(3, Math.floor((v.centerNote - BASE_NOTE) / 12)));
     showOctave();
   }
-  voiceSelect.addEventListener('change', () => applyVoice(voiceSelect.value));
-  voiceSelect.addEventListener('pointerup', () => voiceSelect.blur());
+  // Blur after a choice (so computer keys play again), not on pointerup: that closes the popup
+  // the moment it opens.
+  voiceSelect.addEventListener('change', () => {
+    applyVoice(voiceSelect.value);
+    voiceSelect.blur();
+  });
   applyVoice(voiceId);
 
   const pressed = new Map<string, number>(); // key code -> note (so octave changes don't strand notes)

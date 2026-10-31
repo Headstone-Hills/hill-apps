@@ -99,6 +99,18 @@
           <label>Consonant level <output id="out-conlevel"></output>
             <input id="conlevel" type="range" min="0" max="2.5" step="0.05" value="1" />
           </label>
+          <label>Consonant softness (noise roll-off) <output id="out-noise"></output>
+            <input id="noise" type="range" min="1500" max="12000" step="100" value="2000" />
+          </label>
+          <label>Noise: stop bursts (p t k b d g) <output id="out-burst"></output>
+            <input id="burst" type="range" min="0" max="1.5" step="0.05" value="0.45" />
+          </label>
+          <label>Noise: fricatives (s sh f th z v ch) <output id="out-fric"></output>
+            <input id="fric" type="range" min="0" max="1.5" step="0.05" value="0.4" />
+          </label>
+          <label>Noise: aspiration (h, puff after p t k) <output id="out-asp"></output>
+            <input id="asp" type="range" min="0" max="1.5" step="0.05" value="1" />
+          </label>
           <label>Breathiness <output id="out-breath"></output>
             <input id="breath" type="range" min="0" max="1" step="0.01" value="0" />
           </label>

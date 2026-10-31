@@ -1,5 +1,7 @@
 // Guards the loudness balance between vowels and consonants. The targets are design choices
-// (dB relative to a sustained /AA/ at the same velocity), solved numerically; if the synth's
+// (dB relative to a sustained /AA/ at the same velocity), solved numerically, then trimmed
+// (NOISE_TRIM in phonemes.ts) and rolled off above ~6.5 kHz (NOISE_ROLLOFF_HZ in klatt.ts) because
+// the original noise sounded scratchy when sung; if the synth's
 // noise path or gain staging changes, this fails instead of consonants silently getting
 // quieter or louder than the vowels.
 import { describe, expect, it } from 'vitest';
@@ -28,7 +30,7 @@ describe('loudness balance', () => {
     expect(REF).toBeLessThan(0.19 * 1.12);
   });
 
-  const fric: Record<string, number> = { S: -9, SH: -8, F: -17.5, TH: -19, Z: -12, ZH: -11.5, V: -15, DH: -16 };
+  const fric: Record<string, number> = { S: -15.9, SH: -12, F: -22.6, TH: -24.7, Z: -18.2, ZH: -15.3, V: -19.4, DH: -19.8 };
   for (const [c, target] of Object.entries(fric)) {
     it(`fricative /${c}/ is ${target} dB re the vowel (+-1.5)`, () => {
       expect(db(rms(render(plan('AA1', [c])), 0.025, 0.05))).toBeCloseTo(target, -0.176); // within ~1.5
@@ -37,8 +39,8 @@ describe('loudness balance', () => {
   }
 
   const burst: Record<string, [number, number, number]> = {
-    T: [-6.5, 0.035, 0.0434], K: [-8.5, 0.035, 0.0434], P: [-9, 0.035, 0.0434],
-    D: [-7.5, 0.028, 0.037], G: [-9, 0.028, 0.037], B: [-10, 0.028, 0.037],
+    T: [-11.9, 0.035, 0.0434], K: [-14, 0.035, 0.0434], P: [-13.3, 0.035, 0.0434],
+    D: [-12.7, 0.028, 0.037], G: [-12.4, 0.028, 0.037], B: [-13.6, 0.028, 0.037],
   };
   for (const [c, [target, t0, t1]] of Object.entries(burst)) {
     it(`stop burst /${c}/ is ${target} dB re the vowel (+-1.5)`, () => {
@@ -47,8 +49,8 @@ describe('loudness balance', () => {
   }
 
   it('/h/ and the /ch/ affricate are at their targets (+-1.5)', () => {
-    expect(Math.abs(db(rms(render(plan('AA1', ['HH'])), 0.02, 0.04)) - -15)).toBeLessThan(1.5);
-    expect(Math.abs(db(rms(render(plan('AA1', ['CH'])), 0.05, 0.08)) - -8)).toBeLessThan(1.5);
+    expect(Math.abs(db(rms(render(plan('AA1', ['HH'])), 0.02, 0.04)) - -17.1)).toBeLessThan(1.5);
+    expect(Math.abs(db(rms(render(plan('AA1', ['CH'])), 0.05, 0.08)) - -18.2)).toBeLessThan(1.5); // affricates are kept 6 dB below the other noise (AFFRICATE_NOISE)
   });
 
   it('aspiration after voiceless stops stays audible but below the vowel', () => {
@@ -86,7 +88,7 @@ describe('spectral shape (what makes consonants sound like themselves)', () => {
     };
     const top = Math.max(peakDb(500, 1000), peakDb(1000, 2000));
     expect(peakDb(4000, 5000) - top).toBeGreaterThan(-55);
-    expect(peakDb(5000, 6000) - top).toBeGreaterThan(-60);
+    expect(peakDb(5000, 6000) - top).toBeGreaterThan(-63); // (was -60 while vowels were slightly saturated, which added energy up here)
     expect(peakDb(4000, 5000) - top).toBeLessThan(-30); // ...but still falls off like a voice
   });
 });
