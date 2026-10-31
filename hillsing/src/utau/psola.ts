@@ -27,6 +27,8 @@ export interface SegmentRequest {
   f0: number;
   /** Extra gain applied while writing (1 = unity). */
   gain?: number;
+  /** Scale the result so the stretched part has the same loudness as the same part of the source (pitch shifting changes it). */
+  matchLevel?: boolean;
 }
 
 const UNVOICED_GRAIN = 512;
@@ -140,7 +142,35 @@ export function renderSegment(src: PsolaSource, req: SegmentRequest): Float32Arr
       t += hop;
     }
   }
+  if (req.matchLevel && fixedOut < n) {
+    const rmsOf = (v: Float32Array, i0: number, i1: number): number => {
+      let s = 0;
+      for (let i = i0; i < i1; i++) s += v[i] * v[i];
+      return Math.sqrt(s / Math.max(1, i1 - i0));
+    };
+    const want = rmsOf(x, a + fixed, b) * gain;
+    const got = rmsOf(out, fixedOut, n);
+    if (want > 1e-6 && got > 1e-6) {
+      const k = Math.min(2, Math.max(0.5, want / got));
+      for (let i = 0; i < n; i++) out[i] *= k;
+    }
+  }
   return out;
+}
+
+/** In-place version of mixInto: write `seg` into `out` at `at`, fading it in over `fade` samples while the existing sound fades out. */
+export function mixAt(out: Float32Array, seg: Float32Array, at: number, fade: number): void {
+  const f = Math.max(0, Math.round(fade));
+  for (let i = 0; i < seg.length; i++) {
+    const oi = at + i;
+    if (oi < 0 || oi >= out.length) continue;
+    if (i < f) {
+      const w = (i / f) * (Math.PI / 2);
+      out[oi] = out[oi] * Math.cos(w) + seg[i] * Math.sin(w);
+    } else {
+      out[oi] += seg[i];
+    }
+  }
 }
 
 /** Equal-power-ish crossfade of `b` into `a` starting at `at`, over `fade` samples. Grows `a` if needed. */

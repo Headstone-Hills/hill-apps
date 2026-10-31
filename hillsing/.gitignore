@@ -3,3 +3,4 @@ dist/
 out/
 tests/_*.test.ts
 release/
+utau-demo*.wav

@@ -5,7 +5,10 @@ import { parseMidiFile, singableTracks, type MidiFile, type MidiNote, type MidiT
 import type { SingerEngine } from '../synth/engine';
 import type { PhonemeLookup } from '../text/cmudict';
 import type { LyricSyllable } from '../text/lyrics';
+import { renderUtau, type UtauRender } from '../utau/render';
+import type { UtauSession } from '../utau/session';
 import { PianoRoll, type LaneCell } from './pianoroll';
+import { UtauPlayer } from './utauplayer';
 
 export interface PanelContext {
   syllables(): LyricSyllable[];
@@ -18,6 +21,8 @@ export interface PanelContext {
   lyricsText(): string;
   setLyricsText(text: string): void;
   lookup(): PhonemeLookup;
+  /** The loaded UTAU voicebank, if any. */
+  utau: UtauSession;
 }
 
 interface Snapshot {
@@ -45,6 +50,10 @@ export class MidiFilePanel {
   /** Undo snapshots: the notes and the lyric text they were edited with. */
   private readonly history = new History<Snapshot>({ notes: [], lyrics: '' }, (a, b) => a.lyrics === b.lyrics && sameNotes(a.notes, b.notes));
   private roll!: PianoRoll;
+  private utauPlayer!: UtauPlayer;
+  private utauRender: UtauRender | null = null;
+  private utauDirty = true;
+  private rendering = false;
   private bpm = 120;
   private seq: Sequence | null = null;
   private engine: SingerEngine | null = null;
@@ -66,6 +75,8 @@ export class MidiFilePanel {
     tempoOut: this.q('out-tempo'),
     canvas: this.q<HTMLCanvasElement>('preview'),
     summary: this.q('file-summary'),
+    source: this.q<HTMLSelectElement>('voice-source'),
+    utauLog: this.q('utau-log'),
     rollWrap: this.q('roll-wrap'),
     rollScroll: this.q<HTMLInputElement>('roll-scroll'),
     undo: this.q<HTMLButtonElement>('roll-undo'),
@@ -89,7 +100,36 @@ export class MidiFilePanel {
       this.rebuild();
     });
     for (const c of [el.beat, el.repeat]) c.addEventListener('change', () => this.rebuild());
-    el.loop.addEventListener('change', () => this.engine?.seqLoop(el.loop.checked));
+    el.loop.addEventListener('change', () => {
+      this.engine?.seqLoop(el.loop.checked);
+      this.utauPlayer.loop = el.loop.checked;
+    });
+    this.utauPlayer = new UtauPlayer(
+      (sec) => {
+        this.playing = true;
+        this.scorePos = sec - (this.utauRender?.leadSec ?? 0);
+        this.refresh();
+      },
+      () => {
+        this.playing = false;
+        this.scorePos = 0;
+        this.refresh();
+      },
+    );
+    el.source.addEventListener('change', () => {
+      this.stopAll();
+      this.say(this.usingUtau() ? 'Singing with the UTAU voicebank: the next Play renders the melody with it.' : 'Singing with the formant synth.', false);
+    });
+    el.source.addEventListener('pointerup', () => el.source.blur());
+    this.ctx.utau.onChange((bank) => {
+      const opt = el.source.querySelector<HTMLOptionElement>('option[value="utau"]');
+      if (opt) {
+        opt.disabled = !bank;
+        opt.textContent = bank ? `UTAU voicebank — ${bank.name}` : 'UTAU voicebank (load one below)';
+      }
+      if (!bank && el.source.value === 'utau') el.source.value = 'formant';
+      this.utauDirty = true;
+    });
     el.tempo.addEventListener('input', () => {
       el.tempoOut.textContent = `${el.tempo.value}%`;
       this.rebuild();
@@ -155,8 +195,66 @@ export class MidiFilePanel {
     this.rebuild();
   }
 
+  /** True when the melody should be sung by the voicebank and one is loaded. */
+  private usingUtau(): boolean {
+    return this.el.source.value === 'utau' && this.ctx.utau.bank !== null;
+  }
+
+  private stopAll(): void {
+    this.engine?.seqStop();
+    this.utauPlayer.stop();
+    this.playing = false;
+    this.scorePos = 0;
+    this.refresh();
+  }
+
+  /** Render the melody with the voicebank if the score or settings changed since the last render. */
+  private async ensureUtauRender(): Promise<boolean> {
+    const bank = this.ctx.utau.bank;
+    if (!bank || !this.seq) return false;
+    if (!this.utauDirty && this.utauRender) return true;
+    if (this.rendering) return false;
+    this.rendering = true;
+    this.say('Rendering with the voicebank…', false);
+    try {
+      const r = await renderUtau(bank, this.seq.notes, this.ctx.syllables());
+      this.utauRender = r;
+      this.utauPlayer.setAudio(r.samples, r.sampleRate);
+      this.utauPlayer.loop = this.el.loop.checked;
+      this.utauDirty = false;
+      this.el.utauLog.textContent = r.log.join('\n') + (r.missing.length ? `\n\nNo sample found for: ${r.missing.join(', ')}` : '');
+      this.say(`Rendered ${(r.samples.length / r.sampleRate).toFixed(1)} s with ${bank.name}.` + (r.missing.length ? ` ${r.missing.length} sounds had no sample (see the alias list).` : ''), r.missing.length > 0);
+      return true;
+    } catch (err) {
+      this.say(`Rendering failed: ${err instanceof Error ? err.message : String(err)}`, true);
+      return false;
+    } finally {
+      this.rendering = false;
+    }
+  }
+
+  private async toggleUtau(): Promise<void> {
+    this.ctx.beforePlay?.();
+    this.engine?.seqStop();
+    if (this.utauPlayer.isPlaying) {
+      this.utauPlayer.pause();
+      this.playing = false;
+      this.refresh();
+      return;
+    }
+    if (!(await this.ensureUtauRender())) return;
+    await this.utauPlayer.play(Math.max(0, this.scorePos) + (this.utauRender?.leadSec ?? 0));
+    this.playing = true;
+    this.refresh();
+  }
+
   async togglePlay(): Promise<void> {
     if (!this.seq) return;
+    if (this.usingUtau()) {
+      await this.toggleUtau();
+      return;
+    }
+    this.utauPlayer.stop();
     this.ctx.beforePlay?.();
     const engine = this.engine ?? (await this.ctx.ensureEngine());
     if (!engine) return;
@@ -171,16 +269,14 @@ export class MidiFilePanel {
   }
 
   private stop(): void {
-    this.engine?.seqStop();
-    this.playing = false;
-    this.scorePos = 0;
-    this.refresh();
+    this.stopAll();
   }
 
   // ---- loading and mapping -----------------------------------------------------------
   private async loadFile(): Promise<void> {
     const f = this.el.file.files?.[0];
     if (!f) return;
+    this.utauPlayer.stop();
     this.engine?.seqStop();
     this.playing = false;
     this.scorePos = 0;
@@ -231,6 +327,7 @@ export class MidiFilePanel {
   }
 
   private newMelody(): void {
+    this.utauPlayer.stop();
     this.engine?.seqStop();
     this.playing = false;
     this.scorePos = 0;
@@ -338,7 +435,11 @@ export class MidiFilePanel {
     const t0 = mono.length ? mono[0].start : 0;
     const t = Math.max(0, (fileSec - t0) / (Number(this.el.tempo.value) / 100));
     this.scorePos = t;
-    this.engine?.seqSeek(t + this.seq.leadInSec);
+    if (this.usingUtau()) {
+      if (this.utauPlayer.isPlaying) void this.utauPlayer.play(t + (this.utauRender?.leadSec ?? 0));
+    } else {
+      this.engine?.seqSeek(t + this.seq.leadInSec);
+    }
     this.refresh();
   }
 
@@ -357,6 +458,11 @@ export class MidiFilePanel {
   }
 
   private rebuild(): void {
+    this.utauDirty = true; // the score, lyrics or tempo changed: the voicebank render is out of date
+    if (this.utauPlayer.isPlaying) {
+      this.utauPlayer.pause();
+      this.playing = false;
+    }
     const rate = Number(this.el.tempo.value) / 100;
     const keepScore = Math.max(0, this.scorePos) * (this.lastRate / rate); // same musical spot at the new tempo
     this.lastRate = rate;

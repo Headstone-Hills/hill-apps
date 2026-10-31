@@ -1,6 +1,7 @@
 // UTAU voicebank panel (stage 1): pick a voicebank folder, see what is in it, and audition any alias at a
 // chosen pitch and length. The files are read in place by the browser; nothing is uploaded or copied.
 
+import type { UtauSession } from '../utau/session';
 import { Voicebank, type BankFile } from '../utau/voicebank';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -24,7 +25,7 @@ export class UtauPanel {
     play: this.q<HTMLButtonElement>('utau-play'),
   };
 
-  constructor() {
+  constructor(private readonly session: UtauSession) {
     const { el } = this;
     el.folder.addEventListener('change', () => void this.loadFolder());
     el.pitch.addEventListener('input', () => this.showPitch());
@@ -67,11 +68,13 @@ export class UtauPanel {
       this.bank = await Voicebank.load(files, root);
     } catch (err) {
       this.bank = null;
+      this.session.set(null);
       this.el.name.textContent = '';
       this.say(err instanceof Error ? err.message : String(err), true);
       return;
     }
     const b = this.bank;
+    this.session.set(b);
     this.el.name.textContent = `— ${b.name}`;
     this.el.list.textContent = '';
     for (const a of b.aliases()) {

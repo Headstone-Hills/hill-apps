@@ -110,3 +110,6 @@ button:disabled { opacity: 0.45; cursor: default; }
 .spec-label { position: absolute; left: 6px; font-size: 10px; line-height: 1; color: rgba(255,255,255,0.75); pointer-events: none; transform: translateY(50%); }
 #lab textarea { width: 100%; margin-top: 8px; font: 12px ui-monospace, monospace; }
 #lab .nav button.armed { border-color: var(--next); color: var(--next); }
+
+.alias-log { margin-top: 6px; }
+.alias-log pre { margin: 6px 0 0; white-space: pre-wrap; max-height: 12em; overflow: auto; }

@@ -52,6 +52,12 @@
           <label class="inline"><input id="loop-file" type="checkbox" /> Loop</label>
           <label class="inline" title="Start consonants before the note and finish word endings inside it, so each vowel lands on the beat"><input id="beat" type="checkbox" checked /> Vowel on the beat</label>
           <label class="inline"><input id="repeat" type="checkbox" /> Repeat lyrics</label>
+          <label class="inline" title="Sing the melody with the formant synth, or with a loaded UTAU voicebank (the voice list and sliders below apply to the formant synth)">Voice source
+            <select id="voice-source">
+              <option value="formant" selected>Formant synth</option>
+              <option value="utau" disabled>UTAU voicebank (load one below)</option>
+            </select>
+          </label>
         </div>
         <label>Tempo <output id="out-tempo"></output>
           <input id="tempo" type="range" min="50" max="150" step="1" value="100" />
@@ -81,6 +87,7 @@
         </div>
         <input id="roll-scroll" class="roll-scroll" type="range" min="0" max="0" step="any" value="0" aria-label="Scroll the piano roll" />
         <div id="file-summary" class="hint"></div>
+        <details class="alias-log"><summary class="hint">Aliases used by the UTAU voicebank</summary><pre id="utau-log" class="hint">Render with the voicebank to see which sample each word used.</pre></details>
         <div class="hint">Double-click empty space to add a note, drag to move, drag an edge to resize, Delete to remove. Double-click a word under a note to change it; <b>Hold vowel ~</b> makes a note continue the previous vowel (melisma). Chords are reduced to their top note; overlapping notes are legato. Click the ruler to move the playhead; Cmd/Ctrl+scroll zooms.</div>
       </section>
 

@@ -267,11 +267,21 @@ Code: `src/editor/notes.ts` (note operations and undo history, pure), `src/edito
 edits, pure), `src/ui/pianoroll.ts` (the canvas), `src/ui/midifile.ts` (wiring to playback). Tests:
 `tests/editor.test.ts`. The canvas only covers the visible window, so long songs do not hit canvas size limits.
 
-## UTAU voicebanks (stage 1)
+## UTAU voicebanks
 
 A second voice source next to the formant synth: recorded UTAU samples, pitch-shifted by a TD-PSOLA
-sampler. **Stage 1 is the loader and an alias audition panel**; connecting it to the sequencer and the
-editor (English lyrics -> the bank's aliases) comes next.
+sampler. Load a bank in the *UTAU voicebank* panel, then choose **Voice source: UTAU voicebank** in the melody
+panel: Play renders the melody (from a MIDI file or the piano roll, with your English lyrics) into audio with the
+bank's samples. Live key-playing and the Voice lab stay on the formant synth.
+
+**How English becomes samples.** Each dictionary syllable (ARPAbet) is mapped to X-SAMPA and to a chain of
+aliases (`src/utau/planner.ts`), e.g. *hello* = `- h@`, then `@ l` + `- loU`, ending `oU -`: a start from silence,
+the vowel closing into the next consonant, a fresh start, a release. Every choice falls back to an alias that
+exists, so banks with other alias sets still sing, less smoothly. `src/utau/render.ts` places each alias using its
+oto.ini timing (preutterance puts the vowel on the note's beat; overlap sets the crossfade with the previous
+sound), shifts it to the note's pitch and crossfades the chain. The melody panel's *Aliases used* list shows what
+each word used, which is the thing to check when a word sounds wrong. Joins are rendered at the previous note's
+pitch; the bank is assumed to be an X-SAMPA English bank (the English Kasane Teto bank is).
 
 - **Loading:** *UTAU voicebank* panel -> pick the folder that contains `oto.ini` (or a parent of it). Files are
   read in place by the browser; nothing is uploaded, copied or bundled. **Voicebanks are copyrighted and their

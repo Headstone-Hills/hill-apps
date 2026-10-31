@@ -9,6 +9,7 @@ import { LyricPointer } from '../text/pointer';
 import { getVoice, VOICES } from '../synth/voices';
 import { VoiceLab } from './lab';
 import { MidiFilePanel } from './midifile';
+import { UtauSession } from '../utau/session';
 import { UtauPanel } from './utau';
 import { Spectrogram } from './spectrogram';
 
@@ -269,7 +270,9 @@ export function startApp(): void {
   }
   startBtn.addEventListener('click', () => void startAudio());
 
+  const utauSession = new UtauSession();
   filePanel = new MidiFilePanel({
+    utau: utauSession,
     syllables: () => pointer.current.syllables,
     consonantScale: () => paramValues.get('consonantScale') ?? 0.7,
     ensureEngine: async () => {
@@ -290,7 +293,7 @@ export function startApp(): void {
     lookup: () => lookup,
   });
 
-  new UtauPanel();
+  new UtauPanel(utauSession);
 
   const spectrogram = new Spectrogram($<HTMLCanvasElement>('spectrogram'));
   lab = new VoiceLab({

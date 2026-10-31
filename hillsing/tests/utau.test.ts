@@ -7,7 +7,11 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { decodeText, frqPathFor, parseFrq, parseOto, parseWav } from '../src/utau/files';
 import { estimateF0, mixInto, pitchMarks, renderSegment, type PsolaSource } from '../src/utau/psola';
+import { planUnits, xsampaVowel } from '../src/utau/planner';
+import { renderUtau } from '../src/utau/render';
 import { Voicebank, type BankFile } from '../src/utau/voicebank';
+import { buildLyrics } from '../src/text/lyrics';
+import { realLookup } from './helpers';
 
 const SR = 44100;
 
@@ -221,6 +225,60 @@ describe('voicebank loading', () => {
   });
 });
 
+describe('alias planner', () => {
+  const bank = new Set(['- s', '- h@', '@ loU', 'oU -', '- bE', 'E d', '- rE', '- b', '- st', '- tE', 'E -', 'i i', '@ i', '- i', 'A A', '- A', 'I d', 'E b']);
+  const has = (a: string) => bank.has(a);
+  const ctx = { prevVowel: null, releaseAtEnd: false, melisma: false };
+
+  it('maps ARPAbet vowels to X-SAMPA, with stress deciding schwa versus the cup vowel', () => {
+    expect(xsampaVowel('AH0')).toBe('@');
+    expect(xsampaVowel('AH1')).toBe('V');
+    expect(xsampaVowel('EY1')).toBe('eI');
+    expect(xsampaVowel('ER0')).toBe('3');
+    expect(xsampaVowel('IY2')).toBe('i');
+  });
+
+  it('chains a word as start, vowel join, release', () => {
+    const he = planUnits(has, { onset: ['HH'], nucleus: 'AH0', coda: [] }, ctx);
+    expect(he.map((u) => u.alias)).toEqual(['- h@']);
+    const lo = planUnits(has, { onset: ['L'], nucleus: 'OW1', coda: [] }, { ...ctx, prevVowel: '@', releaseAtEnd: true });
+    expect(lo.map((u) => `${u.role}:${u.alias}`)).toEqual(['vowel:@ loU', 'end:oU -']); // this fake bank has the joined form
+    // in a CVVC bank the vowel closes into the consonant first, then the syllable starts fresh
+    const cvvc = new Set(['- lE', '@ l', 'E -']);
+    expect(planUnits((a) => cvvc.has(a), { onset: ['L'], nucleus: 'EH1', coda: [] }, { ...ctx, prevVowel: '@', releaseAtEnd: true }).map((u) => `${u.role}:${u.alias}`)).toEqual(['join:@ l', 'vowel:- lE', 'end:E -']);
+  });
+
+  it('puts the previous vowel in front only when the notes flow together, and falls back to "-" otherwise', () => {
+    expect(planUnits(has, { onset: ['L'], nucleus: 'OW1', coda: [] }, { ...ctx, prevVowel: '@' })[0].alias).toBe('@ loU');
+    // no "@ bE" in this bank: falls back to the start form
+    expect(planUnits(has, { onset: ['B'], nucleus: 'EH1', coda: [] }, { ...ctx, prevVowel: '@' })[0].alias).toBe('- bE');
+  });
+
+  it('sings consonant clusters as a cluster sample (or single consonants) plus the last consonant with the vowel', () => {
+    const stE = planUnits(has, { onset: ['S', 'T'], nucleus: 'EH1', coda: [] }, ctx);
+    expect(stE.map((u) => u.alias)).toEqual(['- s', '- tE']);
+    // three consonants: the first two as a cluster sample ("- st"), then the last with the vowel
+    const strE = planUnits(has, { onset: ['S', 'T', 'R'], nucleus: 'EH1', coda: [] }, ctx);
+    expect(strE.map((u) => u.alias)).toEqual(['- st', '- rE']);
+    const bread = planUnits(has, { onset: ['B', 'R'], nucleus: 'EH1', coda: ['D'] }, ctx);
+    expect(bread.map((u) => `${u.role}:${u.alias}`)).toEqual(['onset:- b', 'vowel:- rE', 'coda:E d']);
+  });
+
+  it('uses a whole-ending sample for a word-final cluster ("l d-"), and one consonant at a time otherwise', () => {
+    const b = new Set(['- w3', '3 l', 'l d-', '3 d', 'E n', 'E d']);
+    const world = planUnits((a) => b.has(a), { onset: ['W'], nucleus: 'ER1', coda: ['L', 'D'] }, { ...ctx, releaseAtEnd: true });
+    expect(world.map((u) => u.alias)).toEqual(['- w3', '3 l', 'l d-']);
+    // not at a word end: no "-" ending samples; the second consonant falls back to the vowel form
+    const mid = planUnits((a) => b.has(a), { onset: ['W'], nucleus: 'ER1', coda: ['L', 'D'] }, ctx);
+    expect(mid.map((u) => u.alias)).toEqual(['- w3', '3 l', '3 d']);
+  });
+
+  it('holds a melisma on the vowel-to-vowel sample and skips what the bank lacks', () => {
+    expect(planUnits(has, { onset: [], nucleus: 'IY1', coda: [] }, { ...ctx, melisma: true }).map((u) => u.alias)).toEqual(['i i']);
+    expect(planUnits(has, { onset: ['Z', 'Z'], nucleus: 'AH0', coda: [] }, ctx)).toEqual([]); // nothing usable at all
+  });
+});
+
 // ---- Optional: a real voicebank on this machine -------------------------------------------------------------
 const bankDir = process.env.HILLSING_UTAU_BANK;
 
@@ -251,5 +309,39 @@ describe.skipIf(!bankDir)('real voicebank (HILLSING_UTAU_BANK)', () => {
       console.log(`alias "${alias}" @${target} Hz -> measured ${f.toFixed(1)} Hz, rms ${rms(out.samples, a, b).toFixed(3)}`);
       expect(Math.abs(f / target - 1), `${alias} at ${target}`).toBeLessThan(0.05);
     }
+  });
+
+  it('sings English lyrics: every word finds aliases, pitch follows the notes, levels are sane', async () => {
+    const root = bankDir!;
+    const files: BankFile[] = walk(root).map((p) => ({ path: relative(root, p).split('\\').join('/'), read: async () => new Uint8Array(readFileSync(p)) }));
+    const bank = await Voicebank.load(files, 'real');
+    const text = 'hello world I love to sing a little song';
+    const lyrics = buildLyrics(text, realLookup());
+    const pitches = [60, 62, 64, 65, 67, 65, 64, 62, 60, 64, 67, 72];
+    const notes = lyrics.syllables.map((_, i) => ({ start: i * 0.6, end: i * 0.6 + 0.5, note: pitches[i % pitches.length], velocity: 0.8, syllable: i, legato: false }));
+    const r = await renderUtau(bank, notes, lyrics.syllables);
+    console.log('aliases:\n' + r.log.join('\n'));
+    console.log(`missing: ${r.missing.join(', ') || 'none'}; length ${(r.samples.length / r.sampleRate).toFixed(2)} s, lead ${r.leadSec.toFixed(3)} s`);
+    expect(r.missing).toEqual([]);
+    expect(r.samples.every(Number.isFinite)).toBe(true);
+    let pk = 0;
+    for (const v of r.samples) pk = Math.max(pk, Math.abs(v));
+    expect(pk).toBeGreaterThan(0.1);
+    expect(pk).toBeLessThanOrEqual(0.96);
+    // each note's vowel sustains at about the note's pitch
+    let ok = 0, tested = 0;
+    for (const n of notes) {
+      const a = Math.round((r.leadSec + n.start + 0.12) * r.sampleRate), b = Math.round((r.leadSec + n.start + 0.32) * r.sampleRate); // the vowel core, clear of joins and endings
+      if (b - a < 1500) continue;
+      const seg = r.samples.subarray(a, b);
+      if (rms(seg) < 0.02) continue; // an unvoiced or silent stretch
+      const target = 440 * Math.pow(2, (n.note - 69) / 12);
+      const f = estimateF0(seg, r.sampleRate, target * 0.6, target * 1.6);
+      tested++;
+      if (Math.abs(f / target - 1) < 0.06) ok++;
+      else console.log(`  note ${n.note} (${target.toFixed(0)} Hz) measured ${f.toFixed(0)} Hz`);
+    }
+    console.log(`pitch follows the notes on ${ok} of ${tested} vowels`);
+    expect(ok).toBeGreaterThan(tested * 0.8);
   });
 });
