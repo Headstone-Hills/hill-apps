@@ -1,8 +1,11 @@
-import { buildSequence, type Sequence } from '../engine/sequence';
-import { parseMidiFile, singableTracks, type MidiFile, type MidiTrack } from '../midi/smf';
+import { buildSequence, reduceToMonophonic, type Sequence } from '../engine/sequence';
+import { renameSyllable, toggleMelisma } from '../editor/lyricEdit';
+import { History, sameNotes, withIds, type EditNote } from '../editor/notes';
+import { parseMidiFile, singableTracks, type MidiFile, type MidiNote, type MidiTrack } from '../midi/smf';
 import type { SingerEngine } from '../synth/engine';
+import type { PhonemeLookup } from '../text/cmudict';
 import type { LyricSyllable } from '../text/lyrics';
-import { drawPreview, timeAtClick } from './preview';
+import { PianoRoll, type LaneCell } from './pianoroll';
 
 export interface PanelContext {
   syllables(): LyricSyllable[];
@@ -11,6 +14,15 @@ export interface PanelContext {
   ensureEngine(): Promise<SingerEngine | null>;
   /** Called before playback starts (e.g. to stop a voice-lab phrase that owns the engine). */
   beforePlay?(): void;
+  /** The lyric text (the editor changes words and melismas by rewriting it). */
+  lyricsText(): string;
+  setLyricsText(text: string): void;
+  lookup(): PhonemeLookup;
+}
+
+interface Snapshot {
+  notes: EditNote[];
+  lyrics: string;
 }
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -22,10 +34,18 @@ const clock = (s: number): string => {
   return `${m}:${(t - m * 60).toFixed(1).padStart(4, '0')}`;
 };
 
-/** MIDI file panel: load a file, choose the melody track, preview, play through the synth. */
+/**
+ * Melody panel: load a MIDI file (or start an empty melody), edit it in the piano roll, and play it
+ * through the synth. Edits are made on a copy of the notes (with undo); the file itself is untouched.
+ */
 export class MidiFilePanel {
   private file: MidiFile | null = null;
   private track: MidiTrack | null = null;
+  private notes: EditNote[] = [];
+  /** Undo snapshots: the notes and the lyric text they were edited with. */
+  private readonly history = new History<Snapshot>({ notes: [], lyrics: '' }, (a, b) => a.lyrics === b.lyrics && sameNotes(a.notes, b.notes));
+  private roll!: PianoRoll;
+  private bpm = 120;
   private seq: Sequence | null = null;
   private engine: SingerEngine | null = null;
   private playing = false;
@@ -46,6 +66,18 @@ export class MidiFilePanel {
     tempoOut: this.q('out-tempo'),
     canvas: this.q<HTMLCanvasElement>('preview'),
     summary: this.q('file-summary'),
+    rollWrap: this.q('roll-wrap'),
+    rollScroll: this.q<HTMLInputElement>('roll-scroll'),
+    undo: this.q<HTMLButtonElement>('roll-undo'),
+    redo: this.q<HTMLButtonElement>('roll-redo'),
+    del: this.q<HTMLButtonElement>('roll-delete'),
+    mel: this.q<HTMLButtonElement>('roll-melisma'),
+    quant: this.q<HTMLButtonElement>('roll-quantize'),
+    grid: this.q<HTMLSelectElement>('roll-grid'),
+    zoomIn: this.q<HTMLButtonElement>('roll-zoom-in'),
+    zoomOut: this.q<HTMLButtonElement>('roll-zoom-out'),
+    fit: this.q<HTMLButtonElement>('roll-fit'),
+    fresh: this.q<HTMLButtonElement>('roll-new'),
   };
 
   constructor(private readonly ctx: PanelContext) {
@@ -53,6 +85,7 @@ export class MidiFilePanel {
     el.file.addEventListener('change', () => void this.loadFile());
     el.track.addEventListener('change', () => {
       this.track = this.file?.tracks[Number(el.track.value)] ?? null;
+      this.setNotes(this.track?.notes ?? []);
       this.rebuild();
     });
     for (const c of [el.beat, el.repeat]) c.addEventListener('change', () => this.rebuild());
@@ -64,14 +97,31 @@ export class MidiFilePanel {
     el.tempo.addEventListener('pointerup', () => el.tempo.blur());
     el.play.addEventListener('click', () => void this.togglePlay());
     el.stop.addEventListener('click', () => this.stop());
-    el.canvas.addEventListener('click', (e) => {
-      if (!this.seq) return;
-      const t = timeAtClick(el.canvas, e.clientX, this.previewLength());
-      this.scorePos = t;
-      this.engine?.seqSeek(t + this.seq.leadInSec);
-      this.refresh();
+    this.roll = new PianoRoll(el.canvas, el.rollScroll, el.rollWrap, {
+      commit: (notes) => this.applyEdit(notes),
+      seek: (t) => this.seekFile(t),
+      toggleMelisma: (id) => this.toggleMelismaFor(id),
+      renameSyllable: (id, text) => this.renameFor(id, text),
+      undo: () => this.undo(),
+      redo: () => this.redo(),
+      selectionChanged: () => this.updateTools(),
     });
-    window.addEventListener('resize', () => this.refresh());
+    el.undo.addEventListener('click', () => this.undo());
+    el.redo.addEventListener('click', () => this.redo());
+    el.del.addEventListener('click', () => this.roll.deleteSelected());
+    el.mel.addEventListener('click', () => this.roll.toggleMelismaOfSelection());
+    el.quant.addEventListener('click', () => this.roll.quantize());
+    el.grid.addEventListener('change', () => this.applyGrid());
+    el.zoomIn.addEventListener('click', () => this.roll.zoomBy(1.25));
+    el.zoomOut.addEventListener('click', () => this.roll.zoomBy(0.8));
+    el.fit.addEventListener('click', () => this.roll.fit());
+    el.fresh.addEventListener('click', () => this.newMelody());
+    for (const b of [el.undo, el.redo, el.del, el.mel, el.quant, el.zoomIn, el.zoomOut, el.fit, el.fresh]) {
+      b.addEventListener('pointerup', () => b.blur()); // so Space / computer keys keep working
+    }
+    el.grid.addEventListener('pointerup', () => el.grid.blur());
+    this.applyGrid();
+    this.updateTools();
     el.tempoOut.textContent = `${el.tempo.value}%`;
     this.setEnabled(false);
     this.refresh();
@@ -106,7 +156,7 @@ export class MidiFilePanel {
   }
 
   async togglePlay(): Promise<void> {
-    if (!this.file || !this.seq) return;
+    if (!this.seq) return;
     this.ctx.beforePlay?.();
     const engine = this.engine ?? (await this.ctx.ensureEngine());
     if (!engine) return;
@@ -147,10 +197,13 @@ export class MidiFilePanel {
       this.refresh();
       return;
     }
+    this.bpm = this.file.initialBpm || 120;
+    this.applyGrid();
     this.el.name.textContent = `— ${f.name} (${this.file.initialBpm.toFixed(0)} BPM${this.file.tempoEvents > 1 ? ', tempo changes' : ''})`;
     const candidates = singableTracks(this.file);
     if (candidates.length === 0) {
       this.track = null;
+      this.setNotes([]);
       this.fillTracks();
       this.say('This file has no pitched notes to sing (only percussion or empty tracks).', true);
       this.setEnabled(false);
@@ -163,7 +216,130 @@ export class MidiFilePanel {
     this.fillTracks();
     this.el.track.value = String(this.track.index);
     this.lastRate = 1;
+    this.setNotes(this.track.notes);
     this.rebuild();
+    this.roll.fit();
+  }
+
+  // ---- editing -----------------------------------------------------------------------------------
+  /** Replace the score with a fresh copy of these notes (loading a file / choosing a track): clears undo. */
+  private setNotes(notes: ReadonlyArray<MidiNote>): void {
+    this.notes = withIds(notes);
+    this.history.reset({ notes: this.notes, lyrics: this.ctx.lyricsText() });
+    this.roll.select([]);
+    this.updateTools();
+  }
+
+  private newMelody(): void {
+    this.engine?.seqStop();
+    this.playing = false;
+    this.scorePos = 0;
+    this.file = null;
+    this.track = null;
+    this.bpm = 120;
+    this.el.name.textContent = '— new melody';
+    this.fillTracks();
+    this.applyGrid();
+    this.setNotes([]);
+    this.rebuild();
+    this.say('Double-click in the piano roll to add notes. Each note sings the next syllable of the lyrics.', false);
+  }
+
+  private applyEdit(notes: EditNote[]): void {
+    this.history.current.lyrics = this.ctx.lyricsText(); // typed lyric changes since the last edit are not part of this one
+    if (this.history.push({ notes, lyrics: this.ctx.lyricsText() })) this.notes = notes;
+    this.rebuild();
+    this.updateTools();
+  }
+
+  /** A lyric edit made from the roll (word change, melisma): recorded in the same undo history. */
+  private applyLyricEdit(next: string): void {
+    this.history.current.lyrics = this.ctx.lyricsText();
+    this.history.push({ notes: this.notes, lyrics: next });
+    this.ctx.setLyricsText(next); // rebuilds the lyrics, which rebuilds the score
+    this.updateTools();
+  }
+
+  private restore(s: Snapshot | null): void {
+    if (!s) return;
+    this.notes = s.notes;
+    if (s.lyrics !== this.ctx.lyricsText()) this.ctx.setLyricsText(s.lyrics);
+    else this.rebuild();
+    this.updateTools();
+  }
+
+  private undo(): void {
+    this.restore(this.history.undo());
+  }
+
+  private redo(): void {
+    this.restore(this.history.redo());
+  }
+
+  /** Snap step in seconds: the chosen fraction of a beat at the file's first tempo. */
+  private applyGrid(): void {
+    const frac = Number(this.el.grid.value);
+    this.roll.setGrid(frac > 0 ? (frac * 60) / this.bpm : 0);
+  }
+
+  private updateTools(): void {
+    const sel = this.roll?.selectedIds.size ?? 0;
+    this.el.undo.disabled = !this.history.canUndo;
+    this.el.redo.disabled = !this.history.canRedo;
+    this.el.del.disabled = sel === 0;
+    this.el.mel.disabled = sel !== 1;
+    this.el.quant.disabled = Number(this.el.grid.value) <= 0 || this.notes.length === 0;
+  }
+
+  /** Index into the sung (monophonic) melody for a note, or -1 when the note is not sung (chord, hidden). */
+  private monoIndex(id: number): number {
+    return reduceToMonophonic(this.notes).findIndex((n) => (n as EditNote).id === id);
+  }
+
+  /** Which lyric syllable a melody index sings (-1 for none), following the "Repeat lyrics" rule. */
+  private syllableFor(monoIdx: number): number {
+    const len = this.ctx.syllables().length;
+    if (monoIdx < 0 || len === 0) return -1;
+    if (monoIdx < len) return monoIdx;
+    return this.el.repeat.checked ? monoIdx % len : -1;
+  }
+
+  private toggleMelismaFor(id: number): void {
+    const si = this.syllableFor(this.monoIndex(id));
+    const next = si < 0 ? null : toggleMelisma(this.ctx.lyricsText(), this.ctx.lookup(), si);
+    if (next === null) {
+      this.say('That note cannot hold the previous vowel: the first note has nothing to continue, and a note in the middle of a word cannot be split.', true);
+      return;
+    }
+    this.applyLyricEdit(next);
+  }
+
+  private renameFor(id: number, word: string): void {
+    const mi = this.monoIndex(id);
+    const len = this.ctx.syllables().length;
+    const text = this.ctx.lyricsText();
+    if (mi < 0) return;
+    if (mi >= len) {
+      if (mi > len) {
+        this.say('Give the earlier notes a word first: words are assigned to notes in order.', true);
+        return;
+      }
+      if (word.trim()) this.applyLyricEdit(`${text.trimEnd()} ${word.trim()}`);
+      return;
+    }
+    const next = renameSyllable(text, this.ctx.lookup(), this.syllableFor(mi), word);
+    if (next !== null) this.applyLyricEdit(next);
+  }
+
+  /** Click on the ruler / empty roll: move the playhead (file time -> score time). */
+  private seekFile(fileSec: number): void {
+    if (!this.seq) return;
+    const mono = reduceToMonophonic(this.notes);
+    const t0 = mono.length ? mono[0].start : 0;
+    const t = Math.max(0, (fileSec - t0) / (Number(this.el.tempo.value) / 100));
+    this.scorePos = t;
+    this.engine?.seqSeek(t + this.seq.leadInSec);
+    this.refresh();
   }
 
   private fillTracks(): void {
@@ -184,13 +360,14 @@ export class MidiFilePanel {
     const rate = Number(this.el.tempo.value) / 100;
     const keepScore = Math.max(0, this.scorePos) * (this.lastRate / rate); // same musical spot at the new tempo
     this.lastRate = rate;
-    if (!this.track) {
+    if (this.notes.length === 0) {
       this.seq = null;
+      this.setEnabled(false);
       this.refresh();
       return;
     }
     const syllables = this.ctx.syllables();
-    this.seq = buildSequence(this.track.notes, syllables, {
+    this.seq = buildSequence(this.notes, syllables, {
       rate,
       vowelOnBeat: this.el.beat.checked,
       repeatLyrics: this.el.repeat.checked,
@@ -235,7 +412,25 @@ export class MidiFilePanel {
     el.play.textContent = this.playing ? '⏸ Pause' : '▶ Play';
     const len = this.previewLength();
     el.time.textContent = this.seq ? `${clock(Math.min(len, this.scorePos))} / ${clock(len)}` : '0:00.0 / 0:00.0';
-    const labels = this.seq ? this.seq.notes.map((n) => this.ctx.syllables()[n.syllable]?.label ?? '') : [];
-    drawPreview(el.canvas, this.seq ? { notes: this.seq.notes, labels, lengthSec: len } : null, this.scorePos);
+    const syl = this.ctx.syllables();
+    const mono = reduceToMonophonic(this.notes);
+    const monoIdx = new Map(mono.map((n, i) => [(n as EditNote).id, i]));
+    const lane = new Map<number, LaneCell>();
+    for (const n of this.notes) {
+      const mi = monoIdx.get(n.id);
+      const si = mi === undefined ? -1 : this.syllableFor(mi);
+      const s = si >= 0 ? syl[si] : undefined;
+      lane.set(n.id, s ? { label: s.label, sung: true, melisma: !!s.melisma } : { label: '', sung: false, melisma: false });
+    }
+    const t0 = mono.length ? mono[0].start : 0;
+    const rate = Number(el.tempo.value) / 100;
+    const last = this.notes.reduce((m, n) => Math.max(m, n.end), 0);
+    this.roll.setView({
+      notes: this.notes,
+      lane,
+      playheadSec: this.seq ? t0 + this.scorePos * rate : null,
+      playing: this.playing,
+      lengthSec: Math.max(4, last + 1),
+    });
   }
 }

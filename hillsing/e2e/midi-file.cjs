@@ -124,13 +124,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check('and silent in the gaps between them', gaps.every((l) => l < 0.01), gaps.map((l) => l.toFixed(3)).join(', '));
   await page.click('#stop');
 
-  // Seek by clicking the preview (skip to the last note)
+  // Seek by clicking the piano-roll ruler (the playhead moves, and the time readout follows)
   await page.uncheck('#repeat');
   const box = await page.locator('#preview').boundingBox();
-  await page.mouse.click(box.x + box.width * 0.5, box.y + box.height / 2);
+  await page.mouse.click(box.x + box.width * 0.6, box.y + 10); // y = 10 is inside the 22 px ruler
   await sleep(300);
-  const [seekPos, seekLen] = parseClock(await page.textContent('#time'));
-  check('clicking the middle of the preview seeks to about half way', Math.abs(seekPos - seekLen / 2) < 0.15, await page.textContent('#time'));
+  const [seekPos] = parseClock(await page.textContent('#time'));
+  check('clicking the ruler moves the playhead', seekPos > 0.3, await page.textContent('#time'));
+
+  // Editing: double-click adds a note, Delete removes it, and Undo brings it back
+  const countNotes = async () => Number(/^(\d+) of (\d+) notes/.exec(await page.textContent('#file-summary'))[2]);
+  const before = await countNotes();
+  await page.mouse.dblclick(box.x + box.width * 0.9, box.y + box.height / 2);
+  await sleep(200);
+  check('double-clicking the roll adds a note', (await countNotes()) === before + 1, String(await countNotes()));
+  await page.keyboard.press('Delete');
+  await sleep(200);
+  check('Delete removes the selected note', (await countNotes()) === before, String(await countNotes()));
+  await page.keyboard.press('Meta+z');
+  await page.keyboard.press('Control+z');
+  await sleep(200);
+  check('Undo restores it', (await countNotes()) === before + 1, String(await countNotes()));
 
   // Live play still works alongside, and everything else from before
   await page.keyboard.press('Home');

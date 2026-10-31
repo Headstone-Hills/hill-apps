@@ -276,6 +276,17 @@ export function startApp(): void {
       return engine;
     },
     beforePlay: () => lab?.cancel(),
+    lyricsText: () => lyricsBox.value,
+    setLyricsText: (text) => {
+      lyricsBox.value = text;
+      try {
+        storage?.setItem(LYRICS_KEY, text);
+      } catch {
+        /* storage unavailable: fine */
+      }
+      rebuildLyrics(true);
+    },
+    lookup: () => lookup,
   });
 
   const spectrogram = new Spectrogram($<HTMLCanvasElement>('spectrogram'));

@@ -247,11 +247,31 @@ The formant values and gains in this project were chosen from commonly tabulated
 tuned against measurements; they were not copied from a specific table, so check the papers above
 before citing any individual number.
 
+## Piano-roll editor
+
+The melody panel is an editor, not just a preview. Load a MIDI file (or press **New melody**) and:
+
+- **Add** a note by double-clicking empty space; **move** by dragging (time and pitch), **resize** by dragging
+  either edge, **delete** with Delete/Backspace. Shift-click adds to the selection, Cmd/Ctrl+A selects all.
+- **Keys** (with the roll focused): arrows transpose (Up/Down, Shift = octave) and nudge (Left/Right, Shift = x4),
+  Q quantizes the selection (or everything), M toggles a melisma, +/- zoom, Cmd/Ctrl+Z undo, Shift+Cmd/Ctrl+Z redo.
+- **Snap** is a fraction of a beat at the file's first tempo. **Fit** and the scroll bar navigate; Cmd/Ctrl+scroll
+  zooms. Click the ruler (or empty space) to move the playhead.
+- **The word lane** under the notes shows the syllable each note sings, in order; a red dash means the note has no
+  syllable. Double-click a word to change it (it rewrites that word in the Lyrics box). **Hold vowel ~** (or M) makes
+  the selected note continue the previous word's vowel: it inserts a `~` before the word, exactly as typing it would.
+- **Undo** covers note edits and the lyric changes made from the roll. Edits are made on a copy of the notes; the
+  file itself is never changed. Times are in the file's own tempo; the Tempo slider only changes playback speed.
+
+Code: `src/editor/notes.ts` (note operations and undo history, pure), `src/editor/lyricEdit.ts` (lyric-text
+edits, pure), `src/ui/pianoroll.ts` (the canvas), `src/ui/midifile.ts` (wiring to playback). Tests:
+`tests/editor.test.ts`. The canvas only covers the visible window, so long songs do not hit canvas size limits.
+
 ## Roadmap
 
 Agreed scope, in order: (1) **v0.1 live singing**, done; (2) **MIDI file import and playback**
 through the same engine, done in v0.2; (2b) **voice lab, multiple voices, legato that keeps
-consonants, melisma data model**, done in v0.3; (3) piano-roll editor with a syllable row (the current preview is read-only); (4) per-note tuning: pitch
+consonants, melisma data model**, done in v0.3; (3) piano-roll editor with a syllable row, done in v0.4 (see "Piano-roll editor"); (4) per-note tuning: pitch
 offset/curve, vibrato, formant shift, consonant/vowel timing, with global → selection → note
 overrides; (5) record live performances into the editor as notes + syllables; (6) Electron wrapper
 for Apple Silicon Mac, **done** (`electron/main.cjs`; `npm run app:build` writes

@@ -35,10 +35,13 @@ const DIGIT_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seve
 /** Melisma marker: put `~` (or `_`) after a word to hold its vowel across another note. */
 export const MELISMA_TOKENS = new Set(['~', '_']);
 
+/** What counts as a token: a word, a number, or a melisma marker. */
+export const TOKEN_PATTERN = /[A-Za-z]+(?:['’][A-Za-z]+)*|\d+|[~_]/.source;
+
 /** Words, numbers and melisma markers. Digits are read one at a time ("12" -> "one two"). */
 export function tokenize(text: string): string[] {
   const tokens: string[] = [];
-  for (const m of text.matchAll(/[A-Za-z]+(?:['’][A-Za-z]+)*|\d+|[~_]/g)) {
+  for (const m of text.matchAll(new RegExp(TOKEN_PATTERN, 'g'))) {
     const t = m[0].replace(/’/g, "'");
     if (/^\d+$/.test(t)) for (const d of t) tokens.push(DIGIT_WORDS[Number(d)]);
     else tokens.push(t);

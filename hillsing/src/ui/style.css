@@ -94,7 +94,12 @@ table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; 
 td { padding: 3px 4px; border-bottom: 1px solid var(--line); }
 td:last-child { text-align: right; white-space: nowrap; }
 
-#midi-file canvas { display: block; width: 100%; height: 150px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; margin-top: 8px; }
+#midi-file canvas { display: block; width: 100%; height: 340px; border: 1px solid var(--line); border-radius: 6px; margin-top: 8px; outline: none; touch-action: none; }
+#midi-file canvas:focus-visible { border-color: var(--accent); }
+.roll-wrap { position: relative; }
+.roll-input { position: absolute; z-index: 2; margin: 0; padding: 0 6px; font: 13px system-ui, sans-serif; color: var(--text); background: #0f1318; border: 2px solid var(--next); border-radius: 4px; }
+.roll-scroll { display: block; width: 100%; margin: 4px 0 0; }
+.roll-tools { margin-top: 8px; }
 #midi-file input[type='file'] { color: var(--muted); font-size: 13px; }
 select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; max-width: 60vw; }
 button:disabled { opacity: 0.45; cursor: default; }
