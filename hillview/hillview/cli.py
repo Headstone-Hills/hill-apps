@@ -31,7 +31,7 @@ def cmd_render(a):
         am = AudioMod.load(a.audio_mod)
     elif a.audio_reactive or a.audio:
         am = audio_mod.analyze(audio_mod.decode(a.audio or a.input), info["fps"], n_frames=info["frames"])
-    n = render_video(a.input, a.output, cfg, fmt, audio_path=a.audio, audio_mod=am, fps=a.fps, workers=a.workers,
+    n = render_video(a.input, a.output, cfg, fmt, audio_path=a.audio, audio_mod=am, fps=a.fps, workers=a.workers, speed=a.speed,
                      progress=lambda i, t: print(f"\r{i}/{t} frames", end="", file=sys.stderr))
     print(f"\nrendered {n} frames ({fmt}) -> {a.output}")
 
@@ -52,6 +52,7 @@ def main(argv=None):
     r.add_argument("--fps", type=float, help="override frame rate (needed for image sequences; default 25)")
     r.add_argument("--audio", help="separate audio file: drives modulation and is muxed into the output")
     r.add_argument("--workers", type=int, help="parallel frame threads (default: CPU count)")
+    r.add_argument("--speed", choices=["fast", "balanced", "quality"], help="x264/x265 encoder preset: veryfast / medium / slow")
     r.add_argument("--audio-mod", help="precomputed .json from `analyze`")
     r.add_argument("--audio-reactive", action="store_true", help="analyze the input's own audio")
     r.set_defaults(fn=cmd_render)

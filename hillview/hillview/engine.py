@@ -3,9 +3,10 @@ import copy
 import math
 import multiprocessing
 import os
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import numpy as np
-from . import effects
+from . import effects, native
+from .color import rgb_to_oklab, oklab_to_rgb, parse_color, rotate_hue_lab
 from .modulation import source_value
 
 DEFAULTS = {
@@ -16,7 +17,9 @@ DEFAULTS = {
     "blur": {"sigma": 0.0},
     "sampling": {"step": 1, "interp": "blend"},   # interp: blend | hold
     "modulation": [],
-    "quality": {"fast_blur": False},    # True: large radii blurred at reduced resolution (up to ~2x faster, slight softening error at hard edges)
+    # fast_blur: large radii blurred at reduced resolution in the numpy path (up to ~2x faster, softening error at hard edges)
+    # native: use the C++ core when it is built (core/build.sh); always exact, ignores fast_blur
+    "quality": {"fast_blur": False, "native": True},
 }
 
 # target path -> (min, max) clamp applied after modulation
@@ -88,9 +91,41 @@ class Engine:
         a, b = path.split(".")
         return float(self.cfg[a][b])
 
+    @property
+    def use_native(self):
+        q = self.cfg["quality"]
+        return bool(q["native"]) and not q["fast_blur"] and native.available()
+
+    def _native_params(self, p, img):
+        """Resolve everything time-dependent into a native.Params (img only used to fit a palette)."""
+        c = self.cfg
+        mode, levels, pal = native.QUANT_NONE, 2, None
+        if c["quantize"]["enabled"]:
+            if c["quantize"]["mode"] == "kmeans":
+                mode, pal = native.QUANT_PALETTE, effects.kmeans_palette(img, p["quantize.colors"], seed=c["seed"])
+            else:
+                mode, levels = native.QUANT_POSTERIZE, max(2, int(round(p["quantize.levels"])))
+        rules = []
+        for r in c["remap"]["rules"]:
+            amt = float(np.clip(r.get("amount", 1.0) * p["remap.amount"], 0, 1))
+            if amt <= 0:
+                continue
+            tgt = oklab_to_rgb(rotate_hue_lab(rgb_to_oklab(parse_color(r["to"])), p["remap.hue_shift"]))
+            rules.append({"src_lab": rgb_to_oklab(parse_color(r["from"])), "tgt_rgb": tgt,
+                          "threshold": max(0.0, r.get("threshold", 0.2) + p["remap.threshold"]),
+                          "softness": max(1e-4, r.get("softness", 0.05)), "amount": amt})
+        return native.Params(mode, levels, pal, p["smooth.sigma"] * self.px_scale,
+                             p["blur.sigma"] * self.px_scale, rules)
+
+    def process_key_u8(self, u8, t, threads=0):
+        """uint8 in -> uint8 out through the native core (requires use_native)."""
+        return native.process_u8(u8, self._native_params(self.params_at(t), u8), threads)
+
     def process_key(self, img, t, key_id=0):
         """Full effect chain on one source frame at time t."""
         p, c = self.params_at(t), self.cfg
+        if self.use_native:
+            return native.process_f32(img, self._native_params(p, img))
         out = img
         if c["quantize"]["enabled"]:
             if c["quantize"]["mode"] == "kmeans":
@@ -131,16 +166,25 @@ class Engine:
     def frames(self, source, workers=None, lookahead=None):
         """Yield every output frame in order as uint8 (H,W,3), processing keyframes in parallel.
 
-        Frames are pure functions of time, so keyframes are independent. With workers > 1 they run
-        in worker processes (threads do not scale here: the blur issues many small numpy calls and
-        the threads convoy on the GIL) `lookahead` frames ahead of the consumer. Blends are done in
-        8-bit integer arithmetic (within ~1 level of the float path used by `render`).
+        Frames are pure functions of time, so keyframes are independent and run `lookahead` frames ahead
+        of the consumer. With the native core: 1-2 Python threads, each calling the multithreaded C++
+        kernels (ctypes releases the GIL). Without it: worker processes (numpy threads do not scale: the
+        blur issues many small calls and threads convoy on the GIL). Blends are 8-bit integer arithmetic
+        (within ~1 level of the float path used by `render`).
         `source` needs ensure(n) -> bool (does frame n exist) and get(n); get_u8(n) is used if present.
         """
-        workers = max(1, workers or os.cpu_count() or 1)
+        ncpu = os.cpu_count() or 1
+        workers = max(1, workers or ncpu)
+        pool, futs, nthreads = None, {}, 0
+        if self.use_native:
+            # The native core threads each frame itself and releases the GIL, so a couple of Python
+            # threads (to overlap frames) beat worker processes: no pickling, no extra interpreters.
+            frames_in_flight = 1 if workers == 1 else 2
+            nthreads = max(1, workers // frames_in_flight)
+            pool = ThreadPoolExecutor(frames_in_flight)
+            workers = frames_in_flight
         look = lookahead or workers * 2
-        pool, futs = None, {}
-        if workers > 1:
+        if pool is None and workers > 1:
             for v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
                 os.environ.setdefault(v, "1")      # inherited by workers: no BLAS-in-process oversubscription
             pool = ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"),
@@ -151,7 +195,9 @@ class Engine:
 
         def submit(k):
             u8 = grab(k)
-            if pool:
+            if nthreads:
+                futs[k] = pool.submit(self.process_key_u8, u8, k / self.fps, nthreads)
+            elif pool:
                 futs[k] = pool.submit(_work, u8, k)
             else:
                 futs[k] = _to_u8(self.process_key(u8.astype(np.float32) * np.float32(1 / 255), k / self.fps, k))
@@ -168,10 +214,14 @@ class Engine:
                 step, k0, ks = self._plan(i)
                 a = res(k0)
                 if len(ks) == 1:
-                    yield a
+                    frame = a
                 else:
                     w = int(round((i - k0) / step * 256))
-                    yield ((a.astype(np.uint16) * (256 - w) + res(ks[1]).astype(np.uint16) * w + 128) >> 8).astype(np.uint8)
+                    if nthreads:
+                        frame = native.blend_u8(a, res(ks[1]), w, ncpu)
+                    else:
+                        frame = ((a.astype(np.uint16) * (256 - w) + res(ks[1]).astype(np.uint16) * w + 128) >> 8).astype(np.uint8)
+                yield frame
                 for k in [k for k in futs if k < i - ms]:
                     del futs[k]
                 i += 1

@@ -66,11 +66,11 @@ class Job:
         self.status, self.done, self.total, self.error, self.cancel = "running", 0, 1, None, False
 
 
-def run_job(job, sess, cfg, fmt, use_audio):
+def run_job(job, sess, cfg, fmt, use_audio, speed=None):
     try:
         am = sess.audio_mod() if use_audio else None
         render_video(sess.path, job.out, cfg, fmt, audio_path=sess.audio_path, audio_mod=am,
-                     fps=sess.fps_override, cancel=lambda: job.cancel,
+                     fps=sess.fps_override, cancel=lambda: job.cancel, speed=speed,
                      progress=lambda i, t: (setattr(job, "done", i), setattr(job, "total", max(t, 1))))
         job.status = "done"
     except Cancelled:
@@ -220,7 +220,7 @@ class Handler(BaseHTTPRequestHandler):
         out = os.path.join(OUTPUT, name if seq else f"{name}.{ext}")
         job = Job(out, fmt)
         JOBS[job.id] = job
-        threading.Thread(target=run_job, args=(job, s, b.get("config") or {}, fmt, b.get("audio_reactive", True)),
+        threading.Thread(target=run_job, args=(job, s, b.get("config") or {}, fmt, b.get("audio_reactive", True), b.get("speed") or None),
                          daemon=True).start()
         self._send(200, {"job": job.id})
 

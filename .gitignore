@@ -23,3 +23,7 @@ log.txt
 # macOS
 .DS_Store
 ._*
+
+# Native core build output
+hillview/core/build/
+hillview/hillview/_native/

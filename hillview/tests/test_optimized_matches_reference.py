@@ -110,19 +110,29 @@ CFGS = [
 ]
 
 
+def with_native(cfg, on):
+    return {**cfg, "quality": {"native": on}}
+
+
+@pytest.mark.parametrize("native_on", [False, True], ids=["numpy-procs", "native-threads"])
 @pytest.mark.parametrize("workers", [1, 2])
 @pytest.mark.parametrize("cfg", CFGS, ids=["step1", "blend3", "hold4", "modulated"])
-def test_parallel_frames_match_sequential_render(cfg, workers):
+def test_parallel_frames_match_sequential_render(cfg, workers, native_on, native_lib):
+    if native_on and not native_lib:
+        pytest.skip("native core not built")
     fr = frames()
-    ref = Engine(cfg, 24)
-    got = list(Engine(cfg, 24).frames(Src(fr), workers=workers))
+    ref = Engine(with_native(cfg, False), 24)        # the numpy reference renderer
+    got = list(Engine(with_native(cfg, native_on), 24).frames(Src(fr), workers=workers))
     assert len(got) == len(fr) and all(g.dtype == np.uint8 for g in got)
     for i, g in enumerate(got):
         want = ref.render(i, Src(fr))
         assert np.abs(g.astype(np.float32) / 255 - want).max() <= 2.5 / 255, f"frame {i}"
 
 
-def test_frames_stops_cleanly_when_consumer_abandons():
-    gen = Engine({"smooth": {"sigma": 1}}, 24).frames(Src(frames(20)), workers=2)
+@pytest.mark.parametrize("native_on", [False, True])
+def test_frames_stops_cleanly_when_consumer_abandons(native_on, native_lib):
+    if native_on and not native_lib:
+        pytest.skip("native core not built")
+    gen = Engine(with_native({"smooth": {"sigma": 1}}, native_on), 24).frames(Src(frames(20)), workers=2)
     next(gen)
     gen.close()  # must shut the worker pool down without hanging

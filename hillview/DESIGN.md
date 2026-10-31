@@ -19,22 +19,34 @@ Order of work: Resolve (OFX) first, then Premiere (AE SDK), then Final Cut Pro (
 ## 2. Architecture
 
 ```
-core/ (C++17, no host headers)     <- port of the Python reference
-   frame ops + modulation + params + audio-envelope reader
-adapters/
-   ofx/      Resolve (and any OFX host: Nuke, Fusion, Vegas...)
-   ae_sdk/   Premiere (and After Effects, nearly free)
+core/ (C++17, plain C ABI, no host headers)           <- BUILT, tested, used by the Python app
+   kernels: posterize, palette, blur, colour remap, u8<->f32, blend
+   modulation: hash01 / lfo / noise / steps (bit-exact with Python)
+hillview/ (Python)                                     <- reference engine + standalone app; numpy fallback
+adapters/                                              <- NOT STARTED
+   ofx/      Resolve (and any OFX host)
+   ae_sdk/   Premiere (and After Effects)
    fxplug/   Final Cut Pro / Motion (Metal)
 ```
 
-The Python engine is the specification: C++ output is checked against it frame-for-frame.
-Two properties make porting tractable:
-- **Stateless frames** (see README). Verified by a test.
-- **All modulation is a pure function of time + seed**, so a host re-rendering frame 812 matches playback.
+The Python engine is the specification; the C++ core is checked against it (tests/test_native.py) and the adapters will be checked against
+the core. Two properties make this tractable:
+- **Stateless frames.** Output frame i depends only on source frames, config, seed and time. Tested.
+- **Modulation is a pure function of time + seed**, so a host re-rendering frame 812 matches playback.
+
+What the core does and does not give a plugin today:
+- The per-frame chain (`hv_process_f32`) and modulation sources are ready to link. Hosts hand you float RGBA, so an adapter must
+  strip/restore alpha (the core is RGB-only) or the core must grow an RGBA entry point.
+- **Not ported to C++ yet:** parameter resolution (`Engine.params_at`: base + modulation routing + clamps), frame planning for sampling and
+  interpolation (`_plan`), k-means palette *fitting* (the core only applies a palette), OKLab setup for rules, and audio-envelope JSON loading.
+  An adapter needs those; they are small and have Python references to test against.
+- **No GPU path.** Hosts prefer GPU rendering. The core is CPU-only; Metal (FCP), CUDA/OpenCL (Resolve, Premiere) kernels would be new work,
+  and the box-blur/remap structure ports directly. Nothing is built or tested for GPU.
+- Threads are created per call (tens of microseconds, no global state, so concurrent callers are safe). A host that already schedules its own
+  tiles may want `threads = 1`.
 
 Temporal effects need neighbouring frames: sampling/interpolation fetches frames `k0` and `k0+N`
-(OFX, AE and FxPlug all allow fetching other times; AVX2's ability here is **unverified**).
-Each processed keyframe is cached; GPU versions (Metal/CUDA/OpenCL) come after CPU parity.
+(OFX, AE and FxPlug all expose fetching other times). Each processed keyframe is cached.
 
 ## 3. Audio-reactive modulation
 

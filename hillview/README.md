@@ -8,6 +8,28 @@ Two deliverables share one engine:
 2. **Host plugins**: DaVinci Resolve (OpenFX, assumed to load in the free version), then Premiere Pro (After Effects SDK),
    then Final Cut Pro (FxPlug). **Not written yet**; see [DESIGN.md](DESIGN.md). Avid is out of scope.
 
+## Native core (optional, 10-30x faster)
+
+`core/` is a C++17 library with a plain C interface (`core/include/hillview/hillview.h`) and no host-SDK dependencies. The Python app uses it
+automatically when built, and the host plugins will link the same library. Without it everything still works through numpy.
+
+```
+core/build.sh            # needs cmake + a C++17 compiler; copies the library to hillview/_native/
+core/sanitize.sh         # native tests under AddressSanitizer + UBSan (Linux, g++)
+python -m pytest tests   # native tests build the library themselves if cmake + g++ exist, else skip
+HILLVIEW_NO_NATIVE=1 ...  # force the numpy path;  HILLVIEW_LIB=/path/to/lib to point at a specific build
+```
+
+What it contains: posterize / palette quantize, separable blur (cache-blocked running sums, three box passes), the OKLab colour remap
+(vectorised, all rules fused into one pass), integer frame blending, and the modulation hash/LFO/noise/steps functions, parity-tested
+against the Python definitions bit-for-bit (they are what plugins must reproduce). Each frame is multithreaded inside the library;
+ctypes releases the GIL, so Python also overlaps two frames. AVX2/FMA versions of the hot loops are chosen at load time (x86-64 Linux);
+other platforms get the baseline build.
+
+**Verified:** Linux x86-64, g++ 13, on an AVX-512 CPU (so the AVX2 variants ran; the baseline variants were run via the sanitizer build).
+93 tests pass; the 33 native tests also pass under ASan + UBSan. **Not verified:** macOS, Windows, ARM builds (the CMake is portable and
+the SIMD dispatch is compiled out there, but I have not built it), and any GPU backend (none exists yet).
+
 ## Standalone app
 
 ```
@@ -49,23 +71,23 @@ Other containers rely on ffmpeg's own demuxers and are not individually tested.)
   ProRes/DNxHR outputs hold 8-bit-derived data. Alpha is dropped.
 - **Animated WebP can be exported but not imported:** ffmpeg 6.1's WebP decoder rejects animated files (static WebP is fine).
 - Preview is rendered at <= 640 px wide with blur radii scaled to match; exact pixels differ slightly from a full-res render.
-- **Performance (measured)**, 1920x1080, 60 frames, 4-core cloud VM, synthetic test-pattern clip, x264 CRF 16 encode included:
+- **Performance (measured)**, 1920x1080, 60 frames, 4-core cloud VM, synthetic test-pattern clip, x264 CRF 16 encode included
+  (median of 3 runs):
 
-  | | original | now |
-  |---|---|---|
-  | `presets/glitch_pop.json` (k-means, every 4th frame processed) | 43.1 s | 7.4 s (5.8x) |
-  | every frame: posterize + smooth 3 px + colour remap + blur 2 px | 120.9 s | 8.9 s (13.6x, ~7 fps) |
-  | pass-through, no effects (decode + encode floor) | | 3.5 s |
-  | interactive preview (640 px wide) | | ~37 ms/frame |
+  | | original numpy | numpy + processes | **native core** |
+  |---|---|---|---|
+  | `presets/glitch_pop.json` (k-means, every 4th frame) | 43.1 s | 7.4 s | **3.8 s** (2.4 s with `--speed fast`) |
+  | every frame: posterize + smooth 3 + colour remap + blur 2 | 120.9 s | 8.9 s | **3.7 s** (3.1 s with `--speed fast`) |
+  | pass-through, no effects (decode + encode floor) | | 3.5 s | 2.3 s |
+  | effect chain alone, per 1080p frame | ~1900 ms | 340 ms | **108 ms on 1 thread, 30 ms on 4** |
+  | interactive preview (640 px wide) | | ~37 ms | a few ms |
 
-  Still slower than real time at 1080p30 and untested at 4K. Where it went: blur rewritten as a vectorised running sum (~10x),
-  colour remap via lookup-table sRGB decode + matmul distances with a skip when no pixel is in range (~3x), k-means assignment as
-  a BLAS matmul (~4x), then keyframes processed in parallel worker processes (`--workers`, default = CPU count; scales ~3.1x on 4).
-  Threads were tried first and made things *slower* (GIL contention in the blur's many small numpy calls), hence processes.
-  What changed in output: blur edges now use plain edge-extension (differs from before only in a border strip a few radii wide;
-  interior matches the old result to ~2e-5), remap is within 0.003 (< 1 8-bit level) of the exact maths, and with workers > 1
-  keyframes are exchanged and blended as 8-bit, within ~1 level of the sequential float renderer (`render`).
-  Optional `"quality": {"fast_blur": true}` computes radii >= 4 px at reduced resolution (up to ~2x faster, mean error ~0.2%, up to ~3% on hard edges).
+  With the native core the render is **encoder-bound**: a profile shows Python doing ~0.6 s of work in a 3.8 s run while waiting on x264.
+  The effect chain is ~30 fps-capable on 4 cores at 1080p; the file encode is what limits wall time. Not tested at 4K.
+  Machines without a built native core fall back to numpy automatically (8.1 s for the same full-chain render).
+  Output differences vs. the original numpy version: blur edges use plain edge-extension (differs only in a border strip a few radii wide),
+  remap is within 0.003 (< 1 8-bit level), and frames passed between stages in the parallel pipeline are 8-bit (within ~1 level).
+  `quality.fast_blur` applies only to the numpy path; the native blur is always exact.
 - The app is a Python program with a browser UI, **not yet a packaged installer**. Bundling ffmpeg and Python into per-OS
   executables is unfinished.
 - Security: the server listens on 127.0.0.1 only and requires a per-launch token plus a Host check on every API call.
@@ -73,7 +95,7 @@ Other containers rely on ffmpeg's own demuxers and are not individually tested.)
 ## CLI
 
 ```
-python -m hillview render in.mov out.mp4 -c presets/glitch_pop.json --audio-reactive   # --workers N to set parallelism
+python -m hillview render in.mov out.mp4 -c presets/glitch_pop.json --audio-reactive   # --workers N parallelism, --speed fast|balanced|quality encoder preset
 python -m hillview render in.mov out.mov -f prores_422 --audio song.wav -c cfg.json   # music drives modulation + is muxed in
 python -m hillview render "shot_%04d.png" out.mp4 --fps 24                           # image sequence in
 python -m hillview render in.mp4 frames_dir -f png_seq                               # image sequence out (path is a directory)

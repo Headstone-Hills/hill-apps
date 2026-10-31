@@ -50,6 +50,7 @@ progress{width:100%;accent-color:var(--acc2)}.x{flex:0 0 22px;color:var(--bad);b
 
 <h2>Export</h2>
 <label>Format</label><select id="fmt"></select>
+<label>Encode speed (H.264/H.265 only)</label><select id="speed"><option value="">default</option><option value="fast">fast (larger file)</option><option value="balanced">balanced</option><option value="quality">quality (slower)</option></select>
 <label>Name</label><input type="text" id="outName" placeholder="(source name)_hillview">
 <label class="row" style="margin-top:8px"><input type="checkbox" id="audioReactive" class="fix" checked> <span style="flex:1">Audio-reactive (analyze audio for modulation)</span></label>
 <div class="row" style="margin-top:8px"><button class="primary" id="render" disabled>Render</button><button id="cancel" disabled class="fix">Cancel</button></div>
@@ -177,7 +178,7 @@ $("loadPreset").onchange=async e=>{const f=e.target.files[0];if(f)try{setConfig(
 let job=null;
 api("formats").then(r=>r.json()).then(f=>{$("fmt").innerHTML=Object.entries(f).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join("")});
 $("render").onclick=async()=>{if(!S)return;err("");$("result").innerHTML="";
-  try{const r=await(await api("render",{id:S.id,config:getConfig(),format:$("fmt").value,name:$("outName").value||undefined,audio_reactive:$("audioReactive").checked})).json();
+  try{const r=await(await api("render",{id:S.id,config:getConfig(),format:$("fmt").value,name:$("outName").value||undefined,speed:$("speed").value||undefined,audio_reactive:$("audioReactive").checked})).json();
     job=r.job;$("render").disabled=true;$("cancel").disabled=false;$("prog").style.display="block";poll()}catch(e){err(e.message)}};
 $("cancel").onclick=()=>job&&api("cancel?id="+job);
 async function poll(){const j=await(await api("job?id="+job)).json();$("prog").max=j.total;$("prog").value=j.done;

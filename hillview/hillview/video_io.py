@@ -212,8 +212,11 @@ def output_path(path, fmt):
     return path
 
 
+SPEED_PRESETS = {"fast": "veryfast", "balanced": "medium", "quality": "slow"}   # x264 / x265 presets
+
+
 class Writer:
-    def __init__(self, path, w, h, fps, fmt="h264", audio_from=None):
+    def __init__(self, path, w, h, fps, fmt="h264", audio_from=None, speed=None):
         if fmt not in FORMATS:
             raise ValueError(f"unknown format {fmt!r}; choose from {sorted(FORMATS)}")
         _label, _ext, vargs, pix, aargs, kind = FORMATS[fmt]
@@ -227,6 +230,11 @@ class Writer:
             cmd += ["-vf", "split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer"] + vargs
         else:
             cmd += vargs + ["-pix_fmt", pix]
+        if speed:
+            if speed not in SPEED_PRESETS:
+                raise ValueError(f"speed must be one of {sorted(SPEED_PRESETS)}")
+            if "libx264" in vargs or "libx265" in vargs:   # other encoders have no comparable knob here
+                cmd += ["-preset", SPEED_PRESETS[speed]]
         self.p = subprocess.Popen(cmd + [output_path(path, fmt)], stdin=subprocess.PIPE)
 
     def write(self, img):

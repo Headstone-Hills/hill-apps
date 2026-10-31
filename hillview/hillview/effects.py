@@ -8,13 +8,15 @@ def posterize(img, levels):
     return np.round(img * (levels - 1)) / (levels - 1)
 
 
-def kmeans_quantize(img, k, seed=0, iters=8):
-    """Palette quantize to k colours. Deterministic for a given seed."""
+def kmeans_palette(img, k, seed=0, iters=8):
+    """Fit a k-colour palette (k-means++ on a 4096-pixel sample). Deterministic for a given seed.
+    `img` may be float [0,1] or uint8 (only the sample is converted). Returns (k,3) float32."""
     k = max(2, int(round(k)))
-    h, w, _ = img.shape
     flat = img.reshape(-1, 3)
     rng = np.random.default_rng(seed)
     sub = flat[rng.integers(0, len(flat), size=min(4096, len(flat)))]
+    if sub.dtype == np.uint8:
+        sub = sub.astype(np.float32) * np.float32(1 / 255)
     cent = [sub[rng.integers(len(sub))]]
     for _ in range(k - 1):  # k-means++ init
         d = np.min([((sub - c) ** 2).sum(1) for c in cent], axis=0)
@@ -27,6 +29,14 @@ def kmeans_quantize(img, k, seed=0, iters=8):
             m = idx == j
             if m.any():
                 cent[j] = sub[m].mean(0)
+    return cent
+
+
+def kmeans_quantize(img, k, seed=0, iters=8):
+    """Palette quantize to k colours (numpy reference path)."""
+    cent = kmeans_palette(img, k, seed, iters)
+    h, w, _ = img.shape
+    flat = img.reshape(-1, 3)
     out = np.empty_like(flat)
     for s in range(0, len(flat), 262144):  # chunked to bound memory
         out[s:s + 262144] = cent[_nearest(flat[s:s + 262144], cent)]
