@@ -31,7 +31,10 @@ export class SingerEngine implements VoiceSink {
       outputChannelCount: [1],
     });
     const analyser = context.createAnalyser();
-    analyser.fftSize = 1024;
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.15; // keep bursts visible in the spectrogram
+    analyser.minDecibels = -100;
+    analyser.maxDecibels = -20;
     node.connect(analyser);
     analyser.connect(context.destination);
     if (context.state !== 'running') await context.resume();
@@ -52,6 +55,9 @@ export class SingerEngine implements VoiceSink {
   }
   stop(): void {
     this.post({ type: 'stop' });
+  }
+  setVoice(id: string): void {
+    this.post({ type: 'voice', id });
   }
 
   // ---- Sequence (MIDI file) playback, scheduled sample-accurately in the worklet ----
@@ -81,6 +87,16 @@ export class SingerEngine implements VoiceSink {
     let peak = 0;
     for (const x of buf) peak = Math.max(peak, Math.abs(x));
     return peak;
+  }
+
+  /** Number of frequency bins `spectrum()` fills (0 .. sampleRate/2). */
+  get spectrumBins(): number {
+    return this.analyser.frequencyBinCount;
+  }
+
+  /** Current magnitude spectrum, 0-255 on the analyser's dB scale. */
+  spectrum(into: Uint8Array<ArrayBuffer>): void {
+    this.analyser.getByteFrequencyData(into);
   }
 
   /** Output latency estimate in ms (base + hardware output latency). */

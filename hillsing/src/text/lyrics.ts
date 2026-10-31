@@ -7,6 +7,13 @@ export interface LyricSyllable extends SyllablePhones {
   label: string;
   wordIndex: number;
   syllableInWord: number;
+  /**
+   * Melisma continuation ("~" in the lyrics): another note on the same vowel, no new onset.
+   * The previous syllable's final consonants move to the last note of the melisma.
+   */
+  melisma?: boolean;
+  /** This syllable continues on further notes (so a diphthong holds its first vowel). */
+  holdFirst?: boolean;
 }
 
 export interface LyricWord {
@@ -25,10 +32,13 @@ export interface Lyrics {
 
 const DIGIT_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
 
-/** Words and numbers. Digits are read one at a time ("12" -> "one two"). */
+/** Melisma marker: put `~` (or `_`) after a word to hold its vowel across another note. */
+export const MELISMA_TOKENS = new Set(['~', '_']);
+
+/** Words, numbers and melisma markers. Digits are read one at a time ("12" -> "one two"). */
 export function tokenize(text: string): string[] {
   const tokens: string[] = [];
-  for (const m of text.matchAll(/[A-Za-z]+(?:['’][A-Za-z]+)*|\d+/g)) {
+  for (const m of text.matchAll(/[A-Za-z]+(?:['’][A-Za-z]+)*|\d+|[~_]/g)) {
     const t = m[0].replace(/’/g, "'");
     if (/^\d+$/.test(t)) for (const d of t) tokens.push(DIGIT_WORDS[Number(d)]);
     else tokens.push(t);
@@ -84,6 +94,25 @@ export function buildLyrics(text: string, lookup: PhonemeLookup): Lyrics {
   const words: LyricWord[] = [];
   const syllables: LyricSyllable[] = [];
   for (const token of tokenize(text)) {
+    if (MELISMA_TOKENS.has(token)) {
+      // Another note on the previous syllable's vowel. Its coda moves to this new last note.
+      const prev = syllables[syllables.length - 1];
+      if (!prev) continue; // nothing to continue
+      prev.holdFirst = true;
+      syllables.push({
+        onset: [],
+        nucleus: prev.nucleus,
+        coda: prev.coda,
+        stress: prev.stress,
+        label: '~',
+        wordIndex: prev.wordIndex,
+        syllableInWord: prev.syllableInWord + 1,
+        melisma: true,
+      });
+      prev.coda = [];
+      words[words.length - 1].count += 1;
+      continue;
+    }
     const found = lookup(token);
     const phones = found ?? guessPhonemes(token);
     const sylls = syllabify(phones);

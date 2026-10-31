@@ -1,6 +1,6 @@
 {
   "name": "hillsing",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Live formant-synth singing instrument: type lyrics, play them on a MIDI keyboard.",

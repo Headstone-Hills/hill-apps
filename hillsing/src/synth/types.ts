@@ -3,6 +3,11 @@ export interface SyllablePlan {
   onset: string[];
   nucleus: string;
   coda: string[];
+  /**
+   * Melisma: this syllable continues on further notes, so a diphthong holds its first vowel
+   * instead of gliding (the glide happens on the last note, as singers do).
+   */
+  holdFirst?: boolean;
 }
 
 /** Synthesizer control parameters (a small subset of Klatt 1980's). Frequencies in Hz. */

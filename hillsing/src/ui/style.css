@@ -99,3 +99,9 @@ td:last-child { text-align: right; white-space: nowrap; }
 select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; max-width: 60vw; }
 button:disabled { opacity: 0.45; cursor: default; }
 .hint.error { color: #ff8a80; }
+
+#lab .spec-wrap { position: relative; margin: 10px 0; }
+#lab canvas { display: block; width: 100%; height: 190px; border: 1px solid var(--line); border-radius: 6px; background: #000028; }
+.spec-label { position: absolute; left: 6px; font-size: 10px; line-height: 1; color: rgba(255,255,255,0.75); pointer-events: none; transform: translateY(50%); }
+#lab textarea { width: 100%; margin-top: 8px; font: 12px ui-monospace, monospace; }
+#lab .nav button.armed { border-color: var(--next); color: var(--next); }

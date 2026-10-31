@@ -107,3 +107,36 @@ export function render(plan: SyllablePlan, o: RenderOpts): Float32Array {
 }
 
 export const plan = (nucleus: string, onset: string[] = [], coda: string[] = []): SyllablePlan => ({ onset, nucleus, coda });
+
+/** Spectral centroid (Hz) of a band: a smooth measure of where energy sits. */
+export function bandCentroid(mag: Float64Array, lo: number, hi: number, n = 8192): number {
+  let num = 0;
+  let den = 0;
+  for (let k = Math.floor((lo * n) / FS); k <= Math.ceil((hi * n) / FS); k++) {
+    const f = (k * FS) / n;
+    num += f * mag[k] * mag[k];
+    den += mag[k] * mag[k];
+  }
+  return num / den;
+}
+
+/**
+ * Harmonic-to-noise ratio (dB) of a steady voiced sound: energy at harmonics 2..kMax versus
+ * energy midway between them. Drift, jitter and breath noise all lower it.
+ */
+export function harmonicToNoiseDb(x: Float32Array, start: number, f0: number, kMax = 15, n = 16384): number {
+  const mag = spectrum(x, start, n);
+  const bin = (f: number) => Math.round((f * n) / FS);
+  let h = 0;
+  let nz = 0;
+  for (let k = 2; k <= kMax; k++) {
+    let peak = 0;
+    for (let b = bin(k * f0 * 0.98); b <= bin(k * f0 * 1.02); b++) peak = Math.max(peak, mag[b]);
+    h += peak * peak;
+    const mid = bin((k + 0.5) * f0);
+    let m = 0;
+    for (let b = mid - 4; b <= mid + 4; b++) m += mag[b] * mag[b];
+    nz += m / 9;
+  }
+  return 10 * Math.log10(h / nz);
+}

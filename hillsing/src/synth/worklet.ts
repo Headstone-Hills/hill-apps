@@ -1,6 +1,7 @@
 // AudioWorklet entry point: wraps KlattVoice. Bundled by Vite via `?worker&url`.
 import { KlattVoice, type VoiceParamName } from './klatt';
 import { SequenceRunner } from './sequence';
+import { getVoice } from './voices';
 import type { SeqCommand, SyllablePlan } from './types';
 
 // Minimal typings for the AudioWorkletGlobalScope (not part of lib.dom).
@@ -16,6 +17,7 @@ export type WorkletMessage =
   | { type: 'noteOff' }
   | { type: 'f0'; f0: number }
   | { type: 'param'; name: VoiceParamName; value: number }
+  | { type: 'voice'; id: string }
   | { type: 'stop' }
   | { type: 'seqLoad'; cmds: SeqCommand[]; lengthSec: number; startSec: number }
   | { type: 'seqPlay' }
@@ -54,6 +56,9 @@ class KlattProcessor extends AudioWorkletProcessor {
           break;
         case 'param':
           this.voice.setParam(m.name, m.value);
+          break;
+        case 'voice':
+          this.voice.setProfile(getVoice(m.id));
           break;
         case 'stop':
           this.voice.stop();

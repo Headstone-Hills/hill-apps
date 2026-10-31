@@ -5,10 +5,11 @@ real-time **formant synthesizer** (old-school TTS style): each key press sings t
 of your text at the pitch you play, holds the vowel as long as the key is down, and releases
 into the syllable's final consonants.
 
-**v0.2** does two things: **live keyboard singing**, and **MIDI file playback** (load a melody,
-sing your lyrics over it, one syllable per note). Not built yet: the piano-roll editor with
-per-note tuning, live-performance recording, WAV export and the Electron (Apple Silicon)
-wrapper. See [Roadmap](#roadmap).
+**v0.3** does three things: **live keyboard singing**, **MIDI file playback** (load a melody, sing
+your lyrics over it, one syllable per note, with melismas), and a **Voice Lab** with six voices and
+listening phrases for judging quality. Not built yet: the piano-roll editor with per-note tuning,
+live-performance recording, WAV export and the Electron (Apple Silicon) wrapper. See
+[Roadmap](#roadmap).
 
 > Unlike the other apps in this repo (Python/pygame for the RG35XXSP handheld), HillSing is
 > a TypeScript web app. It shares no code or build steps with them.
@@ -30,9 +31,45 @@ npm run build      # typecheck + production build into dist/
 3. Play: a MIDI keyboard (Chrome/Edge), or the computer keyboard (`A S D F G H J K L` white
    keys, `W E T Y U O P` black keys, `Z`/`X` octave).
 
-Controls: hold one key and press another for **legato** (glides into the next syllable's vowel,
-no new consonant). Mod wheel = vibrato, pitch wheel = bend (±2 semitones), sustain pedal holds
+Controls: hold one key and press another for **legato**: the pitch glides and the vowel changes
+without a gap, but **no consonants are lost**. The previous word's final consonants and the new
+syllable's opening consonants are sung between the two vowels. Mod wheel = vibrato, pitch wheel = bend (±2 semitones), sustain pedal holds
 the vowel. Arrow keys / Home (or bound MIDI keys, see below) move through the lyrics.
+
+### Voice lab (the listening round)
+
+Pick a **voice** (Classic, Deep, Female, Child, Robot, Breathy), then play a **listening phrase**.
+Each phrase isolates one thing to listen for, so feedback can be specific:
+
+| Phrase | Listen for |
+|---|---|
+| Vowels | Ten vowels and three diphthongs on one pitch: distinct? equally loud? do *ai / ow / ay* glide smoothly? |
+| Opening consonants | 21 consonants + "ah": which are weak, harsh, or confused with another? |
+| Final consonants | "ah" + each ending: can you hear the word ending? |
+| Legato words | Overlapping notes: is every consonant still heard between the vowels? |
+| Sentence | "The quick brown fox...": intelligible? |
+| Melisma | One syllable held across several notes; the word ends only on the last. |
+
+A live **spectrogram** (0–8 kHz) shows what is being produced: vowels as horizontal formant
+bands, /s/ as high-frequency noise, stops as a gap followed by a burst. Extra controls: *Consonant
+level*, *Breathiness* and *Brightness* (a high shelf, about ±8 dB). **Copy settings** gives the voice
+and every slider value as text to paste into a message ("female, brightness +0.4, consonant level
+1.5: the /s/ is still too soft").
+
+The voices are parameter sets for one synthesis engine (vocal-tract size, glottal pulse, bandwidths,
+breathiness, drift), not different engines, so expect a family resemblance. The female and child
+vowel formants follow the pattern of the Peterson & Barney (1952) averages but were written from
+memory and **not checked against the paper**.
+
+### Melisma (holding a vowel across notes)
+
+Write `~` (or `_`) after a word for each extra note: `love ~ ~` is one syllable over three notes.
+The first note carries the opening consonants, the last note carries the word ending, and the notes
+in between are the held vowel. A diphthong holds its first vowel and glides only on the last note
+(`fly ~ ~` sustains "ah" and closes to "ee" at the end), as singers do. In a MIDI file, melisma
+notes join the previous note without a release when they touch (or are within 120 ms of it); after
+a real rest the vowel re-attacks. The upcoming piano-roll editor will build on this: melismas are
+already part of the lyric data model, so the editor needs only a UI for creating them.
 
 ### MIDI file playback
 
@@ -48,8 +85,10 @@ How notes become syllables:
   *Repeat lyrics* to cycle the lyrics instead. If the melody is shorter than the lyrics, unused
   syllables are reported.
 - **Chords** are reduced to their top note.
-- **Overlapping notes are legato** (glide into the next vowel, no new consonant), exactly like
-  holding one key while pressing the next. Notes that merely touch are re-articulated.
+- **Overlapping notes are legato**, exactly like holding one key while pressing the next: pitch
+  glides, but the previous word's ending and the next word's start are still sung between the
+  vowels (they are pre-rolled so the new vowel still lands on the beat). Notes that merely touch are
+  re-articulated, except melisma notes (above), which join.
 - **Vowel on the beat** (on by default): a syllable's onset consonants start *before* the note so
   the vowel lands on the beat, and its final consonants finish *inside* the note. Without it,
   consonants begin at the note start like live playing, so vowels arrive late. The pre-roll uses
@@ -113,9 +152,22 @@ a parallel resonated-noise branch makes frication and stop bursts. Control param
 interpolated at 1/16 of the sample rate. Pitch glides in the log domain; a small random drift and
 optional vibrato keep the tone from sounding static.
 
-Per-vowel loudness compensation and consonant levels are **measured, not guessed**: each phoneme
-was rendered offline and the constants in `phonemes.ts` equalise sustained-vowel RMS (within
-0.2 dB) and set fricatives roughly 8–19 dB below the vowel.
+Loudness is **measured, not guessed**. Vowel loudness depends on where the harmonics fall relative
+to the formants (it varied by up to ±8 dB across the singing range with a fixed gain table), so at
+every note-on the synth briefly renders a probe of the target vowel at that exact pitch, measures
+its RMS and sets the gain, bringing every vowel in every voice to the same level. Consonant noise
+levels were solved numerically against targets (fricatives about 8–19 dB below the vowel; bursts
+6–10 dB below) and are guarded by `tests/levels.test.ts`.
+
+Two defects found by looking at the output (offline spectrograms and band-energy measurements)
+are worth recording, since they are exactly what a listener would have heard as "muffled" and "hissy":
+
+- The glottal pulse closed over 16% of the period (1.2 ms at 130 Hz), which acts as a −12 dB/octave
+  low-pass from a few hundred Hz. Vowels were about 25 dB too dark at 4–6 kHz and nearly silent above
+  that. Closure is now an absolute time (0.3 ms for the classic voice) and fixed upper poles are
+  added (the usual "higher-pole correction"). Vowels now fall to roughly −45 dB at 5 kHz, a speech-like slope.
+- Frication used a DC-normalised resonator, which passes everything below its centre at full gain,
+  so /s/ was broadband noise. It is now a true band-pass, normalised for noise bandwidth.
 
 ### Syllabification
 
@@ -129,7 +181,7 @@ shown with a dashed underline.
 
 ## Tests
 
-`npm test` runs 78 tests, including checks on the actual audio: formant peak positions (spectral
+`npm test` runs 127 tests, including checks on the actual audio: formant peak positions (spectral
 analysis), pitch accuracy at 110/220/440 Hz, no clipping, legato continuity versus articulated
 notes, coda-after-note-off, silence after release, and that every phoneme in the dictionary has a
 synth recipe. The syllabifier is run over all 126,052 dictionary words. The MIDI reader is tested
@@ -141,7 +193,9 @@ sounds *good*: that needs listening.
 `e2e/` has two browser checks (headless Chromium, using a fake MIDI device and a generated `.mid`
 file) that exercise the real app: audio starts, keys and MIDI make sound, MIDI-learn, file loading,
 play/pause/stop/seek, tempo, and measured onset timing. They need Playwright, which is deliberately
-not a project dependency; see the header of each script.
+not a project dependency; see the header of each script. `e2e/voice-lab.cjs` covers the lab:
+every phrase with every voice (audible, unclipped), voice persistence, sliders, settings text and the
+live spectrogram.
 
 ## Known limitations (v0.1)
 
@@ -152,7 +206,10 @@ not a project dependency; see the header of each script.
   are bugs to tune.
 - Consonants delay the vowel after key-down (default 0.7× natural length; lower *Consonant length*
   to get the vowel closer to the key press).
-- Legato drops the new syllable's onset consonant and the old syllable's coda by design.
+- Legato adds the connecting consonants *between* the vowels, so a legato note with a long
+  consonant cluster arrives later than the key press (live) or needs the pre-roll (files).
+- The synth is hand-built: expect robotic and sometimes harsh results. The Voice Lab exists so
+  that the remaining quality gaps can be found by ear and reported specifically.
 - Monophonic only. English only. Files with several vocal parts need one track chosen.
 - MIDI files: lyrics embedded in the file are not read, and the melody is one syllable per note
   (no melismas yet). Very short notes may not leave room for long consonant clusters.
@@ -193,7 +250,8 @@ before citing any individual number.
 ## Roadmap
 
 Agreed scope, in order: (1) **v0.1 live singing**, done; (2) **MIDI file import and playback**
-through the same engine, done in v0.2; (3) piano-roll editor with a syllable row (the current preview is read-only); (4) per-note tuning: pitch
+through the same engine, done in v0.2; (2b) **voice lab, multiple voices, legato that keeps
+consonants, melisma data model**, done in v0.3; (3) piano-roll editor with a syllable row (the current preview is read-only); (4) per-note tuning: pitch
 offset/curve, vibrato, formant shift, consonant/vowel timing, with global → selection → note
 overrides; (5) record live performances into the editor as notes + syllables; (6) Electron wrapper
 for Apple Silicon Mac (Electron rather than Tauri, since Chromium keeps Web MIDI behaviour

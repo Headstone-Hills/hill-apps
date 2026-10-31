@@ -63,7 +63,7 @@ export class Performance {
       return;
     }
     this.sink.noteOn(
-      { onset: syl.onset, nucleus: syl.nucleus, coda: syl.coda },
+      { onset: syl.onset, nucleus: syl.nucleus, coda: syl.coda, holdFirst: syl.holdFirst },
       f0,
       velocity01,
       legato,

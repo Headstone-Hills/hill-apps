@@ -9,6 +9,8 @@ export interface PanelContext {
   consonantScale(): number;
   /** Start audio if needed (must be reachable from a user gesture). */
   ensureEngine(): Promise<SingerEngine | null>;
+  /** Called before playback starts (e.g. to stop a voice-lab phrase that owns the engine). */
+  beforePlay?(): void;
 }
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -84,16 +86,17 @@ export class MidiFilePanel {
   // ---- hooks called by the app ---------------------------------------------------
   engineReady(engine: SingerEngine): void {
     this.engine = engine;
-    engine.onSeqPosition = (sec, playing) => {
-      this.playing = playing;
-      this.scorePos = sec - (this.seq?.leadInSec ?? 0);
-      this.refresh();
-    };
-    engine.onSeqEnded = () => {
-      this.playing = false;
-      this.refresh();
-    };
     this.rebuild();
+  }
+  /** Sequence position from the engine (the app routes it here when the file owns the engine). */
+  handlePosition(sec: number, playing: boolean): void {
+    this.playing = playing;
+    this.scorePos = sec - (this.seq?.leadInSec ?? 0);
+    this.refresh();
+  }
+  handleEnded(): void {
+    this.playing = false;
+    this.refresh();
   }
   lyricsChanged(): void {
     this.rebuild();
@@ -104,6 +107,7 @@ export class MidiFilePanel {
 
   async togglePlay(): Promise<void> {
     if (!this.file || !this.seq) return;
+    this.ctx.beforePlay?.();
     const engine = this.engine ?? (await this.ctx.ensureEngine());
     if (!engine) return;
     if (this.playing) {

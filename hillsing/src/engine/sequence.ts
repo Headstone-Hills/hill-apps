@@ -3,8 +3,12 @@
 // Rules (see README "MIDI file playback"):
 //  - Melody is made monophonic: of notes starting together (a chord), the highest is sung.
 //  - One syllable per note, in order. Extra notes are silent unless lyrics repeat.
-//  - A note that overlaps the previous one is legato: it glides into the new vowel without
-//    a new onset (same as live playing). Touching or separated notes re-articulate.
+//  - A note that overlaps the previous one is legato (same as live playing): the pitch glides
+//    and the vowel changes without a gap, but consonants are NOT lost. The previous syllable's
+//    final consonants and the new syllable's opening consonants are sung between the vowels.
+//    Touching or separated notes re-articulate fully.
+//  - Melisma: a "~" in the lyrics holds the previous vowel across another note. Melisma
+//    notes join the previous note without a release when they are touching (or overlapping).
 //  - "Vowel on the beat": a syllable's onset consonants start *before* the note so the vowel
 //    lands on it, and its coda consonants finish *inside* the note. Without it, consonants
 //    begin at the note start, like live playing.
@@ -46,6 +50,8 @@ export interface Sequence {
 }
 
 const CHORD_WINDOW_SEC = 0.03;
+/** A melisma note starting within this long after the previous note ended still joins it. */
+const MELISMA_JOIN_SEC = 0.12;
 const OVERLAP_EPS_SEC = 0.01;
 const END_TAIL_SEC = 0.6;
 const MIN_GAP_SEC = 0.001;
@@ -70,7 +76,12 @@ export function reduceToMonophonic(notes: MidiNote[], windowSec = CHORD_WINDOW_S
   return out;
 }
 
-const planOf = (s: LyricSyllable): SyllablePlan => ({ onset: s.onset, nucleus: s.nucleus, coda: s.coda });
+const planOf = (s: LyricSyllable): SyllablePlan => ({
+  onset: s.onset,
+  nucleus: s.nucleus,
+  coda: s.coda,
+  holdFirst: s.holdFirst,
+});
 
 export function buildSequence(melody: MidiNote[], syllables: LyricSyllable[], opts: MapOptions): Sequence {
   const rate = Math.max(0.1, opts.rate);
@@ -93,6 +104,7 @@ export function buildSequence(melody: MidiNote[], syllables: LyricSyllable[], op
     let legato = false;
     if (prev) {
       if (prev.end - start > OVERLAP_EPS_SEC) legato = true;
+      else if (syllables[syllable].melisma && start - prev.end <= MELISMA_JOIN_SEC) legato = true;
       if (prev.end > start) prev.end = start;
     }
     sung.push({ start, end, note: m.note, velocity: m.velocity, syllable, legato });
@@ -111,7 +123,10 @@ export function buildSequence(melody: MidiNote[], syllables: LyricSyllable[], op
     const nextLegato = k + 1 < sung.length && sung[k + 1].legato;
     const nextFresh = k + 1 < sung.length && !sung[k + 1].legato;
 
-    let onT = s.legato ? s.start : s.start - tm.onsetSec;
+    // Pre-roll: the onset consonants, plus (when legato) the previous syllable's final
+    // consonants, which are sung now because there is no release between the two notes.
+    const preRoll = tm.onsetSec + (s.legato && k > 0 ? timings[k - 1].codaSec : 0);
+    let onT = s.start - preRoll;
     onT = Math.max(onT, lastT + MIN_GAP_SEC); // never earlier than the previous command
     commands.push({
       t: onT,

@@ -113,6 +113,59 @@ describe('buildSequence: timing', () => {
   });
 });
 
+describe('buildSequence: legato keeps consonants', () => {
+  it('pre-rolls the previous syllable\'s final consonants and the new onset for a legato note', () => {
+    const syl = syllables('stand strong');
+    const tm0 = syllableTiming({ onset: syl[0].onset, nucleus: syl[0].nucleus, coda: syl[0].coda }, 0.7);
+    const tm1 = syllableTiming({ onset: syl[1].onset, nucleus: syl[1].nucleus, coda: syl[1].coda }, 0.7);
+    expect(tm0.codaSec).toBeGreaterThan(0.05);
+    expect(tm1.onsetSec).toBeGreaterThan(0.05);
+    const seq = buildSequence([note(0, 1.0), note(0.9, 1.8)], syl, OPTS); // overlap => legato
+    expect(seq.notes[1].legato).toBe(true);
+    const second = seq.commands.find((c, i) => c.kind === 'on' && i > 0)!;
+    expect(second.kind === 'on' && second.legato).toBe(true);
+    // Score time of the 2nd note is 0.9; consonants start this long before it.
+    expect(second.t - seq.leadInSec).toBeCloseTo(0.9 - (tm0.codaSec + tm1.onsetSec), 6);
+  });
+
+  it('plain timing (vowel-on-beat off) starts legato notes at the note start', () => {
+    const seq = buildSequence([note(0, 1.0), note(0.9, 1.8)], syllables('stand strong'), { ...OPTS, vowelOnBeat: false });
+    expect(seq.commands.map((c) => +c.t.toFixed(6))).toEqual([0, 0.9, 1.8]);
+  });
+});
+
+describe('buildSequence: melisma', () => {
+  it('melisma notes join the previous note with no release when touching', () => {
+    const syl = syllables('hold ~ ~');
+    const seq = buildSequence([note(0, 0.5), note(0.5, 1.0, 64), note(1.0, 1.5, 62)], syl, OPTS);
+    expect(seq.notes.map((n) => n.legato)).toEqual([false, true, true]);
+    const kinds = seq.commands.map((c) => (c.kind === 'on' ? (c.legato ? 'L' : 'N') : 'x'));
+    expect(kinds).toEqual(['N', 'L', 'L', 'x']); // one release, after the last note
+    // The final consonants (L D) belong to the last note only.
+    const plans = seq.commands.filter((c) => c.kind === 'on').map((c) => (c.kind === 'on' ? c.plan.coda : []));
+    expect(plans).toEqual([[], [], ['L', 'D']]);
+  });
+
+  it('joins across a short gap but re-attacks after a real rest', () => {
+    const syl = syllables('hold ~');
+    const short = buildSequence([note(0, 0.5), note(0.55, 1.0)], syl, OPTS);
+    expect(short.notes[1].legato).toBe(true);
+    const rest = buildSequence([note(0, 0.5), note(1.0, 1.5)], syl, OPTS);
+    expect(rest.notes[1].legato).toBe(false);
+  });
+
+  it('ordinary (non-melisma) touching notes are still re-articulated', () => {
+    const seq = buildSequence([note(0, 0.5), note(0.5, 1.0)], syllables('one two'), OPTS);
+    expect(seq.notes[1].legato).toBe(false);
+  });
+
+  it('passes the hold-first-vowel flag to the synth', () => {
+    const seq = buildSequence([note(0, 0.5), note(0.5, 1.0)], syllables('fly ~'), OPTS);
+    const ons = seq.commands.filter((c) => c.kind === 'on');
+    expect(ons.map((c) => (c.kind === 'on' ? c.plan.holdFirst ?? false : null))).toEqual([true, false]);
+  });
+});
+
 // ---- Offline rendering through the real runner + voice ----
 function renderSequence(seq: ReturnType<typeof buildSequence>, chunk = 128, setup?: (r: SequenceRunner, v: KlattVoice) => void) {
   const voice = new KlattVoice(FS);

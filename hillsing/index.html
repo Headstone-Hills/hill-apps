@@ -36,7 +36,7 @@
           <label class="inline"><input id="wrap" type="checkbox" /> Loop at end</label>
         </div>
         <div id="syllables" class="syllables" aria-live="polite"></div>
-        <div class="hint">Each new note sings the highlighted syllable. Click a syllable to jump to it.</div>
+        <div class="hint">Each new note sings the highlighted syllable. Click a syllable to jump to it. Put <code>~</code> after a word to hold its vowel across another note (melisma), e.g. <code>love ~ ~</code>.</div>
       </section>
 
       <section id="midi-file">
@@ -58,12 +58,35 @@
         </label>
         <canvas id="preview" aria-label="Melody preview with syllables"></canvas>
         <div id="file-summary" class="hint"></div>
-        <div class="hint">Chords are reduced to their top note. Each note sings one syllable, in order. Overlapping notes are legato. Click the preview to jump.</div>
+        <div class="hint">Chords are reduced to their top note. Each note sings one syllable, in order. Overlapping notes are legato (consonants are kept). Click the preview to jump.</div>
+      </section>
+
+      <section id="lab">
+        <h2>Voice lab</h2>
+        <div class="nav">
+          <label class="inline">Voice <select id="voice"></select></label>
+          <span id="voice-desc" class="hint"></span>
+        </div>
+        <div id="audition-buttons" class="nav" role="group" aria-label="Listening phrases"></div>
+        <div id="audition-hint" class="hint">Play a phrase to hear the current voice and settings, then switch voice and replay to compare. Each phrase isolates one thing to listen for.</div>
+        <div class="spec-wrap">
+          <canvas id="spectrogram" aria-label="Live spectrogram, 0 to 8 kilohertz"></canvas>
+          <span class="spec-label" style="bottom: 12.5%">1k</span>
+          <span class="spec-label" style="bottom: 25%">2k</span>
+          <span class="spec-label" style="bottom: 50%">4k</span>
+          <span class="spec-label" style="bottom: 75%">6k</span>
+          <span class="spec-label" style="bottom: 98%">8 kHz</span>
+        </div>
+        <div class="nav">
+          <button id="copy-settings" type="button">Copy settings</button>
+          <span class="hint">Copies the voice and every slider as text, to paste into a message.</span>
+        </div>
+        <textarea id="settings-out" readonly rows="5" hidden aria-label="Settings text"></textarea>
       </section>
 
       <section class="grid">
         <div>
-          <h2>Voice</h2>
+          <h2>Voice controls</h2>
           <label>Formant shift <output id="out-formant"></output>
             <input id="formant" type="range" min="0.7" max="1.4" step="0.01" value="1" />
           </label>
@@ -72,6 +95,15 @@
           </label>
           <label>Glide time (legato) <output id="out-glide"></output>
             <input id="glide" type="range" min="0" max="300" step="1" value="45" />
+          </label>
+          <label>Consonant level <output id="out-conlevel"></output>
+            <input id="conlevel" type="range" min="0" max="2.5" step="0.05" value="1" />
+          </label>
+          <label>Breathiness <output id="out-breath"></output>
+            <input id="breath" type="range" min="0" max="1" step="0.01" value="0" />
+          </label>
+          <label>Brightness <output id="out-bright"></output>
+            <input id="bright" type="range" min="-1" max="1" step="0.01" value="0" />
           </label>
           <label>Volume <output id="out-volume"></output>
             <input id="volume" type="range" min="0" max="1" step="0.01" value="0.8" />

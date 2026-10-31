@@ -6,7 +6,10 @@ import type { VoiceParamName } from '../synth/klatt';
 import { loadDict, makeLookup, type PhonemeLookup } from '../text/cmudict';
 import { buildLyrics } from '../text/lyrics';
 import { LyricPointer } from '../text/pointer';
+import { getVoice, VOICES } from '../synth/voices';
+import { VoiceLab } from './lab';
 import { MidiFilePanel } from './midifile';
+import { Spectrogram } from './spectrogram';
 
 const DEFAULT_LYRICS = 'Twinkle twinkle little star, how I wonder what you are';
 const LYRICS_KEY = 'hillsing.lyrics.v1';
@@ -46,6 +49,9 @@ export function startApp(): void {
   const performance = new Performance(sink, pointer);
   const bindings = new NavBindings(storage);
   let filePanel: MidiFilePanel | null = null;
+  let lab: VoiceLab | null = null;
+  const VOICE_KEY = 'hillsing.voice.v1';
+  let voiceId = getVoice(storage?.getItem(VOICE_KEY) ?? 'classic').id;
 
   // ---- Lyrics ----------------------------------------------------------------------
   const lyricsBox = $<HTMLTextAreaElement>('lyrics');
@@ -189,6 +195,9 @@ export function startApp(): void {
     { id: 'formant', name: 'formantShift', fmt: (v) => `${v.toFixed(2)}×` },
     { id: 'consonant', name: 'consonantScale', fmt: (v) => `${v.toFixed(2)}×` },
     { id: 'glide', name: 'portamento', fmt: (v) => `${Math.round(v)} ms` },
+    { id: 'conlevel', name: 'consonantLevel', fmt: (v) => `${v.toFixed(2)}×` },
+    { id: 'breath', name: 'breathiness', fmt: (v) => `${Math.round(v * 100)}%` },
+    { id: 'bright', name: 'brightness', fmt: (v) => (v > 0 ? `+${v.toFixed(2)}` : v.toFixed(2)) },
     { id: 'volume', name: 'volume', fmt: (v) => `${Math.round(v * 100)}%` },
   ];
   const paramValues = new Map<VoiceParamName, number>();
@@ -222,6 +231,17 @@ export function startApp(): void {
     try {
       engine = await SingerEngine.create();
       for (const [name, value] of paramValues) engine.setParam(name, value);
+      engine.setVoice(voiceId);
+      // The engine has one sequence slot: route its position/end events to whoever owns it.
+      engine.onSeqPosition = (sec, playing) => {
+        if (!lab?.auditioning) filePanel?.handlePosition(sec, playing);
+      };
+      engine.onSeqEnded = () => {
+        if (lab?.auditioning) lab.handleEnded();
+        else filePanel?.handleEnded();
+      };
+      lab?.engineReady(engine);
+      spectrogram.attach(engine);
       filePanel?.engineReady(engine);
       audioStatus.textContent = `Audio on (${engine.context.sampleRate} Hz)`;
       startBtn.textContent = 'Audio running';
@@ -251,6 +271,29 @@ export function startApp(): void {
       await startAudio();
       return engine;
     },
+    beforePlay: () => lab?.cancel(),
+  });
+
+  const spectrogram = new Spectrogram($<HTMLCanvasElement>('spectrogram'));
+  lab = new VoiceLab({
+    ensureEngine: async () => {
+      await startAudio();
+      return engine;
+    },
+    lookup: () => lookup,
+    consonantScale: () => paramValues.get('consonantScale') ?? 0.7,
+    centerNote: () => getVoice(voiceId).centerNote,
+    restoreFileSequence: () => filePanel?.settingsChanged(),
+    settingsText: () =>
+      JSON.stringify(
+        {
+          hillsing: '0.3',
+          voice: voiceId,
+          ...Object.fromEntries([...paramValues].map(([k, v]) => [k, Math.round(v * 1000) / 1000])),
+        },
+        null,
+        2,
+      ),
   });
 
   // ---- Input: MIDI + computer keyboard ---------------------------------------------
@@ -293,6 +336,34 @@ export function startApp(): void {
     octaveLabel.textContent = `C${3 + octave}`;
   };
   showOctave();
+
+  // ---- Voice selection ---------------------------------------------------------------
+  const voiceSelect = $<HTMLSelectElement>('voice');
+  for (const v of VOICES) {
+    const o = document.createElement('option');
+    o.value = v.id;
+    o.textContent = v.name;
+    voiceSelect.append(o);
+  }
+  function applyVoice(id: string): void {
+    const v = getVoice(id);
+    voiceId = v.id;
+    voiceSelect.value = v.id;
+    $('voice-desc').textContent = v.description;
+    engine?.setVoice(v.id);
+    try {
+      storage?.setItem(VOICE_KEY, v.id);
+    } catch {
+      /* storage unavailable: fine */
+    }
+    // Put the computer-keyboard octave in this voice's comfortable range.
+    octave = Math.max(-2, Math.min(3, Math.floor((v.centerNote - BASE_NOTE) / 12)));
+    showOctave();
+  }
+  voiceSelect.addEventListener('change', () => applyVoice(voiceSelect.value));
+  voiceSelect.addEventListener('pointerup', () => voiceSelect.blur());
+  applyVoice(voiceId);
+
   const pressed = new Map<string, number>(); // key code -> note (so octave changes don't strand notes)
 
   const isTyping = (t: EventTarget | null): boolean =>

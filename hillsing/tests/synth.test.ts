@@ -137,29 +137,96 @@ describe('note lifecycle', () => {
   });
 });
 
-describe('legato', () => {
-  const legatoRender = (second: ReturnType<typeof plan>, secondLegato: boolean) =>
-    render(plan('AA1'), {
+describe('legato keeps consonants', () => {
+  /** Hold `first`, then at 0.4 s start `second` as a legato note at 195 Hz. */
+  const legatoRender = (first: ReturnType<typeof plan>, second: ReturnType<typeof plan>, legato = true) =>
+    render(first, {
       f0: 130, holdSec: 1.0,
-      onTime: (v, t) => { if (Math.abs(t - 0.4) < 0.002) v.noteOn(second, 195, 0.8, secondLegato); },
+      onTime: (v, t) => { if (Math.abs(t - 0.4) < 0.002) v.noteOn(second, 195, 0.8, legato); },
     });
+  /**
+   * Energy above 4 kHz in a 46 ms window starting at t0. Fricatives and bursts put almost all
+   * their energy here, while vowels (even bright ones) are 40+ dB lower, so this detects
+   * "was a consonant sung" far better than total or first-difference energy.
+   */
+  const hf = (a: Float32Array, t0: number, _t1?: number) =>
+    bandEnergy(spectrum(a, Math.floor(t0 * FS), 2048), 4000, 9000, 2048);
+  const minRms = (a: Float32Array, t0: number, t1: number) => {
+    let m = Infinity;
+    for (let t = t0; t < t1; t += 0.005) m = Math.min(m, rms(a, t, t + 0.01));
+    return m;
+  };
 
-  it('glides into the new vowel without a silent consonant gap', () => {
-    const a = legatoRender(plan('IY1', ['T']), true);
-    let min = Infinity;
-    for (let t = 0.35; t < 0.8; t += 0.01) min = Math.min(min, rms(a, t, t + 0.01));
-    expect(min).toBeGreaterThan(0.06);
+  it('sings the NEW syllable\'s onset stop when played legato (closure dip + burst)', () => {
+    const withT = legatoRender(plan('AA1'), plan('IY1', ['T']));
+    const noOnset = legatoRender(plan('AA1'), plan('IY1'));
+    expect(minRms(withT, 0.4, 0.55)).toBeLessThan(0.03); // the /t/ closure
+    expect(minRms(noOnset, 0.4, 0.55)).toBeGreaterThan(0.06); // no consonant: smooth glide
+    expect(hf(withT, 0.43, 0.5)).toBeGreaterThan(20 * hf(noOnset, 0.43, 0.5)); // the burst
   });
 
-  it('the same syllable played fresh does articulate its onset (control for the test above)', () => {
-    const a = legatoRender(plan('IY1', ['T']), false);
-    let min = Infinity;
-    for (let t = 0.4; t < 0.55; t += 0.005) min = Math.min(min, rms(a, t, t + 0.005));
-    expect(min).toBeLessThan(0.03);
+  it('sings the NEW syllable\'s onset fricative when played legato', () => {
+    const withS = legatoRender(plan('AA1'), plan('IY1', ['S']));
+    const noOnset = legatoRender(plan('AA1'), plan('IY1'));
+    expect(hf(withS, 0.41, 0.5)).toBeGreaterThan(20 * hf(noOnset, 0.41, 0.5));
+  });
+
+  it('also sings the PREVIOUS syllable\'s final consonant before moving on', () => {
+    const withCoda = legatoRender(plan('AA1', [], ['S']), plan('IY1'));
+    const noCoda = legatoRender(plan('AA1'), plan('IY1'));
+    expect(hf(withCoda, 0.41, 0.5)).toBeGreaterThan(20 * hf(noCoda, 0.41, 0.5));
+  });
+
+  it('plays the previous coda only once (not again at note-off)', () => {
+    const a = legatoRender(plan('AA1', [], ['S']), plan('IY1'));
+    // After the legato note ends at 1.0 s there must be no second /s/.
+    const b = legatoRender(plan('AA1'), plan('IY1'));
+    expect(hf(a, 0.41)).toBeGreaterThan(0); // the /s/ was sung once, in the transition...
+    expect(hf(a, 1.05)).toBeLessThan(0.01 * hf(a, 0.41)); // ...and not again after the note ends
+    expect(hf(b, 1.05)).toBeLessThan(0.01 * hf(a, 0.41));
+  });
+
+  it('a chain of overlapping syllables keeps every consonant of "stand strong"', () => {
+    // stand = S T AE N D ; strong = S T R AO NG
+    const chain = (secondOnset: string[]) => {
+      const v = new KlattVoice(FS);
+      const buf = new Float32Array(128);
+      const out: number[] = [];
+      const feed = (n: number) => { for (let i = 0; i < n; i++) { v.render(buf); out.push(...buf); } };
+      v.noteOn(plan('AE1', ['S', 'T'], ['N', 'D']), 130, 0.8, false);
+      feed(Math.floor((0.5 * FS) / 128));
+      v.noteOn(plan('AO1', secondOnset, ['NG']), 164, 0.8, true);
+      feed(Math.floor((0.7 * FS) / 128));
+      v.noteOff();
+      feed(Math.floor((0.6 * FS) / 128));
+      return Float32Array.from(out);
+    };
+    // A fricative is *sustained* high-frequency noise (~66 ms); a stop burst is ~8 ms. Count how
+    // many 5 ms steps keep 5.5-9 kHz energy above a fixed threshold (set from the full chain).
+    const hfTrack = (x: Float32Array) => {
+      const e: number[] = [];
+      for (let t = 0.5; t < 0.85; t += 0.005) e.push(bandEnergy(spectrum(x, Math.floor(t * FS), 512), 5500, 9000, 512));
+      return e;
+    };
+    const a = chain(['S', 'T', 'R']);
+    const without = chain([]); // same chain, but "strong" loses its onset cluster
+    const trackA = hfTrack(a);
+    const thr = 0.3 * Math.max(...trackA);
+    const sustained = (e: number[]) => e.filter((v) => v > thr).length;
+    expect(sustained(trackA)).toBeGreaterThanOrEqual(8); // ~40 ms+ of /s/ noise
+    expect(sustained(hfTrack(without))).toBeLessThanOrEqual(3); // only the /d/ burst
+    expect(rms(a, 0.3, 0.45)).toBeGreaterThan(0.08); // first vowel
+    expect(rms(a, 1.0, 1.1)).toBeGreaterThan(0.08); // second vowel
+    expect(rms(a, 1.2, 1.28)).toBeGreaterThan(0.01); // /ng/ tail after release
+  });
+
+  it('a legato syllable with no onset (melisma / vowel-initial) glides with no dip', () => {
+    const a = legatoRender(plan('AA1'), plan('IY1'));
+    expect(minRms(a, 0.35, 0.8)).toBeGreaterThan(0.06);
   });
 
   it('lands on the new vowel formants and the new pitch', () => {
-    const a = legatoRender(plan('IY1'), true);
+    const a = legatoRender(plan('AA1'), plan('IY1'));
     expect(peakFreq(spectrum(a, Math.floor(0.9 * FS), 4096), 1500, 2800, 4096)).toBeGreaterThan(2000);
     expect(Math.abs(estimateF0(a, 0.85, 195) - 195) / 195).toBeLessThan(0.015);
   });
@@ -171,5 +238,16 @@ describe('legato', () => {
     let early = 0;
     for (let i = 0; i < 4; i++) { v.render(buf); early = Math.max(early, ...buf.map(Math.abs)); }
     expect(early).toBeLessThan(0.05); // still in the silent /t/ closure
+  });
+});
+
+describe('melisma (held vowel across notes)', () => {
+  it('a held diphthong stays on its first vowel; the glide happens on the final note', () => {
+    const held = { ...plan('AY1'), holdFirst: true };
+    const a = render(held, { f0: 110, holdSec: 1.2 });
+    const late = spectrum(a, Math.floor(0.8 * FS), 2048);
+    // Held /AY/ must still look like /AA/ (F1 ~730, F2 ~1090), not /IH/ (F2 ~1990).
+    expect(peakFreq(late, 450, 1000, 2048)).toBeGreaterThan(650);
+    expect(bandEnergy(late, 900, 1300, 2048)).toBeGreaterThan(3 * bandEnergy(late, 1800, 2300, 2048));
   });
 });

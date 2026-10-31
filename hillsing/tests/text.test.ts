@@ -143,3 +143,41 @@ describe('LyricPointer', () => {
     expect(p.advance()).toBeNull();
   });
 });
+
+describe('melisma token', () => {
+  const lyr = (t: string) => buildLyrics(t, realLookup());
+  it('tokenizes ~ and _ as markers', () => {
+    expect(tokenize('love ~ ~ you_')).toEqual(['love', '~', '~', 'you', '_']);
+  });
+  it('adds a continuation note per marker on the same vowel, no new onset', () => {
+    const l = lyr('love ~ ~');
+    expect(l.syllables).toHaveLength(3);
+    expect(l.syllables.map((x) => x.melisma ?? false)).toEqual([false, true, true]);
+    expect(l.syllables.every((x) => x.nucleus === 'AH1')).toBe(true);
+    expect(l.syllables[1].onset).toEqual([]);
+    expect(l.words).toHaveLength(1);
+    expect(l.words[0].count).toBe(3);
+  });
+  it('moves the final consonants to the last note of the melisma', () => {
+    const l = lyr('hold ~ ~'); // HH OW1 L D
+    expect(l.syllables.map((x) => x.coda)).toEqual([[], [], ['L', 'D']]);
+    expect(l.syllables[0].onset).toEqual(['HH']);
+  });
+  it('marks every note except the last as "hold first vowel" (for diphthongs)', () => {
+    const l = lyr('fly ~ ~');
+    expect(l.syllables.map((x) => x.holdFirst ?? false)).toEqual([true, true, false]);
+  });
+  it('works mid-word and across words; stray or leading markers are ignored', () => {
+    expect(lyr('~ hello').syllables).toHaveLength(2);
+    const l = lyr('hello ~ world');
+    expect(l.syllables.map((x) => x.label)).toEqual(['hel', 'lo', '~', 'world']);
+    expect(l.words.map((w) => [w.start, w.count])).toEqual([[0, 3], [3, 1]]);
+  });
+  it('word navigation treats the melisma as part of its word', () => {
+    const p = new LyricPointer();
+    p.setLyrics(lyr('hello ~ world'));
+    p.setIndex(1);
+    p.nextWord();
+    expect(p.index).toBe(3);
+  });
+});
