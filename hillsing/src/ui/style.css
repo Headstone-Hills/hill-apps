@@ -113,3 +113,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 
 .alias-log { margin-top: 6px; }
 .alias-log pre { margin: 6px 0 0; white-space: pre-wrap; max-height: 12em; overflow: auto; }
+
+.lyrics-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+.lyrics-row textarea { flex: 1 1 320px; min-width: 0; }
+.voice-pick { flex: 0 1 280px; display: flex; flex-direction: column; gap: 4px; min-width: 200px; }
+.voice-pick select { width: 100%; }

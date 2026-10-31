@@ -270,8 +270,9 @@ edits, pure), `src/ui/pianoroll.ts` (the canvas), `src/ui/midifile.ts` (wiring t
 ## UTAU voicebanks
 
 A second voice source next to the formant synth: recorded UTAU samples, pitch-shifted by a TD-PSOLA
-sampler. Load a bank in the *UTAU voicebank* panel, then choose **Voice source: UTAU voicebank** in the melody
-panel: Play renders the melody (from a MIDI file or the piano roll, with your English lyrics) into audio with the
+sampler. Load a bank in the *UTAU voicebank* panel, then choose it in the **Voice** chooser next to the lyrics (it lists the
+generated formant voices and, in its own group, the sample-based voicebank; picking it with none loaded opens the
+folder picker): Play renders the melody (from a MIDI file or the piano roll, with your English lyrics) into audio with the
 bank's samples. Live key-playing and the Voice lab stay on the formant synth.
 
 **How English becomes samples.** Each dictionary syllable (ARPAbet) is mapped to X-SAMPA and to a chain of

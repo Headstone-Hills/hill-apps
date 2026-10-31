@@ -310,6 +310,7 @@ export function startApp(): void {
         {
           hillsing: '0.3',
           voice: voiceId,
+          source: utauSession.active ? `utau:${utauSession.bank?.name}` : 'formant',
           ...Object.fromEntries([...paramValues].map(([k, v]) => [k, Math.round(v * 1000) / 1000])),
         },
         null,
@@ -371,6 +372,7 @@ export function startApp(): void {
     voiceId = v.id;
     voiceSelect.value = v.id;
     $('voice-desc').textContent = v.description;
+    syncMainVoice();
     engine?.setVoice(v.id);
     try {
       storage?.setItem(VOICE_KEY, v.id);
@@ -387,7 +389,51 @@ export function startApp(): void {
     applyVoice(voiceSelect.value);
     voiceSelect.blur();
   });
+
+  // ---- Voice chooser next to the lyrics: the generated formant voices and the sample-based voicebank ----
+  const mainVoice = $<HTMLSelectElement>('voice-main');
+  function syncMainVoice(): void {
+    mainVoice.value = utauSession.active ? 'utau' : voiceId;
+    $('voice-main-desc').textContent = utauSession.active
+      ? `Sample-based: melodies (MIDI file or piano roll) are sung with this voicebank. Live keys and the Voice lab still use the formant voice ${getVoice(voiceId).name}.`
+      : getVoice(voiceId).description;
+  }
+  function fillMainVoice(): void {
+    mainVoice.textContent = '';
+    const formant = document.createElement('optgroup');
+    formant.label = 'Formant synth (generated voices)';
+    for (const v of VOICES) {
+      const o = document.createElement('option');
+      o.value = v.id;
+      o.textContent = `${v.name} — ${v.model}`;
+      formant.append(o);
+    }
+    const sample = document.createElement('optgroup');
+    sample.label = 'Sample-based (UTAU voicebank)';
+    const u = document.createElement('option');
+    u.value = 'utau';
+    u.textContent = utauSession.bank ? utauSession.bank.name : 'Load a UTAU voicebank…';
+    sample.append(u);
+    mainVoice.append(formant, sample);
+    syncMainVoice();
+  }
+  mainVoice.addEventListener('change', () => {
+    const choice = mainVoice.value;
+    if (choice === 'utau') {
+      if (utauSession.bank) utauSession.setUse(true);
+      else {
+        syncMainVoice(); // keep the current voice until a folder is actually loaded
+        $<HTMLInputElement>('utau-folder').click();
+      }
+    } else {
+      utauSession.setUse(false);
+      applyVoice(choice);
+    }
+    mainVoice.blur();
+  });
+  utauSession.onChange(fillMainVoice);
   applyVoice(voiceId);
+  fillMainVoice();
 
   const pressed = new Map<string, number>(); // key code -> note (so octave changes don't strand notes)
 

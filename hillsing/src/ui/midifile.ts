@@ -75,7 +75,6 @@ export class MidiFilePanel {
     tempoOut: this.q('out-tempo'),
     canvas: this.q<HTMLCanvasElement>('preview'),
     summary: this.q('file-summary'),
-    source: this.q<HTMLSelectElement>('voice-source'),
     utauLog: this.q('utau-log'),
     rollWrap: this.q('roll-wrap'),
     rollScroll: this.q<HTMLInputElement>('roll-scroll'),
@@ -116,19 +115,14 @@ export class MidiFilePanel {
         this.refresh();
       },
     );
-    el.source.addEventListener('change', () => {
+    let wasActive = this.ctx.utau.active;
+    this.ctx.utau.onChange(() => {
+      this.utauDirty = true; // a different voicebank, or a switch between the voicebank and the formant voices
+      const now = this.ctx.utau.active;
+      if (now === wasActive) return;
+      wasActive = now;
       this.stopAll();
-      this.say(this.usingUtau() ? 'Singing with the UTAU voicebank: the next Play renders the melody with it.' : 'Singing with the formant synth.', false);
-    });
-    el.source.addEventListener('pointerup', () => el.source.blur());
-    this.ctx.utau.onChange((bank) => {
-      const opt = el.source.querySelector<HTMLOptionElement>('option[value="utau"]');
-      if (opt) {
-        opt.disabled = !bank;
-        opt.textContent = bank ? `UTAU voicebank — ${bank.name}` : 'UTAU voicebank (load one below)';
-      }
-      if (!bank && el.source.value === 'utau') el.source.value = 'formant';
-      this.utauDirty = true;
+      this.say(now ? 'Singing melodies with the UTAU voicebank: the next Play renders them with it.' : 'Singing melodies with the formant synth.', false);
     });
     el.tempo.addEventListener('input', () => {
       el.tempoOut.textContent = `${el.tempo.value}%`;
@@ -197,7 +191,7 @@ export class MidiFilePanel {
 
   /** True when the melody should be sung by the voicebank and one is loaded. */
   private usingUtau(): boolean {
-    return this.el.source.value === 'utau' && this.ctx.utau.bank !== null;
+    return this.ctx.utau.active;
   }
 
   private stopAll(): void {

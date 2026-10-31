@@ -21,7 +21,14 @@
     <main>
       <section>
         <h2>Lyrics</h2>
-        <textarea id="lyrics" rows="4" spellcheck="false" aria-label="Lyrics text"></textarea>
+        <div class="lyrics-row">
+          <textarea id="lyrics" rows="4" spellcheck="false" aria-label="Lyrics text"></textarea>
+          <div class="voice-pick">
+            <label for="voice-main"><b>Voice</b></label>
+            <select id="voice-main" aria-label="Voice: a generated formant voice or a sample-based UTAU voicebank"></select>
+            <div id="voice-main-desc" class="hint"></div>
+          </div>
+        </div>
         <div id="dict-status" class="hint">Loading dictionary…</div>
       </section>
 
@@ -52,12 +59,6 @@
           <label class="inline"><input id="loop-file" type="checkbox" /> Loop</label>
           <label class="inline" title="Start consonants before the note and finish word endings inside it, so each vowel lands on the beat"><input id="beat" type="checkbox" checked /> Vowel on the beat</label>
           <label class="inline"><input id="repeat" type="checkbox" /> Repeat lyrics</label>
-          <label class="inline" title="Sing the melody with the formant synth, or with a loaded UTAU voicebank (the voice list and sliders below apply to the formant synth)">Voice source
-            <select id="voice-source">
-              <option value="formant" selected>Formant synth</option>
-              <option value="utau" disabled>UTAU voicebank (load one below)</option>
-            </select>
-          </label>
         </div>
         <label>Tempo <output id="out-tempo"></output>
           <input id="tempo" type="range" min="50" max="150" step="1" value="100" />
