@@ -47,10 +47,11 @@ const mad = (a, b) => { let s = 0, n = 0; for (let i = 0; i < a.length; i++) if 
   ok(mad(before22, after22) > 3 && mad(after22, after20) === 0, 'paused control change shows the new settings fully (no stale cross-fade)');
 
   // ---- UI smoke: rules, routes, presets, view toggle
+  await p.click('summary:has-text("Advanced controls")');
   await p.click('#addRule'); await p.click('#addMod');
   await p.selectOption('#mods .card:last-child .ty', 'audio'); await p.selectOption('#mods .card:last-child .tg', 'remap.threshold');
   ok(await p.evaluate(() => { const m = hillview.getState().modulation.at(-1); return m.source.type === 'audio' && m.target === 'remap.threshold'; }), 'new modulation route can be retargeted');
-  await p.click('summary:has-text("Presets")');
+  await p.click('summary:has-text("Preset JSON")');
   await p.selectOption('#preset', 'Melt'); ok(await p.evaluate(() => hillview.getState().smooth.sigma) === 6, 'preset loads');
   await p.click('#vOrig'); const orig = await snap(); await p.click('#vFx'); const fx = await snap();
   ok(mad(orig, fx) > 1, 'Original / Processed toggle shows different pictures');

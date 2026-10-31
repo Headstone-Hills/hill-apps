@@ -43,7 +43,7 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
 
   // --- eyedropper reads the ORIGINAL pixel
   await p.evaluate(() => hillview.loadConfig({ remap: { rules: [{ from: '#808080', to: '#ff0000', threshold: 0.2, softness: 0.1, amount: 1 }] }, quantize: { enabled: true, mode: 'posterize', levels: 2 } }));
-  await p.click('#rules .pk'); const box = await p.locator('#out').boundingBox();
+  await p.click('#swatches .pk'); const box = await p.locator('#out').boundingBox();
   const ar = I.w / I.h; let w = box.width, h = box.height, ox = 0, oy = 0; if (w / h > ar) { const nw = h * ar; ox = (w - nw) / 2; w = nw; } else { const nh = w / ar; oy = (h - nh) / 2; h = nh; }
   await p.mouse.click(box.x + ox + w * 0.25, box.y + oy + h * 0.15);
   const picked = await p.evaluate(() => hillview.getState().remap.rules[0].from);

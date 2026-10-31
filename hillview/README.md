@@ -13,7 +13,13 @@ Two deliverables share one engine:
 `artifact/hillview.html` is HillView as a single-page Claude Artifact: the same pipeline (frame sampling, quantize, smooth, colour remap with
 OKLab distance, blur, modulation) running as WebGL2 shaders on the viewer's GPU, with no ffmpeg, Python or upload. It opens on a built-in demo
 with a synthetic beat; you can open a video or image, add a music file, pick remap colours with an eyedropper on the picture, and record the
-processed result. Presets use the same JSON as the desktop app and CLI. Export (video, PNG, preset) goes through the artifact `downloads`
+processed result. Presets use the same JSON as the desktop app and CLI.
+
+**Controls are in two layers.** The simple layer is what you see first: one-click *Looks* (and *Surprise me*), five *Effects* (Stutter, Crush,
+Melt, Recolour, Soften), each with an on/off switch and a single amount, and four *Movement* macros (Reactivity, Drift, Chaos, Speed) that scale the
+look's modulation routes. Every parameter is still available under *Advanced controls*. The switches are views of the real settings (a stage is "on"
+when it is actually doing something), so Advanced, presets and the simple layer always agree; switching a stage off remembers its amount. The
+Movement macros scale routes while rendering and saving, so a saved look contains exactly what you see and loading it brings the macros back to 100%. Export (video, PNG, preset) goes through the artifact `downloads`
 capability, so the viewer confirms each save.
 
 Differences from the desktop app, by design: audio analysis is live (a slow adaptive gain instead of the desktop's whole-file normalisation),
@@ -23,9 +29,10 @@ JS implementation, not numpy, so palettes differ; frame interpolation delays out
 ```
 artifact/tests/run.sh    # needs ffmpeg and `npm i -g playwright`; headless Chromium on software WebGL
 ```
-37 checks: modulation hash bit-identical to Python (incl. negative and 2^40 inputs), LFO/noise/steps within 1e-15, OKLab within 3e-7,
+86 checks: modulation hash bit-identical to Python (incl. negative and 2^40 inputs), LFO/noise/steps within 1e-15, OKLab within 3e-7,
 shader output within 1 level of numpy for posterize, remap (with hue shift and offsets) and blur, interpolation is an exact midpoint cross-fade,
-hold is exact, video/music/record/save flows with `downloads` stubbed, phone layout. **Not verified:** the real claude.ai viewer (its media
+hold is exact, video/music/record/save flows with `downloads` stubbed, every switch and macro (exact parameter arithmetic, two-way sync with Advanced,
+exported looks), 25 randomised looks, phone layout. **Not verified:** the real claude.ai viewer (its media
 and download policies), MP4/H.264 input in the test browser (Playwright's Chromium has no H.264), and speed on real GPUs.
 
 ## Native core (optional, 10-30x faster)
