@@ -1,6 +1,9 @@
 # HillView design notes
 
-## 1. Host compatibility: four hosts, three-and-a-half SDKs
+## 1. Host compatibility
+
+**Scope update (Oct 2026):** Avid is dropped. DaVinci Resolve (free) is *assumed* to load third-party OpenFX plugins;
+this is unverified and should be checked with the first test plugin. A standalone app (see README) ships alongside the plugins.
 
 There is no single plugin format that loads in all four hosts, so the plan is one portable core
 plus a thin adapter per host.
@@ -10,9 +13,8 @@ plus a thin adapter per host.
 | DaVinci Resolve (free) | OpenFX (OFX) | Sources agree free Resolve loads third-party OFX ([TryUncle, updated Jul 2026](https://tryuncle.com/learn/davinci-resolve/best-davinci-resolve-plugins-for-beginners-to-buy), [CGChannel 2018](https://www.cgchannel.com/?p=98909)); one outlier ([Tella](https://www.tella.com/definition/ofx-plugins)) says Studio-only. | Medium: **verify on Blackmagic's feature-comparison page and by loading a test OFX in free Resolve** |
 | Premiere Pro | After Effects SDK effect (`.aex`) plus Premiere extensions | Adobe community: effect samples are built on the AE API with Premiere-specific extensions for transitions/GPU; CPU rendering from the AE SDK works ([thread](https://community.adobe.com/t5/premiere-pro-discussions/can-you-build-premiere-pro-plugins-using-the-after-effects-sdk/m-p/9100157)); Premiere refuses some AE flags ([2007 thread](https://community.adobe.com/t5/after-effects-discussions/how-to-install-aex-in-premiere-pro-2-0/m-p/1673953)). That Premiere does not host OFX is from my own knowledge, not a source. | Medium: sources are old |
 | Final Cut Pro | FxPlug, delivered through Motion | Apple: [FxPlug](https://developer.apple.com/documentation/professional-video-applications/fxplug.md) is for effects FCP/Motion can't do natively; plug-ins reach FCP via a published Motion effect ([Apple guide](https://developer.apple.com/library/archive/documentation/AppleApplications/Conceptual/FXPlug_overview/FxPlugsFCPx/FxPlugsFCPx.html), [FxFactory](https://fxfactory.com/developer/bringing-native-plugins-to-finalcutpro/)). The FxFactory article is old; **check current FxPlug 4 docs**. macOS only. | Medium |
-| Avid Media Composer | AVX2 | AVX2 is the long-standing Avid effects SDK (e.g. [Sapphire for AVX2](https://www.provideocoalition.com/genarts_unveils_new_version_of_sapphire_for_avid_avx2_systems/amp/)). Every result I found is 2009–2015; **I found nothing confirming current AVX2 status or any OFX support in Media Composer.** Avid's SDK access may require a developer agreement. | **Low: needs verification with Avid first** |
 
-Consequence: Avid and FCP are the riskiest and slowest; do them last. Resolve (OFX) first.
+Order of work: Resolve (OFX) first, then Premiere (AE SDK), then Final Cut Pro (FxPlug, macOS/Metal, delivered via Motion).
 
 ## 2. Architecture
 
@@ -23,7 +25,6 @@ adapters/
    ofx/      Resolve (and any OFX host: Nuke, Fusion, Vegas...)
    ae_sdk/   Premiere (and After Effects, nearly free)
    fxplug/   Final Cut Pro / Motion (Metal)
-   avx2/     Avid
 ```
 
 The Python engine is the specification: C++ output is checked against it frame-for-frame.

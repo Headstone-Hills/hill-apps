@@ -33,9 +33,10 @@ def _merge(base, over):
 
 
 class Engine:
-    def __init__(self, config=None, fps=30.0, audio=None):
+    def __init__(self, config=None, fps=30.0, audio=None, px_scale=1.0):
         self.cfg = _merge(DEFAULTS, config)
         self.fps, self.audio = float(fps), audio
+        self.px_scale = float(px_scale)  # <1 when previewing a downscaled frame: keeps blur radii proportional
         for m in self.cfg["modulation"]:
             if m["target"] not in TARGETS:
                 raise ValueError(f"unknown modulation target {m['target']!r}; valid: {sorted(TARGETS)}")
@@ -74,10 +75,10 @@ class Engine:
                 out = effects.kmeans_quantize(out, p["quantize.colors"], seed=c["seed"])
             else:
                 out = effects.posterize(out, p["quantize.levels"])
-        out = effects.blur(out, p["smooth.sigma"])
+        out = effects.blur(out, p["smooth.sigma"] * self.px_scale)
         out = effects.remap_colors(out, c["remap"]["rules"], p["remap.threshold"],
                                    p["remap.amount"], p["remap.hue_shift"])
-        out = effects.blur(out, p["blur.sigma"])
+        out = effects.blur(out, p["blur.sigma"] * self.px_scale)
         return np.clip(out, 0, 1).astype(np.float32)
 
     def _key(self, source, k):

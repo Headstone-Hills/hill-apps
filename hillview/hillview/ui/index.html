@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HillView</title>
+<style>
+:root{--bg:#101014;--panel:#18181f;--line:#2a2a36;--fg:#e8e8f0;--dim:#8a8aa0;--acc:#ff3fa4;--acc2:#2ee6c8;--bad:#ff5a5a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,sans-serif;display:grid;grid-template-columns:380px 1fr;height:100vh}
+aside{background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;padding:12px 14px}
+main{display:flex;flex-direction:column;min-width:0;padding:12px;gap:10px}
+h1{font-size:18px;margin:0 0 2px;letter-spacing:.5px}h1 span{color:var(--acc)}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin:16px 0 6px;border-top:1px solid var(--line);padding-top:10px;display:flex;justify-content:space-between;align-items:center}
+label{display:block;margin:6px 0 2px;color:var(--dim);font-size:12px}
+input[type=range]{width:100%;accent-color:var(--acc)}input[type=text],input[type=number],select{width:100%;background:#0c0c10;color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:5px 6px}
+input[type=color]{width:34px;height:26px;border:1px solid var(--line);background:none;padding:0}
+button{background:#23232e;color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:5px 10px;cursor:pointer}button:hover{border-color:var(--acc)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#111;font-weight:600}button:disabled{opacity:.4;cursor:default}
+.row{display:flex;gap:6px;align-items:center}.row>*{flex:1}.row>.fix{flex:0 0 auto}
+.val{float:right;color:var(--fg);font-variant-numeric:tabular-nums}
+.card{border:1px solid var(--line);border-radius:6px;padding:8px;margin:6px 0;background:#13131a}
+#stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#000;border:1px solid var(--line);border-radius:6px;position:relative}
+#stage img{width:100%;height:100%;object-fit:contain}
+#drop{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--dim);text-align:center;pointer-events:none}
+#status{color:var(--dim);font-size:12px;min-height:18px}#err{color:var(--bad);font-size:12px;white-space:pre-wrap}
+progress{width:100%;accent-color:var(--acc2)}.x{flex:0 0 22px;color:var(--bad);background:none;border:none;font-size:16px}
+</style></head><body>
+<aside>
+<h1>Hill<span>View</span></h1><div id="status">Open a video to begin.</div><div id="err"></div>
+
+<h2>Import</h2>
+<label>Upload a file (any video/image/animated format ffmpeg reads)</label>
+<input type="file" id="file">
+<label>…or a path on this computer (use <code>shot_%04d.png</code> for image sequences)</label>
+<div class="row"><input type="text" id="path" placeholder="/path/to/video.mov"><button class="fix" id="openPath">Open</button></div>
+<label>Music / audio file (optional – drives modulation and is muxed into the export)</label>
+<input type="file" id="audioFile"><div class="row"><input type="text" id="audioPath" placeholder="or audio path"><button class="fix" id="setAudio">Set</button></div>
+<label>Frame rate override (blank = auto; image sequences default to 25)</label><input type="number" id="fpsOv" step="any" min="1">
+
+<h2>1 · Frame sampling</h2>
+<div id="c_sampling"></div>
+<h2>2 · Quantize <label style="margin:0"><input type="checkbox" id="q_en"> on</label></h2>
+<div id="c_quant"></div>
+<h2>3 · Smooth</h2><div id="c_smooth"></div>
+<h2>4 · Colour remap <button id="addRule">+ rule</button></h2>
+<div id="c_remap"></div><div id="rules"></div>
+<h2>5 · Blur</h2><div id="c_blur"></div>
+<h2>Modulation <button id="addMod">+ route</button></h2>
+<div id="mods"></div>
+<h2>Seed</h2><input type="number" id="seed" value="0">
+<h2>Preset</h2>
+<div class="row"><button id="savePreset">Save JSON</button><button id="loadPresetBtn">Load JSON</button><input type="file" id="loadPreset" accept=".json" style="display:none"></div>
+
+<h2>Export</h2>
+<label>Format</label><select id="fmt"></select>
+<label>Name</label><input type="text" id="outName" placeholder="(source name)_hillview">
+<label class="row" style="margin-top:8px"><input type="checkbox" id="audioReactive" class="fix" checked> <span style="flex:1">Audio-reactive (analyze audio for modulation)</span></label>
+<div class="row" style="margin-top:8px"><button class="primary" id="render" disabled>Render</button><button id="cancel" disabled class="fix">Cancel</button></div>
+<progress id="prog" value="0" max="1" style="margin-top:8px;display:none"></progress>
+<div id="result"></div>
+</aside>
+<main>
+<div class="row" style="flex:0 0 auto"><button class="fix" id="vOrig">Original</button><button class="fix" id="vFx">Processed</button><button class="fix" id="vHold">Hold to compare</button><span id="meta" style="color:var(--dim);flex:1;text-align:right"></span></div>
+<div id="stage"><div id="drop">Drop a video file here</div><img id="img" alt=""></div>
+<input type="range" id="frame" min="0" max="0" value="0" disabled>
+<div class="row" style="flex:0 0 auto;color:var(--dim)"><span id="fnum">frame 0</span><span style="text-align:right" id="ftime">0.00 s</span></div>
+</main>
+<script>
+const TOKEN="__TOKEN__";
+const $=id=>document.getElementById(id);
+const api=(p,body,opts={})=>fetch("/api/"+p,{method:body===undefined?"GET":"POST",headers:{"X-HV-Token":TOKEN,...(opts.headers||{})},
+  body:opts.raw?body:(body===undefined?undefined:JSON.stringify(body)),signal:opts.signal}).then(async r=>{
+  if(!r.ok){let m=r.statusText;try{m=(await r.json()).error||m}catch(e){}throw new Error(m)}return r});
+const err=m=>$("err").textContent=m||"";
+
+// ---- slider helper
+function slider(host,key,label,min,max,step,val,onchg){
+  const w=document.createElement("div");w.innerHTML=`<label>${label}<span class="val"></span></label><input type="range" min="${min}" max="${max}" step="${step}" value="${val}">`;
+  const i=w.querySelector("input"),v=w.querySelector(".val");const upd=()=>{v.textContent=(+i.value).toFixed(step<1?2:0)};upd();
+  i.oninput=()=>{upd();onchg()};host.appendChild(w);ctl[key]=i;return i}
+const ctl={};
+const refresh=()=>schedule();
+slider($("c_sampling"),"step","Process every N frames",1,32,1,1,refresh);
+{const w=document.createElement("div");w.innerHTML=`<label>In-between frames</label><select id="interp"><option value="blend">Interpolate (blend)</option><option value="hold">Hold</option></select>`;$("c_sampling").appendChild(w);$("interp").onchange=refresh}
+{const w=document.createElement("div");w.innerHTML=`<select id="qmode"><option value="posterize">Posterize (levels per channel)</option><option value="kmeans">Palette (k-means)</option></select>`;$("c_quant").appendChild(w);$("qmode").onchange=refresh}
+slider($("c_quant"),"levels","Levels per channel",2,32,1,5,refresh);
+slider($("c_quant"),"colors","Palette colours",2,32,1,6,refresh);
+slider($("c_smooth"),"smooth","Smoothing (px)",0,40,0.5,0,refresh);
+slider($("c_remap"),"rthr","Threshold offset (all rules)",-0.5,0.5,0.01,0,refresh);
+slider($("c_remap"),"ramt","Amount",0,1,0.01,1,refresh);
+slider($("c_remap"),"rhue","Target hue shift (radians)",-3.14,3.14,0.01,0,refresh);
+slider($("c_blur"),"blur","Blur (px)",0,40,0.5,0,refresh);
+$("q_en").onchange=refresh;$("seed").onchange=refresh;
+
+// ---- colour rules
+function addRule(r={from:"#202020",to:"#ff00aa",threshold:0.2,softness:0.08,amount:1}){
+  const d=document.createElement("div");d.className="card";d.innerHTML=`<div class="row"><span class="fix">from</span><input type="color" class="fix f" value="${r.from}"><span class="fix">→ to</span><input type="color" class="fix t" value="${r.to}"><span></span><button class="x">×</button></div>
+  <label>Threshold<span class="val"></span></label><input type="range" class="th" min="0" max="1" step="0.01" value="${r.threshold}">
+  <label>Softness<span class="val"></span></label><input type="range" class="so" min="0" max="0.5" step="0.01" value="${r.softness}">
+  <label>Amount<span class="val"></span></label><input type="range" class="am" min="0" max="1" step="0.01" value="${r.amount}">`;
+  d.querySelectorAll("input[type=range]").forEach(i=>{const v=i.previousElementSibling.querySelector(".val");const u=()=>v.textContent=(+i.value).toFixed(2);u();i.oninput=()=>{u();refresh()}});
+  d.querySelectorAll("input[type=color]").forEach(i=>i.oninput=refresh);d.querySelector(".x").onclick=()=>{d.remove();refresh()};$("rules").appendChild(d)}
+$("addRule").onclick=()=>{addRule();refresh()};
+
+// ---- modulation routes
+const TARGETS=["smooth.sigma","blur.sigma","remap.threshold","remap.amount","remap.hue_shift","quantize.levels","quantize.colors","sampling.step"];
+function addMod(m={source:{type:"lfo",shape:"sine",hz:0.5,seed:0,channel:"low"},target:"smooth.sigma",depth:3}){
+  const d=document.createElement("div");d.className="card";const s=m.source;
+  d.innerHTML=`<div class="row"><select class="ty"><option value="lfo">LFO</option><option value="noise">Smooth random</option><option value="steps">Stepped random</option><option value="audio">Audio</option></select><button class="x">×</button></div>
+  <div class="opts"></div><label>Target</label><select class="tg">${TARGETS.map(t=>`<option>${t}</option>`).join("")}</select>
+  <label>Depth <span class="val"></span></label><input type="range" class="dp" min="-20" max="20" step="0.05" value="${m.depth}">`;
+  const opts=d.querySelector(".opts");
+  const build=()=>{const t=d.querySelector(".ty").value;
+    opts.innerHTML=(t==="lfo"?`<label>Shape</label><select class="shape">${["sine","tri","saw","square"].map(x=>`<option ${x===s.shape?"selected":""}>${x}</option>`).join("")}</select>`:"")
+     +(t==="audio"?`<label>Channel</label><select class="ch">${["rms","low","mid","high","onset"].map(x=>`<option ${x===s.channel?"selected":""}>${x}</option>`).join("")}</select>`
+     :`<label>Rate (Hz)</label><input type="number" class="hz" step="any" value="${s.hz??1}">`)
+     +(t==="noise"||t==="steps"?`<label>Seed</label><input type="number" class="sd" value="${s.seed||0}">`:"");
+    opts.querySelectorAll("input,select").forEach(i=>i.onchange=refresh)};
+  d.querySelector(".ty").value=s.type;d.querySelector(".tg").value=m.target;build();
+  d.querySelector(".ty").onchange=()=>{build();refresh()};d.querySelector(".tg").onchange=refresh;
+  const dp=d.querySelector(".dp"),v=d.querySelector(".val");const u=()=>v.textContent=(+dp.value).toFixed(2);u();dp.oninput=()=>{u();refresh()};
+  d.querySelector(".x").onclick=()=>{d.remove();refresh()};$("mods").appendChild(d)}
+$("addMod").onclick=()=>{addMod();refresh()};
+
+// ---- config <-> UI
+function getConfig(){
+  const n=k=>+ctl[k].value;
+  const rules=[...$("rules").children].map(d=>({from:d.querySelector(".f").value,to:d.querySelector(".t").value,
+    threshold:+d.querySelector(".th").value,softness:+d.querySelector(".so").value,amount:+d.querySelector(".am").value}));
+  const mods=[...$("mods").children].map(d=>{const ty=d.querySelector(".ty").value;const src={type:ty};
+    const g=c=>d.querySelector(c);if(ty==="lfo")src.shape=g(".shape").value;if(ty==="audio")src.channel=g(".ch").value;else src.hz=+g(".hz").value;
+    if(g(".sd"))src.seed=+g(".sd").value;return{source:src,target:g(".tg").value,depth:+g(".dp").value}});
+  return{seed:+$("seed").value,quantize:{enabled:$("q_en").checked,mode:$("qmode").value,levels:n("levels"),colors:n("colors")},
+    smooth:{sigma:n("smooth")},remap:{rules,threshold:n("rthr"),amount:n("ramt"),hue_shift:n("rhue")},blur:{sigma:n("blur")},
+    sampling:{step:n("step"),interp:$("interp").value},modulation:mods}}
+function setConfig(c){
+  const set=(k,v)=>{if(v!==undefined){ctl[k].value=v;ctl[k].oninput()}};
+  const q=c.quantize||{},sm=c.sampling||{},rm=c.remap||{};
+  $("seed").value=c.seed||0;$("q_en").checked=!!q.enabled;$("qmode").value=q.mode||"posterize";set("levels",q.levels);set("colors",q.colors);
+  set("smooth",(c.smooth||{}).sigma);set("blur",(c.blur||{}).sigma);set("step",sm.step);$("interp").value=sm.interp||"blend";
+  set("rthr",rm.threshold);set("ramt",rm.amount);set("rhue",rm.hue_shift);
+  $("rules").innerHTML="";(rm.rules||[]).forEach(addRule);$("mods").innerHTML="";(c.modulation||[]).forEach(addMod);schedule()}
+
+// ---- session / preview
+let S=null,view="fx",hold=false,timer=null,ctrl=null,gen=0;
+function schedule(){clearTimeout(timer);timer=setTimeout(preview,120)}
+async function preview(){
+  if(!S)return;ctrl&&ctrl.abort();ctrl=new AbortController();const my=++gen;
+  const orig=view==="orig"||hold;$("status").textContent=orig?"":"processing…";
+  try{const r=await api("preview",{id:S.id,frame:+$("frame").value,original:orig,config:getConfig()},{signal:ctrl.signal});
+    const b=await r.blob();if(my!==gen)return;const old=$("img").src;$("img").src=URL.createObjectURL(b);if(old.startsWith("blob:"))URL.revokeObjectURL(old);err("");$("status").textContent=S.name}
+  catch(e){if(e.name!=="AbortError"){err(e.message);$("status").textContent=S.name}}}
+$("frame").oninput=()=>{const f=+$("frame").value;$("fnum").textContent="frame "+f;$("ftime").textContent=(f/S.info.fps).toFixed(2)+" s";schedule()};
+$("vOrig").onclick=()=>{view="orig";preview()};$("vFx").onclick=()=>{view="fx";preview()};
+$("vHold").onmousedown=()=>{hold=true;preview()};window.addEventListener("mouseup",()=>{if(hold){hold=false;preview()}});
+
+async function openSession(path,audio){
+  err("");$("status").textContent="opening…";
+  try{const fo=$("fpsOv").value;const r=await(await api("open",{path,audio:audio||undefined,fps:fo?+fo:undefined})).json();
+    S=r;$("frame").max=r.info.frames-1;$("frame").value=0;$("frame").disabled=false;$("render").disabled=false;$("drop").style.display="none";
+    $("meta").textContent=`${r.info.width}×${r.info.height} · ${r.info.fps.toFixed(3)} fps · ${r.info.frames} frames · ${r.info.codec} (${r.info.container})${r.audio?" · audio":""}`;
+    $("frame").oninput();$("outName").placeholder=r.name.replace(/\.[^.]+$/,"")+"_hillview"}
+  catch(e){err(e.message);$("status").textContent="Open failed."}}
+async function upload(file){$("status").textContent=`uploading ${file.name}…`;
+  const r=await(await api("upload?name="+encodeURIComponent(file.name),file,{raw:true})).json();return r.path}
+$("file").onchange=async e=>{const f=e.target.files[0];if(f)try{await openSession(await upload(f))}catch(x){err(x.message)}};
+$("openPath").onclick=()=>$("path").value&&openSession($("path").value,$("audioPath").value);
+async function setAudio(p){if(!S){$("audioPath").value=p;return}try{await api("set_audio",{id:S.id,path:p});S.audio=true;schedule();err("")}catch(e){err(e.message)}}
+$("audioFile").onchange=async e=>{const f=e.target.files[0];if(f)try{const p=await upload(f);$("audioPath").value=p;await setAudio(p)}catch(x){err(x.message)}};
+$("setAudio").onclick=()=>setAudio($("audioPath").value);
+document.body.addEventListener("dragover",e=>e.preventDefault());
+document.body.addEventListener("drop",async e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(f)try{await openSession(await upload(f))}catch(x){err(x.message)}});
+
+// ---- presets
+$("savePreset").onclick=()=>{const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(getConfig(),null,2)],{type:"application/json"}));a.download="hillview_preset.json";a.click()};
+$("loadPresetBtn").onclick=()=>$("loadPreset").click();
+$("loadPreset").onchange=async e=>{const f=e.target.files[0];if(f)try{setConfig(JSON.parse(await f.text()))}catch(x){err("bad preset: "+x.message)}};
+
+// ---- export
+let job=null;
+api("formats").then(r=>r.json()).then(f=>{$("fmt").innerHTML=Object.entries(f).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join("")});
+$("render").onclick=async()=>{if(!S)return;err("");$("result").innerHTML="";
+  try{const r=await(await api("render",{id:S.id,config:getConfig(),format:$("fmt").value,name:$("outName").value||undefined,audio_reactive:$("audioReactive").checked})).json();
+    job=r.job;$("render").disabled=true;$("cancel").disabled=false;$("prog").style.display="block";poll()}catch(e){err(e.message)}};
+$("cancel").onclick=()=>job&&api("cancel?id="+job);
+async function poll(){const j=await(await api("job?id="+job)).json();$("prog").max=j.total;$("prog").value=j.done;
+  $("status").textContent=j.status==="running"?`rendering ${j.done}/${j.total}`:S.name;
+  if(j.status==="running")return setTimeout(poll,400);
+  $("render").disabled=false;$("cancel").disabled=true;
+  if(j.status==="done")$("result").innerHTML=`<div class="card">Saved to <code>${j.path}</code><br><a style="color:var(--acc2)" href="/api/download?id=${job}&token=${TOKEN}">Download${j.kind==="seq"?" (.zip)":""}</a></div>`;
+  else if(j.status==="error")err(j.error);else $("status").textContent="cancelled"}
+</script></body></html>
