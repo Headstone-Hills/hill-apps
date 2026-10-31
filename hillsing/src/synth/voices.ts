@@ -274,7 +274,16 @@ const PERIOD: VoiceProfile[] = [
     { centerNote: 48, bandwidthScale: 0.7, tiltBase: 0.55, openPhase: 0.35, closeMs: 0.2, consonantLevel: 1.2, drift: 0.1 }, 0.97),
 ];
 
-export const VOICES: ReadonlyArray<VoiceProfile> = [...BASES, ...PERIOD];
+// Character voices from later synthesis scenes. Same approach as above: a parameter set patterned on
+// the *character* of the voice, not its data. A UTAU voicebank is a set of recorded samples, which
+// this formant engine cannot play, so these never contain or imitate any specific recording.
+const CHARACTER: VoiceProfile[] = [
+  variant(FEMALE_BASE, 'teto', 'Teto', 'UTAU Kasane Teto (character-style)',
+    'Bright, youthful and light, in the spirit of the UTAU character. A formant approximation, not her voicebank. Sing around E4.',
+    { centerNote: 64, bandwidthScale: 1.0, upperFormantScale: 1.12, sizeScale: 1.2, openPhase: 0.5, closeMs: 0.3, tiltBase: 0.38, tiltVelocity: 0.4, breath: 0.06, drift: 1.1 }, 1.04),
+];
+
+export const VOICES: ReadonlyArray<VoiceProfile> = [...BASES, ...PERIOD, ...CHARACTER];
 
 export const CLASSIC: VoiceProfile = VOICES[0];
 
