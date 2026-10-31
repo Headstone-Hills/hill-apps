@@ -1,0 +1,842 @@
+<title>HillView</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Syne:wght@700&display=swap">
+<style>
+/* Layout concept: a flat instrument. The stage takes the left; a rail of the five pipeline stages, in processing order, runs down the right;
+   transport sits under the picture. One committed dark look (video work happens in the dark), so there is no light variant. */
+:root {
+  --bg: #0d0e13;
+  --surface: #14161d;
+  --surface-2: #1b1e27;
+  --line: #2b2f3c;
+  --fg: #e7e9f0;
+  --dim: #8d93a8;
+  --accent: #8f7cff;
+  --accent-ink: #0d0e13;
+  --signal: #4fd6c0;
+  --rec: #ff5d6c;
+  --stage: #050507;
+  --font-display: 'Syne', 'Arial Black', system-ui, sans-serif;
+  --font-body: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--fg); font: 14px/1.45 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0;
+}
+button, select, input, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#app { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 10px; }
+header { display: flex; align-items: baseline; gap: 14px; padding-top: 10px; flex-wrap: wrap; }
+.wordmark { font: 700 21px var(--font-display); letter-spacing: .02em; }
+.wordmark b { color: var(--accent); font-weight: 700; }
+#srcname { color: var(--dim); font-family: var(--font-mono); font-size: 12px; min-width: 0; overflow-wrap: anywhere; }
+main { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: 16px; padding-bottom: 12px; }
+#stagecol { min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+#stage { position: relative; flex: 1; min-height: 0; background: var(--stage); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+#out { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+#stage.picking #out { cursor: crosshair; }
+#stage.drag { outline: 2px dashed var(--accent); outline-offset: -6px; }
+#hud { position: absolute; left: 10px; top: 8px; right: 10px; display: flex; justify-content: space-between; gap: 8px; pointer-events: none; font: 11px var(--font-mono); color: rgba(231,233,240,.8); text-shadow: 0 1px 2px #000; }
+#meters { position: absolute; left: 10px; bottom: 10px; display: flex; gap: 6px; align-items: flex-end; pointer-events: none; }
+.meter { width: 22px; display: grid; gap: 3px; justify-items: center; font: 10px var(--font-mono); color: rgba(231,233,240,.75); text-shadow: 0 1px 2px #000; }
+.meter i { display: block; width: 10px; height: 44px; background: rgba(255,255,255,.12); position: relative; border-radius: 2px; overflow: hidden; }
+.meter i::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--v, 0) * 100%); background: var(--signal); }
+#pickhint { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); background: var(--accent); color: var(--accent-ink); padding: 4px 10px; border-radius: 4px; font-weight: 600; font-size: 12px; }
+#transport { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 10px; align-items: center; }
+#time { font: 12px var(--font-mono); color: var(--dim); min-width: 92px; text-align: right; font-variant-numeric: tabular-nums; }
+.btn { background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 6px 12px; cursor: pointer; }
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .4; cursor: default; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.btn.rec { background: var(--rec); color: #1a0508; border-color: var(--rec); font-weight: 600; }
+.btn.sm { padding: 3px 8px; font-size: 12px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.seg button { background: var(--surface); border: 0; padding: 6px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+input[type=range] { width: 100%; accent-color: var(--accent); margin: 2px 0 0; }
+#scrub { margin: 0; }
+aside#panel { min-height: 0; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+details { border-bottom: 1px solid var(--line); }
+details:last-child { border-bottom: 0; }
+summary { list-style: none; cursor: pointer; padding: 10px 12px; display: flex; align-items: baseline; gap: 10px; font-weight: 600; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+summary::-webkit-details-marker { display: none; }
+summary .n { font: 500 11px var(--font-mono); color: var(--accent); letter-spacing: 0; }
+summary .tag { margin-left: auto; font: 400 11px var(--font-mono); letter-spacing: 0; text-transform: none; color: var(--dim); }
+summary::after { content: "+"; color: var(--dim); font-weight: 400; margin-left: 4px; }
+details[open] > summary::after { content: "–"; }
+.body { padding: 2px 12px 12px; display: grid; gap: 8px; }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; column-gap: 8px; }
+.row label { color: var(--dim); font-size: 12px; }
+.row output { font: 12px var(--font-mono); font-variant-numeric: tabular-nums; }
+.row input[type=range] { grid-column: 1 / -1; }
+select, input[type=number], input[type=text], textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 5px 7px; width: 100%; min-width: 0; }
+textarea { font: 11px/1.4 var(--font-mono); min-height: 130px; resize: vertical; }
+input[type=color] { width: 34px; height: 26px; padding: 0; border: 1px solid var(--line); background: none; border-radius: 4px; }
+.check { display: flex; gap: 8px; align-items: center; color: var(--fg); font-size: 13px; }
+.card { background: var(--surface-2); border: 1px solid var(--line); border-radius: 5px; padding: 8px; display: grid; gap: 6px; }
+.card .top { display: flex; align-items: center; gap: 6px; }
+.card .top .grow { flex: 1; }
+.x { background: none; border: 0; color: var(--dim); cursor: pointer; font-size: 18px; line-height: 1; padding: 0 4px; }
+.x:hover { color: var(--rec); }
+.swatch { display: inline-flex; align-items: center; gap: 6px; font: 11px var(--font-mono); color: var(--dim); }
+.srcmeter { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.srcmeter i { display: block; height: 100%; width: calc(var(--v, 0) * 100%); background: var(--signal); }
+.note { color: var(--dim); font-size: 12px; }
+.err { color: var(--rec); font-size: 12px; white-space: pre-wrap; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.filebtn { position: relative; overflow: hidden; display: inline-flex; justify-content: center; }
+.filebtn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+#recresult { display: grid; gap: 8px; }
+#recresult video { width: 100%; border-radius: 4px; background: #000; }
+#status { min-height: 18px; font-size: 12px; color: var(--dim); }
+.hidden-media { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+@media (max-width: 900px) {
+  html, body { height: auto; }
+  #app { height: auto; }
+  main { grid-template-columns: minmax(0, 1fr); }
+  #stage { flex: none; aspect-ratio: 16 / 9; }
+  aside#panel { overflow: visible; }
+  #transport { grid-template-columns: auto minmax(0, 1fr) auto; }
+  #transport .seg { grid-column: 1 / -1; justify-self: start; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }
+</style>
+
+<div id="app">
+  <header>
+    <div class="wordmark">Hill<b>View</b></div>
+    <div id="srcname">demo source</div>
+  </header>
+  <main>
+    <section id="stagecol" aria-label="Preview">
+      <div id="stage">
+        <canvas id="out" width="960" height="540" aria-label="Processed video preview"></canvas>
+        <div id="hud"><span id="hudL"></span><span id="hudR"></span></div>
+        <div id="meters" aria-hidden="true"></div>
+        <div id="pickhint" hidden>Click the picture to pick a colour</div>
+      </div>
+      <div id="transport">
+        <button class="btn" id="play" type="button" aria-label="Play or pause">Pause</button>
+        <input type="range" id="scrub" min="0" max="16" step="0.01" value="0" aria-label="Position">
+        <span id="time">0:00.0 / 0:16.0</span>
+        <div class="seg" role="group" aria-label="View"><button type="button" id="vFx" aria-pressed="true">Processed</button><button type="button" id="vOrig" aria-pressed="false">Original</button></div>
+      </div>
+      <div id="status" role="status" aria-live="polite"></div>
+    </section>
+
+    <aside id="panel" aria-label="Controls">
+      <details open>
+        <summary>Source <span class="tag" id="srcTag">demo</span></summary>
+        <div class="body">
+          <div class="grid2">
+            <button class="btn" type="button" id="useDemo">Demo source</button>
+            <span class="btn filebtn">Open video or image…<input type="file" id="fileIn" accept="video/*,image/*"></span>
+          </div>
+          <div class="grid2">
+            <span class="btn filebtn">Add music…<input type="file" id="musicIn" accept="audio/*"></span>
+            <button class="btn" type="button" id="musicOff" disabled>Remove music</button>
+          </div>
+          <label class="check"><input type="checkbox" id="sound"> Sound on</label>
+          <div class="row"><label for="res">Working width</label><span></span>
+            <select id="res" style="grid-column:1/-1"><option value="480">480 px (fast)</option><option value="720">720 px</option><option value="960" selected>960 px</option><option value="1280">1280 px</option><option value="1920">1920 px (slow)</option></select></div>
+          <p class="note">Drop a file anywhere on the picture. Everything runs on your GPU in this tab; nothing is uploaded.</p>
+          <div class="err" id="srcErr"></div>
+        </div>
+      </details>
+
+      <details open><summary><span class="n">1</span>Frame sampling <span class="tag" id="tagSampling"></span></summary><div class="body" id="c_sampling"></div></details>
+      <details open><summary><span class="n">2</span>Quantize <span class="tag" id="tagQuant"></span></summary><div class="body" id="c_quant"></div></details>
+      <details open><summary><span class="n">3</span>Smooth <span class="tag" id="tagSmooth"></span></summary><div class="body" id="c_smooth"></div></details>
+      <details open><summary><span class="n">4</span>Colour remap <span class="tag" id="tagRemap"></span></summary><div class="body"><div id="c_remap" style="display:grid;gap:8px"></div><div id="rules" style="display:grid;gap:8px"></div><button class="btn sm" type="button" id="addRule">+ Add rule</button></div></details>
+      <details open><summary><span class="n">5</span>Blur <span class="tag" id="tagBlur"></span></summary><div class="body" id="c_blur"></div></details>
+      <details open><summary>Modulation <span class="tag" id="tagMod"></span></summary><div class="body"><div id="mods" style="display:grid;gap:8px"></div><button class="btn sm" type="button" id="addMod">+ Add route</button><p class="note">Routes add to a control's value over time. Random sources repeat exactly for a given seed.</p></div></details>
+      <details><summary>Presets</summary><div class="body">
+        <select id="preset" aria-label="Preset"></select>
+        <textarea id="presetJson" spellcheck="false" aria-label="Preset JSON"></textarea>
+        <div class="grid2"><button class="btn" type="button" id="applyJson">Apply JSON</button><button class="btn" type="button" id="copyJson">Copy JSON</button></div>
+        <div class="grid2"><span class="btn filebtn">Load .json…<input type="file" id="presetFile" accept=".json,application/json"></span><button class="btn" type="button" id="saveJson">Save .json</button></div>
+        <p class="note">Same format as the desktop app and command line, so presets move between them.</p>
+        <div class="err" id="presetErr"></div>
+      </div></details>
+      <details open><summary>Export</summary><div class="body">
+        <div class="grid2"><button class="btn rec" type="button" id="rec">Record video</button><button class="btn" type="button" id="still">Save frame (PNG)</button></div>
+        <p class="note" id="recNote">Recording plays the clip once in real time and captures the processed picture with its sound.</p>
+        <div id="recresult" hidden></div>
+        <div class="err" id="recErr"></div>
+      </div></details>
+    </aside>
+  </main>
+</div>
+<video id="vid" class="hidden-media" playsinline muted loop></video>
+<audio id="mus" class="hidden-media" loop></audio>
+
+<script>
+(() => {
+'use strict';
+const $ = (s, r = document) => r.querySelector(s);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const fmtT = s => { s = Math.max(0, s || 0); const m = Math.floor(s / 60); return m + ':' + (s - m * 60).toFixed(1).padStart(4, '0'); };
+
+/* ================================================================ colour (matches hillview/color.py) */
+const s2l = c => c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+const l2s = c => { c = clamp(c, 0, 1); return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055; };
+const M1 = [[0.4122214708, 0.5363325363, 0.0514459929], [0.2119034982, 0.6806995451, 0.1073969566], [0.0883024619, 0.2817188376, 0.6299787005]];
+const M2 = [[0.2104542553, 0.7936177850, -0.0040720468], [1.9779984951, -2.4285922050, 0.4505937099], [0.0259040371, 0.7827717662, -0.8086757660]];
+function inv3(m) {
+  const [[a, b, c], [d, e, f], [g, h, i]] = m;
+  const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g, det = a * A + b * B + c * C;
+  return [[A / det, -(b * i - c * h) / det, (b * f - c * e) / det], [B / det, (a * i - c * g) / det, -(a * f - c * d) / det], [C / det, -(a * h - b * g) / det, (a * e - b * d) / det]];
+}
+const M1i = inv3(M1), M2i = inv3(M2);
+const mul = (m, v) => [m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2], m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2], m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2]];
+const rgbToOklab = c => mul(M2, mul(M1, c.map(s2l)).map(Math.cbrt));
+const oklabToRgb = l => mul(M1i, mul(M2i, l).map(x => x * x * x)).map(l2s);
+const hexToRgb = h => { h = h.replace('#', ''); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16) / 255); };
+const rgbToHex = c => '#' + c.map(v => Math.round(clamp(v, 0, 1) * 255).toString(16).padStart(2, '0')).join('');
+const rotateHue = (lab, a) => [lab[0], lab[1] * Math.cos(a) - lab[2] * Math.sin(a), lab[1] * Math.sin(a) + lab[2] * Math.cos(a)];
+
+/* ================================================================ modulation (matches hillview/modulation.py bit for bit) */
+const M64 = (1n << 64n) - 1n;
+function hash01(n, seed) {
+  let z = (BigInt(n) * 0x9E3779B97F4A7C15n + BigInt(seed) * 0xD1B54A32D192ED03n + 0x632BE59BD9B4E019n) & M64;
+  z = ((z ^ (z >> 30n)) * 0xBF58476D1CE4E5B9n) & M64;
+  z = ((z ^ (z >> 27n)) * 0x94D049BB133111EBn) & M64;
+  z ^= z >> 31n;
+  return Number(z >> 11n) / 9007199254740992;
+}
+const smooth3 = x => x * x * (3 - 2 * x);
+const AF = { rms: 0, low: 0, mid: 0, high: 0, onset: 0 };   // audio features "now" (live analysis, or the demo's analytic beat)
+function sourceValue(src, t, af = AF, globalSeed = 0) {
+  const seed = (src.seed | 0) + (globalSeed | 0);
+  switch (src.type) {
+    case 'lfo': {
+      const hz = src.hz ?? 1, p = (((t * hz + (src.phase ?? 0)) % 1) + 1) % 1;
+      switch (src.shape || 'sine') {
+        case 'sine': return 0.5 - 0.5 * Math.cos(2 * Math.PI * p);
+        case 'saw': return p;
+        case 'tri': return 1 - Math.abs(2 * p - 1);
+        case 'square': return p < (src.duty ?? 0.5) ? 1 : 0;
+      }
+      return 0;
+    }
+    case 'noise': { const x = t * (src.hz ?? 1), i = Math.floor(x), s = smooth3(x - i); return hash01(i, seed) * (1 - s) + hash01(i + 1, seed) * s; }
+    case 'steps': return hash01(Math.floor(t * (src.hz ?? 4)), seed);
+    case 'audio': return af[src.channel || 'rms'] ?? 0;
+  }
+  return 0;
+}
+
+/* ================================================================ config (same JSON as the desktop app) */
+const BLANK = () => ({
+  seed: 0,
+  quantize: { enabled: false, mode: 'posterize', levels: 5, colors: 6 },
+  smooth: { sigma: 0 },
+  remap: { rules: [], threshold: 0, amount: 1, hue_shift: 0 },
+  blur: { sigma: 0 },
+  sampling: { step: 1, interp: 'blend' },
+  modulation: [],
+});
+const PRESETS = {
+  'Glitch pop': {
+    seed: 7, quantize: { enabled: true, mode: 'kmeans', colors: 5 }, smooth: { sigma: 2 },
+    remap: { rules: [{ from: '#202020', to: '#ff00aa', threshold: 0.18, softness: 0.08, amount: 1 }, { from: '#e0e0e0', to: '#00ffd0', threshold: 0.2, softness: 0.08, amount: 1 }], hue_shift: 0 },
+    blur: { sigma: 0 }, sampling: { step: 4, interp: 'blend' },
+    modulation: [
+      { source: { type: 'audio', channel: 'low' }, target: 'smooth.sigma', depth: 8 },
+      { source: { type: 'audio', channel: 'onset' }, target: 'remap.threshold', depth: 0.25 },
+      { source: { type: 'noise', hz: 0.7, seed: 3 }, target: 'remap.hue_shift', depth: 3.14 },
+      { source: { type: 'steps', hz: 2, seed: 9, bipolar: false }, target: 'blur.sigma', depth: 3 }],
+  },
+  'Neon posterize': {
+    seed: 1, quantize: { enabled: true, mode: 'posterize', levels: 4 }, smooth: { sigma: 1 },
+    remap: { rules: [{ from: '#c80000', to: '#00ffe0', threshold: 0.25, softness: 0.1, amount: 1 }, { from: '#0000c8', to: '#ffe600', threshold: 0.25, softness: 0.1, amount: 1 }], hue_shift: 0 },
+    sampling: { step: 1, interp: 'hold' },
+    modulation: [{ source: { type: 'lfo', shape: 'sine', hz: 0.2 }, target: 'remap.hue_shift', depth: 3.14 }, { source: { type: 'audio', channel: 'rms' }, target: 'quantize.levels', depth: 6 }],
+  },
+  'Melt': {
+    seed: 4, quantize: { enabled: false }, smooth: { sigma: 6 }, blur: { sigma: 2 }, sampling: { step: 6, interp: 'blend' },
+    remap: { rules: [{ from: '#808080', to: '#ff7a00', threshold: 0.35, softness: 0.25, amount: 0.8 }] },
+    modulation: [{ source: { type: 'audio', channel: 'rms' }, target: 'smooth.sigma', depth: 14 }, { source: { type: 'noise', hz: 0.4, seed: 2 }, target: 'remap.hue_shift', depth: 2.2 }],
+  },
+  'Clean (everything off)': {},
+};
+const TARGETS = {
+  'quantize.levels': [2, 32], 'quantize.colors': [2, 16], 'smooth.sigma': [0, 64], 'blur.sigma': [0, 64],
+  'remap.threshold': [-1, 1], 'remap.amount': [0, 1], 'remap.hue_shift': [-2 * Math.PI, 2 * Math.PI], 'sampling.step': [1, 64],
+};
+const DEPTH_MAX = { 'quantize.levels': 16, 'quantize.colors': 10, 'smooth.sigma': 20, 'blur.sigma': 20, 'remap.threshold': 0.5, 'remap.amount': 1, 'remap.hue_shift': 3.15, 'sampling.step': 16 };
+const BIPOLAR = { lfo: true, noise: true, steps: true, audio: false };
+const merge = (base, over) => { for (const k in over || {}) base[k] = (over[k] && typeof over[k] === 'object' && !Array.isArray(over[k]) && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) ? merge(base[k], over[k]) : JSON.parse(JSON.stringify(over[k])); return base; };
+const normalize = cfg => {
+  const c = merge(BLANK(), cfg);
+  for (const m of c.modulation) if (!TARGETS[m.target]) throw new Error('unknown modulation target "' + m.target + '"');
+  return c;
+};
+let S = normalize(PRESETS['Glitch pop']);
+const getPath = p => p.split('.').reduce((o, k) => o[k], S);
+function paramsAt(t, af = AF) {
+  const v = {};
+  for (const k in TARGETS) v[k] = +getPath(k);
+  for (const m of S.modulation) {
+    let x = sourceValue(m.source, t, af, S.seed);
+    if (m.source.bipolar ?? BIPOLAR[m.source.type]) x = x * 2 - 1;
+    v[m.target] += (m.depth ?? 1) * x;
+  }
+  for (const k in v) v[k] = clamp(v[k], TARGETS[k][0], TARGETS[k][1]);
+  return v;
+}
+
+/* ================================================================ WebGL2 pipeline */
+const canvas = $('#out');
+const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
+let FMT = null, glOK = !!gl;
+const VS = `#version 300 es
+out vec2 vUv;
+void main(){ vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); vUv = p; gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+const HEAD = `#version 300 es
+precision highp float; precision highp int; in vec2 vUv; out vec4 o;\n`;
+const FS = {
+  show: HEAD + `uniform sampler2D uA, uB; uniform float uT;
+void main(){ o = vec4(mix(texture(uA, vUv).rgb, texture(uB, vUv).rgb, uT), 1.0); }`,
+  quant: HEAD + `uniform sampler2D uSrc; uniform int uMode; uniform float uLevels; uniform vec3 uPal[16]; uniform int uN;
+void main(){
+  vec3 c = texture(uSrc, vUv).rgb;
+  if (uMode == 1) { float m = uLevels - 1.0; c = floor(c * m + 0.5) / m; }
+  else if (uMode == 2) { float best = 1e9; vec3 bc = c; for (int i = 0; i < 16; i++) { if (i >= uN) break; vec3 d = c - uPal[i]; float s = dot(d, d); if (s < best) { best = s; bc = uPal[i]; } } c = bc; }
+  o = vec4(c, 1.0); }`,
+  box: HEAD + `uniform sampler2D uSrc; uniform ivec2 uAxis; uniform int uR;
+void main(){
+  ivec2 sz = textureSize(uSrc, 0), p = ivec2(gl_FragCoord.xy); vec3 s = vec3(0.0);
+  for (int i = -uR; i <= uR; i++) s += texelFetch(uSrc, clamp(p + uAxis * i, ivec2(0), sz - 1), 0).rgb;
+  o = vec4(s / float(2 * uR + 1), 1.0); }`,
+  remap: HEAD + `uniform sampler2D uSrc; uniform int uN; uniform vec3 uSL[8]; uniform vec3 uTG[8]; uniform vec4 uP[8];
+vec3 s2l(vec3 c){ return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }
+vec3 lab(vec3 c){
+  vec3 l = s2l(clamp(c, 0.0, 1.0));
+  vec3 q = vec3(dot(vec3(0.4122214708, 0.5363325363, 0.0514459929), l), dot(vec3(0.2119034982, 0.6806995451, 0.1073969566), l), dot(vec3(0.0883024619, 0.2817188376, 0.6299787005), l));
+  q = pow(max(q, vec3(0.0)), vec3(1.0 / 3.0));
+  return vec3(dot(vec3(0.2104542553, 0.7936177850, -0.0040720468), q), dot(vec3(1.9779984951, -2.4285922050, 0.4505937099), q), dot(vec3(0.0259040371, 0.7827717662, -0.8086757660), q)); }
+void main(){
+  vec3 c = texture(uSrc, vUv).rgb, L = lab(c), r = c;
+  for (int i = 0; i < 8; i++) { if (i >= uN) break;
+    float t = clamp((length(L - uSL[i]) - uP[i].x) / uP[i].y, 0.0, 1.0);
+    r += uP[i].z * (1.0 - t * t * (3.0 - 2.0 * t)) * (uTG[i] - r); }
+  o = vec4(r, 1.0); }`,
+  pick: HEAD + `uniform sampler2D uSrc; uniform vec2 uAt; void main(){ o = vec4(texture(uSrc, uAt).rgb, 1.0); }`,
+};
+const progs = {};
+function compile(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function makeProg(fs) {
+  const p = gl.createProgram(); gl.attachShader(p, compile(gl.VERTEX_SHADER, VS)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {};
+  for (let i = 0, n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS); i < n; i++) { const info = gl.getActiveUniform(p, i); u[info.name.replace(/\[0\]$/, '')] = gl.getUniformLocation(p, info.name); }
+  return { p, u };
+}
+function makeTarget(w, h) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, FMT.internal, w, h, 0, gl.RGBA, FMT.type, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  return { tex: t, fbo: f, w, h, ok: gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE };
+}
+function freeTarget(t) { if (t) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); } }
+function pickFormat() {
+  const half = { internal: gl.RGBA16F, type: gl.HALF_FLOAT, name: 'float16' }, byte = { internal: gl.RGBA8, type: gl.UNSIGNED_BYTE, name: '8-bit' };
+  if (gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float')) {
+    FMT = half; const t = makeTarget(4, 4); const ok = t.ok; freeTarget(t); if (ok) return;
+  }
+  FMT = byte;
+}
+let srcTex = null, tmpA = null, tmpB = null, K = [null, null], tiny = null, one = null, W = 0, H = 0;
+function initGL() {
+  gl.getExtension('EXT_color_buffer_float');
+  pickFormat();
+  for (const k in FS) progs[k] = makeProg(FS[k]);
+  srcTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, srcTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+  const saved = FMT; FMT = { internal: gl.RGBA8, type: gl.UNSIGNED_BYTE }; tiny = makeTarget(64, 36); one = makeTarget(1, 1); FMT = saved;
+}
+function resizeTargets(w, h) {
+  [tmpA, tmpB, K[0], K[1]].forEach(freeTarget);
+  W = w; H = h; canvas.width = w; canvas.height = h;
+  tmpA = makeTarget(w, h); tmpB = makeTarget(w, h); K = [makeTarget(w, h), makeTarget(w, h)];
+  lastK = -1e9; dirty = true;
+}
+function draw(pg, target, texs, set) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fbo : null);
+  gl.viewport(0, 0, target ? target.w : canvas.width, target ? target.h : canvas.height);
+  gl.useProgram(pg.p);
+  texs.forEach((t, i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, t); });
+  set && set(pg.u);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function kmeans(px, k, seed) {
+  const n = px.length / 3, rnd = mulberry32(seed + 12345), d = new Float32Array(n).fill(Infinity), c = new Float32Array(k * 3);
+  let i0 = Math.floor(rnd() * n); c.set(px.subarray(i0 * 3, i0 * 3 + 3), 0);
+  for (let j = 1; j < k; j++) {                         // k-means++ seeding
+    let sum = 0;
+    for (let i = 0; i < n; i++) { const dx = px[i * 3] - c[(j - 1) * 3], dy = px[i * 3 + 1] - c[(j - 1) * 3 + 1], dz = px[i * 3 + 2] - c[(j - 1) * 3 + 2]; d[i] = Math.min(d[i], dx * dx + dy * dy + dz * dz); sum += d[i]; }
+    let r = rnd() * sum, pick = n - 1; for (let i = 0; i < n; i++) { r -= d[i]; if (r <= 0) { pick = i; break; } }
+    c.set(px.subarray(pick * 3, pick * 3 + 3), j * 3);
+  }
+  const idx = new Uint8Array(n);
+  for (let it = 0; it < 8; it++) {
+    for (let i = 0; i < n; i++) { let b = 0, bd = Infinity; for (let j = 0; j < k; j++) { const dx = px[i * 3] - c[j * 3], dy = px[i * 3 + 1] - c[j * 3 + 1], dz = px[i * 3 + 2] - c[j * 3 + 2], s = dx * dx + dy * dy + dz * dz; if (s < bd) { bd = s; b = j; } } idx[i] = b; }
+    const acc = new Float32Array(k * 3), cnt = new Uint32Array(k);
+    for (let i = 0; i < n; i++) { const j = idx[i]; acc[j * 3] += px[i * 3]; acc[j * 3 + 1] += px[i * 3 + 1]; acc[j * 3 + 2] += px[i * 3 + 2]; cnt[j]++; }
+    for (let j = 0; j < k; j++) if (cnt[j]) { c[j * 3] = acc[j * 3] / cnt[j]; c[j * 3 + 1] = acc[j * 3 + 1] / cnt[j]; c[j * 3 + 2] = acc[j * 3 + 2] / cnt[j]; }
+  }
+  return c;
+}
+function fitPalette(k) {
+  draw(progs.show, tiny, [srcTex, srcTex], u => { gl.uniform1i(u.uA, 0); gl.uniform1i(u.uB, 1); gl.uniform1f(u.uT, 0); });
+  const buf = new Uint8Array(64 * 36 * 4); gl.bindFramebuffer(gl.FRAMEBUFFER, tiny.fbo); gl.readPixels(0, 0, 64, 36, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+  const px = new Float32Array(64 * 36 * 3); for (let i = 0; i < 64 * 36; i++) { px[i * 3] = buf[i * 4] / 255; px[i * 3 + 1] = buf[i * 4 + 1] / 255; px[i * 3 + 2] = buf[i * 4 + 2] / 255; }
+  return kmeans(px, k, S.seed);
+}
+function boxRadius(sigma) { return sigma < 0.4 ? 0 : clamp(Math.round((Math.sqrt(4 * sigma * sigma + 1) - 1) / 2), 1, 48); }
+function runChain(pr, target) {
+  const pxs = W / (source ? source.w : W);               // sigmas are in source pixels, like the desktop app
+  const steps = [];
+  const q = S.quantize.enabled ? (S.quantize.mode === 'kmeans' ? 2 : 1) : 0;
+  const pal = q === 2 ? fitPalette(Math.round(pr['quantize.colors'])) : null;
+  steps.push({ pg: progs.quant, set: u => { gl.uniform1i(u.uSrc, 0); gl.uniform1i(u.uMode, q); gl.uniform1f(u.uLevels, Math.round(pr['quantize.levels'])); if (pal) { const full = new Float32Array(48); full.set(pal); gl.uniform3fv(u.uPal, full); gl.uniform1i(u.uN, pal.length / 3); } else gl.uniform1i(u.uN, 0); } });
+  const blurSteps = sigma => { const r = boxRadius(sigma * pxs); if (!r) return; for (let n = 0; n < 3; n++) for (const ax of [[1, 0], [0, 1]]) steps.push({ pg: progs.box, set: u => { gl.uniform1i(u.uSrc, 0); gl.uniform2i(u.uAxis, ax[0], ax[1]); gl.uniform1i(u.uR, r); } }); };
+  blurSteps(pr['smooth.sigma']);
+  const rules = S.remap.rules.slice(0, 8).map(r => {
+    const amt = clamp((r.amount ?? 1) * pr['remap.amount'], 0, 1);
+    return amt > 0 ? { sl: rgbToOklab(hexToRgb(r.from)), tg: oklabToRgb(rotateHue(rgbToOklab(hexToRgb(r.to)), pr['remap.hue_shift'])), thr: Math.max(0, (r.threshold ?? 0.2) + pr['remap.threshold']), soft: Math.max(1e-4, r.softness ?? 0.05), amt } : null;
+  }).filter(Boolean);
+  if (rules.length) steps.push({ pg: progs.remap, set: u => {
+    const sl = new Float32Array(24), tg = new Float32Array(24), pp = new Float32Array(32);
+    rules.forEach((r, i) => { sl.set(r.sl, i * 3); tg.set(r.tg.map(v => clamp(v, 0, 1)), i * 3); pp.set([r.thr, r.soft, r.amt, 0], i * 4); });
+    gl.uniform1i(u.uSrc, 0); gl.uniform1i(u.uN, rules.length); gl.uniform3fv(u.uSL, sl); gl.uniform3fv(u.uTG, tg); gl.uniform4fv(u.uP, pp); } });
+  blurSteps(pr['blur.sigma']);
+  let input = srcTex;
+  steps.forEach((s, i) => {
+    const last = i === steps.length - 1, dest = last ? target : (i % 2 ? tmpB : tmpA);
+    draw(s.pg, dest, [input], s.set); input = dest.tex;
+  });
+}
+
+/* ================================================================ sources */
+const vid = $('#vid'), mus = $('#mus');
+const demoCanvas = document.createElement('canvas'); demoCanvas.width = 1280; demoCanvas.height = 720;
+const dctx = demoCanvas.getContext('2d');
+const DEMO_LEN = 16, BEAT = 0.5;
+function demoFeatures(t) {
+  const ph = t % BEAT, hp = (t + BEAT / 2) % BEAT, bar = Math.floor(t / (BEAT * 4)) % 2;
+  const kick = Math.exp(-ph * 9), hat = Math.exp(-hp * 38), on = Math.exp(-ph * 26);
+  const low = clamp(0.08 + 0.92 * kick * (bar ? 0.75 : 1), 0, 1), mid = clamp(0.5 + 0.35 * Math.sin(t * Math.PI / 2) - 0.1 * kick, 0, 1), high = clamp(0.1 + 0.9 * hat, 0, 1);
+  return { rms: clamp(0.5 * low + 0.3 * mid + 0.2 * high, 0, 1), low, mid, high, onset: on };
+}
+function drawDemo(t) {
+  const w = 1280, h = 720, f = demoFeatures(t), c = dctx;
+  const g = c.createLinearGradient(0, 0, w, h); g.addColorStop(0, '#0e0e18'); g.addColorStop(1, `hsl(${(250 + t * 12) % 360} 55% 18%)`);
+  c.fillStyle = g; c.fillRect(0, 0, w, h);
+  const bars = ['#c8c8c8', '#c8c800', '#00c8c8', '#00c800', '#c800c8', '#c80000', '#0000c8'], bw = w / 7, off = (t * 90) % w;
+  for (let i = -1; i < 8; i++) { c.fillStyle = bars[((i % 7) + 7) % 7]; c.fillRect(i * bw + (off % bw) - bw * 0, h * 0.72, bw + 1, h * 0.28); }
+  for (let i = 0; i < 6; i++) {
+    const a = t * (0.5 + i * 0.13) + i, r = 90 + 38 * i + 70 * f.low * (i % 2 ? 1 : 0.6), x = w / 2 + Math.cos(a) * 330, y = h * 0.36 + Math.sin(a * 1.3) * 140;
+    c.fillStyle = `hsl(${(i * 55 + t * 40) % 360} 85% ${48 + f.mid * 12}%)`; c.beginPath(); c.arc(x, y, r * 0.5, 0, 7); c.fill();
+  }
+  c.fillStyle = '#f2f2f2'; c.beginPath(); c.arc(w * 0.5 + Math.sin(t * 0.9) * 120, h * 0.34, 46 + 90 * f.onset, 0, 7); c.fill();
+  c.fillStyle = '#18181f'; c.fillRect(0, h * 0.62, w, 6 + 30 * f.high);
+  c.strokeStyle = 'rgba(255,255,255,.75)'; c.lineWidth = 3;
+  for (let i = 0; i < 9; i++) { const x = ((i * 190 + t * 140) % (w + 190)) - 95; c.beginPath(); c.moveTo(x, 0); c.lineTo(x - 140, h * 0.62); c.stroke(); }
+}
+const clock = { t: 0, playing: true };
+let source = null;
+function useDemo() {
+  stopMedia();
+  source = { kind: 'demo', name: 'demo source', w: 1280, h: 720, fps: 30, duration: DEMO_LEN, time: () => clock.t, el: demoCanvas, prepare() { drawDemo(clock.t); } };
+  clock.t = 0; clock.playing = true; afterSource();
+}
+function stopMedia() { try { vid.pause(); vid.removeAttribute('src'); vid.load(); mus.pause(); } catch (e) {} }
+function showErr(msg) { $('#srcErr').textContent = msg || ''; }
+async function openFile(file) {
+  showErr('');
+  if (!file) return;
+  ensureAudio();
+  if (file.type.startsWith('audio/')) return setMusic(file);
+  if (file.type.startsWith('image/')) {
+    try {
+      const bmp = await createImageBitmap(file);
+      return openBitmap(bmp, file.name);
+    } catch (e) { return showErr('That image could not be decoded.'); }
+  }
+  if (!file.type.startsWith('video/')) return showErr('Choose a video, image or audio file.');
+  const url = URL.createObjectURL(file);
+  stopMedia(); vid.muted = false; vid.src = url;
+  const fail = () => showErr('This browser could not play that video (' + (file.type || 'unknown type') + '). Try an MP4 (H.264) or WebM file, or use the Demo source.');
+  vid.onerror = fail;
+  try { await new Promise((res, rej) => { vid.onloadeddata = res; vid.onerror = rej; setTimeout(() => rej(new Error('timeout')), 15000); }); } catch (e) { return fail(); }
+  vid.onerror = null;
+  source = { kind: 'video', name: file.name, w: vid.videoWidth, h: vid.videoHeight, fps: 30, duration: vid.duration || 0, time: () => vid.currentTime, el: vid, prepare() {} };
+  afterSource(); trackFps(); clock.playing = true; vid.play().catch(() => { clock.playing = false; syncPlayBtn(); });
+}
+function openBitmap(bmp, name) {
+  stopMedia();
+  const cv = document.createElement('canvas'); cv.width = bmp.width; cv.height = bmp.height;   // UNPACK_FLIP_Y is ignored for ImageBitmap, so go through a canvas
+  const c2 = cv.getContext('2d'); c2.fillStyle = '#000'; c2.fillRect(0, 0, cv.width, cv.height); c2.drawImage(bmp, 0, 0);
+  source = { kind: 'image', name: name || 'image', w: bmp.width, h: bmp.height, fps: 30, duration: 0, time: () => 0, el: cv, prepare() {} };
+  afterSource();
+}
+function trackFps() {
+  if (!('requestVideoFrameCallback' in vid)) return;
+  const d = []; let last = null;
+  const cb = (now, meta) => {
+    if (last !== null && meta.mediaTime > last) d.push(meta.mediaTime - last);
+    last = meta.mediaTime;
+    if (d.length < 24) vid.requestVideoFrameCallback(cb);
+    else { d.sort((a, b) => a - b); const f = 1 / d[0]; /* smallest gap = true frame interval; dropped callbacks only make gaps longer */ const snap = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60].reduce((a, b) => Math.abs(b - f) < Math.abs(a - f) ? b : a); if (source && source.kind === 'video') { source.fps = snap; dirty = true; } }
+  };
+  vid.requestVideoFrameCallback(cb);
+}
+function afterSource() {
+  const w = forcedW || +$('#res').value, h = Math.max(2, Math.round(w * source.h / source.w / 2) * 2);
+  resizeTargets(w, h);
+  $('#srcname').textContent = source.name + (source.kind === 'demo' ? '' : '  ·  ' + source.w + '×' + source.h);
+  $('#srcTag').textContent = source.kind;
+  const isImg = source.kind === 'image';
+  $('#scrub').disabled = isImg || !source.duration; $('#play').disabled = isImg;
+  $('#scrub').max = source.duration || 1;
+  uploadedFor = null; syncPlayBtn(); setStatus(''); updateExportUI();
+}
+let uploadedFor = null, forcedW = 0;
+function uploadSource() {
+  source.prepare();
+  gl.bindTexture(gl.TEXTURE_2D, srcTex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, source.el);
+  gl.generateMipmap(gl.TEXTURE_2D);
+}
+
+/* ================================================================ audio */
+let actx = null, analyser, master, speaker, recDest, synthT = 0, vidNode, musNode, vidGain, musGain;
+function ensureAudio() {
+  if (actx) { if (actx.state === 'suspended') actx.resume().catch(() => {}); return; }
+  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+  actx = new AC();
+  master = actx.createGain(); analyser = actx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0;
+  speaker = actx.createGain(); speaker.gain.value = $('#sound').checked ? 1 : 0; recDest = actx.createMediaStreamDestination();
+  master.connect(analyser); master.connect(recDest); master.connect(speaker); speaker.connect(actx.destination);
+  try {
+    vidNode = actx.createMediaElementSource(vid); vidGain = actx.createGain(); vidNode.connect(vidGain); vidGain.connect(master);
+    musNode = actx.createMediaElementSource(mus); musGain = actx.createGain(); musNode.connect(musGain); musGain.connect(master);
+  } catch (e) { /* element already routed */ }
+  if (actx.state === 'suspended') actx.resume().catch(() => {});
+}
+function setMusic(file) {
+  mus.src = URL.createObjectURL(file); mus.currentTime = vid.currentTime || 0; $('#musicOff').disabled = false;
+  if (vidGain) vidGain.gain.value = 0;
+  if (clock.playing) mus.play().catch(() => {});
+  setStatus('Music: ' + file.name);
+}
+function clearMusic() { mus.pause(); mus.removeAttribute('src'); mus.load(); if (vidGain) vidGain.gain.value = 1; $('#musicOff').disabled = true; }
+function schedSynth() {                                   // demo soundtrack: kick on the beat, hat on the off-beat, a low drone
+  if (!actx || source?.kind !== 'demo' || !clock.playing || actx.state !== 'running') { synthT = clock.t; return; }
+  const ahead = clock.t + 0.3, now = actx.currentTime;
+  if (synthT < clock.t - 0.2) synthT = clock.t;
+  for (let b = Math.ceil(synthT / (BEAT / 2)); b * BEAT / 2 < ahead; b++) {
+    const bt = b * BEAT / 2, at = now + (bt - clock.t); synthT = bt + 1e-6;
+    if (at < now) continue;
+    if (b % 2 === 0) { const o = actx.createOscillator(), g = actx.createGain(); o.frequency.setValueAtTime(150, at); o.frequency.exponentialRampToValueAtTime(42, at + 0.18); g.gain.setValueAtTime(0.9, at); g.gain.exponentialRampToValueAtTime(0.001, at + 0.3); o.connect(g); g.connect(master); o.start(at); o.stop(at + 0.32); }
+    else { const len = 0.05, buf = actx.createBuffer(1, Math.ceil(actx.sampleRate * len), actx.sampleRate), d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length); const s = actx.createBufferSource(), hp = actx.createBiquadFilter(), g = actx.createGain(); hp.type = 'highpass'; hp.frequency.value = 6500; g.gain.value = 0.35; s.buffer = buf; s.connect(hp); hp.connect(g); g.connect(master); s.start(at); }
+  }
+}
+const fftB = new Uint8Array(1024), tdB = new Float32Array(2048), prevB = new Uint8Array(1024), peak = { rms: 0.1, low: 0.1, mid: 0.1, high: 0.1, onset: 0.1 };
+function updateFeatures(dt) {
+  let raw = null;
+  if (source?.kind === 'demo') raw = demoFeatures(clock.t);
+  else if (source && actx && actx.state === 'running' && clock.playing && analyser) {
+    analyser.getByteFrequencyData(fftB); analyser.getFloatTimeDomainData(tdB);
+    const hz = actx.sampleRate / analyser.fftSize, band = (lo, hi) => { const a = Math.floor(lo / hz), b = Math.max(a + 1, Math.floor(hi / hz)); let s = 0; for (let i = a; i < b; i++) s += fftB[i]; return s / (b - a) / 255; };
+    let e = 0; for (let i = 0; i < tdB.length; i++) e += tdB[i] * tdB[i];
+    let flux = 0; for (let i = 0; i < 1024; i++) { const d = fftB[i] - prevB[i]; if (d > 0) flux += d; prevB[i] = fftB[i]; }
+    raw = { rms: Math.sqrt(e / tdB.length) * 3, low: band(20, 250), mid: band(250, 2000), high: band(2000, 12000), onset: flux / 1024 / 255 * 12 };
+    for (const k in raw) { peak[k] = Math.max(raw[k], peak[k] * Math.pow(0.5, dt / 8)); raw[k] = clamp(raw[k] / Math.max(peak[k], 0.12), 0, 1); }   // slow adaptive gain
+  }
+  for (const k in AF) {
+    const target = raw ? raw[k] : 0, tau = target > AF[k] ? 0.02 : (k === 'onset' ? 0.06 : 0.15);
+    AF[k] += (target - AF[k]) * (1 - Math.exp(-dt / tau));
+  }
+}
+
+/* ================================================================ render loop */
+let dirty = true, lastK = -1e9, lastStep = 1, prev = 0, cur = 1, view = 'fx', picking = -1, lastNow = performance.now(), dragging = false;
+function render() {
+  if (!source || !glOK) return;
+  const fps = source.fps, t = source.time(), idx = Math.floor(t * fps + 1e-3);
+  const step = clamp(Math.round(paramsAt(idx / fps)['sampling.step']), 1, 64), k0 = Math.floor(idx / step) * step;
+  const seek = Math.abs(k0 - lastK) > 2 * Math.max(step, lastStep) || k0 < lastK;
+  if (k0 !== lastK || step !== lastStep) {                 // a new keyframe: render into the slot that is not "current"
+    uploadSource();
+    const oi = 1 - cur;
+    runChain(paramsAt(k0 / fps), K[oi]);
+    if (seek || lastK < -1e8) { prev = cur = oi; } else { prev = cur; cur = oi; }
+    lastK = k0; lastStep = step; dirty = false;
+  } else if (dirty) {                                      // only the controls changed: redo this keyframe in place.
+    uploadSource();                                        // The previous keyframe was made with old settings, so no cross-fade until the next one.
+    runChain(paramsAt(k0 / fps), K[cur]);
+    prev = cur; dirty = false;
+  }
+  const blend = step > 1 && S.sampling.interp === 'blend' && prev !== cur ? (idx - k0) / step : 1;
+  if (view === 'orig') draw(progs.show, null, [srcTex, srcTex], u => { gl.uniform1i(u.uA, 0); gl.uniform1i(u.uB, 1); gl.uniform1f(u.uT, 0); });
+  else draw(progs.show, null, [K[prev].tex, K[cur].tex], u => { gl.uniform1i(u.uA, 0); gl.uniform1i(u.uB, 1); gl.uniform1f(u.uT, blend); });
+  $('#hudL').textContent = W + '×' + H + ' · ' + fps.toFixed(fps % 1 ? 2 : 0) + ' fps · step ' + step;
+  $('#hudR').textContent = FMT.name + ' · ' + (view === 'orig' ? 'original' : 'processed');
+}
+function tick(now) {
+  requestAnimationFrame(tick);
+  const dt = Math.min(0.1, (now - lastNow) / 1000); lastNow = now;
+  if (source?.kind === 'demo' && clock.playing) {
+    clock.t += dt;
+    if (clock.t >= DEMO_LEN) { clock.t -= DEMO_LEN; if (rec) stopRecord(); }
+  }
+  if (mus.src && clock.playing && source?.kind === 'video' && Math.abs(mus.currentTime - vid.currentTime) > 0.2 && !mus.seeking) mus.currentTime = vid.currentTime;
+  schedSynth(); updateFeatures(dt); render(); updateMeters();
+  if (!dragging && source) { $('#scrub').value = source.time(); }
+  $('#time').textContent = fmtT(source ? source.time() : 0) + ' / ' + fmtT(source ? source.duration : 0);
+}
+
+/* ================================================================ UI: stage, transport */
+const meters = $('#meters');
+['rms', 'low', 'mid', 'high', 'onset'].forEach(k => { const d = document.createElement('div'); d.className = 'meter'; d.innerHTML = '<i data-k="' + k + '"></i><span>' + k + '</span>'; meters.appendChild(d); });
+function updateMeters() {
+  meters.querySelectorAll('i').forEach(i => i.style.setProperty('--v', AF[i.dataset.k].toFixed(3)));
+  document.querySelectorAll('.srcmeter').forEach(m => { const mod = S.modulation[+m.dataset.i]; if (mod) m.style.setProperty('--v', clamp(sourceValue(mod.source, source ? source.time() : 0, AF, S.seed), 0, 1).toFixed(3)); });
+}
+function setStatus(s) { $('#status').textContent = s || ''; }
+function syncPlayBtn() { $('#play').textContent = clock.playing ? 'Pause' : 'Play'; }
+function togglePlay() {
+  if (!source || source.kind === 'image') return;
+  ensureAudio();
+  clock.playing = !clock.playing;
+  if (source.kind === 'video') { if (clock.playing) { vid.play().catch(() => {}); if (mus.src) mus.play().catch(() => {}); } else { vid.pause(); mus.pause(); } }
+  syncPlayBtn();
+}
+$('#play').onclick = togglePlay;
+window.addEventListener('keydown', e => { if (e.code === 'Space' && !/INPUT|TEXTAREA|SELECT|BUTTON/.test(document.activeElement.tagName)) { e.preventDefault(); togglePlay(); } });
+$('#scrub').addEventListener('pointerdown', () => dragging = true);
+window.addEventListener('pointerup', () => dragging = false);
+$('#scrub').addEventListener('input', e => {
+  const v = +e.target.value; if (!source) return;
+  if (source.kind === 'demo') { clock.t = v; synthT = v; } else if (source.kind === 'video') { vid.currentTime = v; if (mus.src) mus.currentTime = v; }
+});
+const setView = v => { view = v; $('#vFx').setAttribute('aria-pressed', v === 'fx'); $('#vOrig').setAttribute('aria-pressed', v === 'orig'); };
+$('#vFx').onclick = () => setView('fx'); $('#vOrig').onclick = () => setView('orig');
+$('#useDemo').onclick = () => { ensureAudio(); useDemo(); };
+$('#fileIn').onchange = e => { openFile(e.target.files[0]); e.target.value = ''; };
+$('#musicIn').onchange = e => { ensureAudio(); if (e.target.files[0]) setMusic(e.target.files[0]); e.target.value = ''; };
+$('#musicOff').onclick = clearMusic;
+$('#sound').onchange = e => { ensureAudio(); if (speaker) speaker.gain.value = e.target.checked ? 1 : 0; };
+$('#res').onchange = () => { if (source) afterSource(); };
+const stage = $('#stage');
+['dragenter', 'dragover'].forEach(n => stage.addEventListener(n, e => { e.preventDefault(); stage.classList.add('drag'); }));
+['dragleave', 'drop'].forEach(n => stage.addEventListener(n, e => { e.preventDefault(); stage.classList.remove('drag'); }));
+stage.addEventListener('drop', e => openFile(e.dataTransfer.files[0]));
+canvas.addEventListener('click', e => {                   // eyedropper: sample the ORIGINAL frame under the cursor
+  if (picking < 0 || !source) return;
+  const r = canvas.getBoundingClientRect(), ar = W / H;
+  let w = r.width, h = r.height, ox = 0, oy = 0;
+  if (w / h > ar) { const nw = h * ar; ox = (w - nw) / 2; w = nw; } else { const nh = w / ar; oy = (h - nh) / 2; h = nh; }
+  const u = (e.clientX - r.left - ox) / w, v = 1 - (e.clientY - r.top - oy) / h;
+  if (u < 0 || u > 1 || v < 0 || v > 1) return;
+  draw(progs.pick, one, [srcTex], p => { gl.uniform1i(p.uSrc, 0); gl.uniform2f(p.uAt, u, v); });
+  const px = new Uint8Array(4); gl.bindFramebuffer(gl.FRAMEBUFFER, one.fbo); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  S.remap.rules[picking].from = rgbToHex([px[0] / 255, px[1] / 255, px[2] / 255]);
+  setPicking(-1); renderRules(); changed();
+});
+function setPicking(i) { picking = i; stage.classList.toggle('picking', i >= 0); $('#pickhint').hidden = i < 0; }
+
+/* ================================================================ UI: controls */
+const sliders = [];
+function addSlider(host, { path, label, min, max, step, fmt }) {
+  const id = 's_' + path.replace(/\./g, '_');
+  const row = document.createElement('div'); row.className = 'row';
+  row.innerHTML = '<label for="' + id + '">' + label + '</label><output></output><input type="range" id="' + id + '" min="' + min + '" max="' + max + '" step="' + step + '">';
+  const inp = row.querySelector('input'), out = row.querySelector('output'), f = fmt || (v => (+v).toFixed(step < 1 ? 2 : 0));
+  const sync = () => { inp.value = getPath(path); out.textContent = f(inp.value); };
+  inp.oninput = () => { const ks = path.split('.'); let o = S; for (let i = 0; i < ks.length - 1; i++) o = o[ks[i]]; o[ks.at(-1)] = +inp.value; out.textContent = f(inp.value); changed(); };
+  host.appendChild(row); sliders.push(sync); sync();
+}
+function addSelect(host, path, label, opts) {
+  const w = document.createElement('div'); w.className = 'row';
+  const id = 'sel_' + path.replace(/\./g, '_');
+  w.innerHTML = '<label for="' + id + '">' + label + '</label><span></span><select id="' + id + '" style="grid-column:1/-1">' + opts.map(([v, t]) => '<option value="' + v + '">' + t + '</option>').join('') + '</select>';
+  const sel = w.querySelector('select'); const sync = () => sel.value = getPath(path);
+  sel.onchange = () => { const ks = path.split('.'); let o = S; for (let i = 0; i < ks.length - 1; i++) o = o[ks[i]]; o[ks.at(-1)] = sel.value; changed(); };
+  host.appendChild(w); sliders.push(sync); sync(); return sel;
+}
+addSlider($('#c_sampling'), { path: 'sampling.step', label: 'Process every N frames', min: 1, max: 16, step: 1 });
+addSelect($('#c_sampling'), 'sampling.interp', 'Frames in between', [['blend', 'Interpolate (cross-fade)'], ['hold', 'Hold']]);
+{
+  const w = document.createElement('label'); w.className = 'check'; w.innerHTML = '<input type="checkbox" id="q_en"> Quantize colours';
+  $('#c_quant').appendChild(w); const cb = w.querySelector('input'); cb.onchange = () => { S.quantize.enabled = cb.checked; changed(); }; sliders.push(() => cb.checked = S.quantize.enabled);
+}
+addSelect($('#c_quant'), 'quantize.mode', 'Method', [['posterize', 'Posterize (levels per channel)'], ['kmeans', 'Palette (k-means from the frame)']]);
+addSlider($('#c_quant'), { path: 'quantize.levels', label: 'Levels per channel', min: 2, max: 16, step: 1 });
+addSlider($('#c_quant'), { path: 'quantize.colors', label: 'Palette colours', min: 2, max: 16, step: 1 });
+addSlider($('#c_smooth'), { path: 'smooth.sigma', label: 'Smoothing (source px)', min: 0, max: 40, step: 0.5 });
+addSlider($('#c_remap'), { path: 'remap.threshold', label: 'Threshold offset, all rules', min: -0.3, max: 0.3, step: 0.01 });
+addSlider($('#c_remap'), { path: 'remap.amount', label: 'Amount, all rules', min: 0, max: 1, step: 0.01 });
+addSlider($('#c_remap'), { path: 'remap.hue_shift', label: 'Target hue shift (rad)', min: -3.14, max: 3.14, step: 0.01 });
+addSlider($('#c_blur'), { path: 'blur.sigma', label: 'Blur (source px)', min: 0, max: 40, step: 0.5 });
+
+function renderRules() {
+  const host = $('#rules'); host.innerHTML = '';
+  S.remap.rules.forEach((r, i) => {
+    const d = document.createElement('div'); d.className = 'card';
+    d.innerHTML = '<div class="top"><span class="swatch">from <input type="color" class="f" value="' + r.from + '" aria-label="Source colour"></span><span class="swatch">to <input type="color" class="t" value="' + r.to + '" aria-label="Target colour"></span><span class="grow"></span><button type="button" class="btn sm pk">Pick</button><button type="button" class="x" aria-label="Remove rule">×</button></div>';
+    [['threshold', 'Threshold', 0, 1, 0.01], ['softness', 'Softness', 0, 0.5, 0.01], ['amount', 'Amount', 0, 1, 0.01]].forEach(([k, name, mn, mx, st]) => {
+      const row = document.createElement('div'); row.className = 'row'; const id = 'r' + i + k;
+      row.innerHTML = '<label for="' + id + '">' + name + '</label><output>' + (+r[k]).toFixed(2) + '</output><input type="range" id="' + id + '" min="' + mn + '" max="' + mx + '" step="' + st + '" value="' + r[k] + '">';
+      row.querySelector('input').oninput = e => { r[k] = +e.target.value; row.querySelector('output').textContent = (+e.target.value).toFixed(2); changed(); };
+      d.appendChild(row);
+    });
+    d.querySelector('.f').oninput = e => { r.from = e.target.value; changed(); };
+    d.querySelector('.t').oninput = e => { r.to = e.target.value; changed(); };
+    d.querySelector('.pk').onclick = () => { setView('fx'); setPicking(picking === i ? -1 : i); };
+    d.querySelector('.x').onclick = () => { S.remap.rules.splice(i, 1); setPicking(-1); renderRules(); changed(); };
+    host.appendChild(d);
+  });
+}
+$('#addRule').onclick = () => { if (S.remap.rules.length < 8) { S.remap.rules.push({ from: '#808080', to: '#ff7a00', threshold: 0.2, softness: 0.08, amount: 1 }); renderRules(); changed(); } };
+
+function renderMods() {
+  const host = $('#mods'); host.innerHTML = '';
+  S.modulation.forEach((m, i) => {
+    const s = m.source, d = document.createElement('div'); d.className = 'card';
+    d.innerHTML = '<div class="top"><select class="ty grow" aria-label="Source"><option value="lfo">LFO</option><option value="noise">Smooth random</option><option value="steps">Stepped random</option><option value="audio">Audio</option></select><button type="button" class="x" aria-label="Remove route">×</button></div><div class="srcmeter" data-i="' + i + '"><i></i></div><div class="opts" style="display:grid;gap:6px"></div>' +
+      '<div class="row"><label>Target</label><span></span><select class="tg" style="grid-column:1/-1" aria-label="Target">' + Object.keys(TARGETS).map(t => '<option>' + t + '</option>').join('') + '</select></div>' +
+      '<div class="row"><label>Depth</label><output></output><input type="range" class="dp"></div>';
+    const opts = d.querySelector('.opts'), ty = d.querySelector('.ty'), tg = d.querySelector('.tg'), dp = d.querySelector('.dp'), out = d.querySelector('output');
+    ty.value = s.type; tg.value = m.target;
+    const buildOpts = () => {
+      const t = s.type;
+      opts.innerHTML = (t === 'lfo' ? '<select class="shape" aria-label="Shape">' + ['sine', 'tri', 'saw', 'square'].map(x => '<option' + (x === (s.shape || 'sine') ? ' selected' : '') + '>' + x + '</option>').join('') + '</select>' : '') +
+        (t === 'audio' ? '<select class="ch" aria-label="Channel">' + ['rms', 'low', 'mid', 'high', 'onset'].map(x => '<option' + (x === (s.channel || 'rms') ? ' selected' : '') + '>' + x + '</option>').join('') + '</select>' : '<div class="grid2"><div><label class="note" for="hz' + i + '">Rate (Hz)</label><input type="number" id="hz' + i + '" class="hz" step="any" value="' + (s.hz ?? 1) + '"></div>' + (t === 'noise' || t === 'steps' ? '<div><label class="note" for="sd' + i + '">Seed</label><input type="number" id="sd' + i + '" class="sd" value="' + (s.seed || 0) + '"></div>' : '<div></div>') + '</div>');
+      opts.querySelector('.shape')?.addEventListener('change', e => { s.shape = e.target.value; changed(); });
+      opts.querySelector('.ch')?.addEventListener('change', e => { s.channel = e.target.value; changed(); });
+      opts.querySelector('.hz')?.addEventListener('input', e => { s.hz = +e.target.value || 0; changed(); });
+      opts.querySelector('.sd')?.addEventListener('input', e => { s.seed = +e.target.value | 0; changed(); });
+    };
+    const setDepthRange = () => { const mx = DEPTH_MAX[m.target]; dp.min = -mx; dp.max = mx; dp.step = mx / 200; dp.value = m.depth ?? 1; out.textContent = (+dp.value).toFixed(2); };
+    buildOpts(); setDepthRange();
+    ty.onchange = () => { const old = s.type; s.type = ty.value; if (old !== s.type) { delete s.bipolar; if (s.type === 'audio') s.channel = s.channel || 'rms'; else s.hz = s.hz || 1; } buildOpts(); changed(); };
+    tg.onchange = () => { m.target = tg.value; m.depth = clamp(m.depth ?? 1, -DEPTH_MAX[m.target], DEPTH_MAX[m.target]); setDepthRange(); changed(); };
+    dp.oninput = () => { m.depth = +dp.value; out.textContent = (+dp.value).toFixed(2); changed(); };
+    d.querySelector('.x').onclick = () => { S.modulation.splice(i, 1); renderMods(); changed(); };
+    host.appendChild(d);
+  });
+}
+$('#addMod').onclick = () => { S.modulation.push({ source: { type: 'lfo', shape: 'sine', hz: 0.5 }, target: 'smooth.sigma', depth: 3 }); renderMods(); changed(); };
+
+/* ================================================================ presets */
+const presetSel = $('#preset'), presetJson = $('#presetJson');
+presetSel.innerHTML = '<option value="">Choose a preset…</option>' + Object.keys(PRESETS).map(n => '<option>' + n + '</option>').join('');
+function loadConfig(cfg) { S = normalize(cfg); setPicking(-1); sliders.forEach(f => f()); renderRules(); renderMods(); changed(); }
+presetSel.onchange = () => { if (presetSel.value) { loadConfig(PRESETS[presetSel.value]); $('#presetErr').textContent = ''; } };
+const exportJson = () => JSON.stringify(S, null, 2);
+$('#applyJson').onclick = () => { try { loadConfig(JSON.parse(presetJson.value)); $('#presetErr').textContent = ''; } catch (e) { $('#presetErr').textContent = 'Could not read that preset: ' + e.message; } };
+$('#copyJson').onclick = async () => { try { await navigator.clipboard.writeText(exportJson()); setStatus('Preset copied.'); } catch (e) { presetJson.focus(); presetJson.select(); setStatus('Press Ctrl/Cmd+C to copy the selected preset.'); } };
+$('#presetFile').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; try { loadConfig(JSON.parse(await f.text())); $('#presetErr').textContent = ''; } catch (x) { $('#presetErr').textContent = 'Could not read that preset: ' + x.message; } };
+let jsonTimer = 0;
+function changed() {
+  dirty = true; clearTimeout(jsonTimer);
+  jsonTimer = setTimeout(() => { if (document.activeElement !== presetJson) presetJson.value = exportJson(); }, 150);
+  $('#tagSampling').textContent = S.sampling.step > 1 ? 'every ' + S.sampling.step + ' · ' + S.sampling.interp : 'every frame';
+  $('#tagQuant').textContent = S.quantize.enabled ? (S.quantize.mode === 'kmeans' ? S.quantize.colors + ' colours' : S.quantize.levels + ' levels') : 'off';
+  $('#tagSmooth').textContent = S.smooth.sigma > 0 ? S.smooth.sigma + ' px' : 'off';
+  $('#tagRemap').textContent = S.remap.rules.length ? S.remap.rules.length + (S.remap.rules.length > 1 ? ' rules' : ' rule') : 'off';
+  $('#tagBlur').textContent = S.blur.sigma > 0 ? S.blur.sigma + ' px' : 'off';
+  $('#tagMod').textContent = S.modulation.length ? S.modulation.length + (S.modulation.length > 1 ? ' routes' : ' route') : 'none';
+}
+
+/* ================================================================ export (downloads capability) */
+let dl = null, rec = null, recChunks = [], recMime = '', recTimer = 0, recStart = 0, lastBlob = null;
+function updateExportUI() {
+  const ok = !!dl;
+  $('#still').disabled = !ok; $('#saveJson').disabled = !ok;
+  $('#rec').disabled = !ok || typeof MediaRecorder === 'undefined' || !source || source.kind === 'image';
+  if (!ok) $('#recNote').textContent = 'Saving files is not available in this view. You can still preview, copy the preset JSON, and use the page live.';
+}
+async function saveFile(filename, data) {
+  $('#recErr').textContent = '';
+  try { const r = await dl.save({ filename, data }); setStatus(r.status === 'saved' ? 'Saved ' + filename : 'Sent ' + filename); }
+  catch (e) { if (e && e.code === 'declined') setStatus('Save cancelled.'); else $('#recErr').textContent = 'Could not save ' + filename + (e && e.message ? ': ' + e.message : '.'); }
+}
+$('#saveJson').onclick = () => saveFile('hillview-preset.json', exportJson());
+$('#still').onclick = () => {
+  if (!source) return; render();
+  canvas.toBlob(b => b ? saveFile('hillview-frame.png', b) : ($('#recErr').textContent = 'The picture could not be captured.'), 'image/png');
+};
+$('#rec').onclick = () => rec ? stopRecord() : startRecord();
+function pickMime() { return ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'].find(m => MediaRecorder.isTypeSupported(m)) || ''; }
+async function startRecord() {
+  if (!source || source.kind === 'image' || rec) return;
+  $('#recErr').textContent = ''; $('#recresult').hidden = true;
+  ensureAudio(); if (actx) await actx.resume().catch(() => {});
+  setView('fx');
+  const stream = new MediaStream([...canvas.captureStream(30).getVideoTracks(), ...(recDest ? recDest.stream.getAudioTracks() : [])]);
+  recMime = pickMime();
+  try { rec = new MediaRecorder(stream, recMime ? { mimeType: recMime, videoBitsPerSecond: 10e6 } : { videoBitsPerSecond: 10e6 }); } catch (e) { rec = null; $('#recErr').textContent = 'This browser cannot record video here.'; return; }
+  recChunks = []; rec.ondataavailable = e => e.data && e.data.size && recChunks.push(e.data);
+  rec.onstop = finishRecord;
+  vid.loop = false; mus.loop = false;
+  if (source.kind === 'demo') { clock.t = 0; synthT = 0; } else { vid.currentTime = 0; mus.src && (mus.currentTime = 0); }
+  clock.playing = true; syncPlayBtn(); dirty = true;
+  if (source.kind === 'video') { vid.play().catch(() => {}); mus.src && mus.play().catch(() => {}); vid.onended = () => stopRecord(); }
+  rec.start(250); recStart = performance.now();
+  $('#rec').textContent = 'Stop recording';
+  recTimer = setInterval(() => setStatus('Recording ' + ((performance.now() - recStart) / 1000).toFixed(1) + ' s of ' + (source.duration || 0).toFixed(1) + ' s (real time)'), 200);
+}
+function stopRecord() { if (!rec) return; clearInterval(recTimer); const r = rec; rec = null; vid.onended = null; vid.loop = true; mus.loop = true; try { r.state !== 'inactive' && r.stop(); } catch (e) {} $('#rec').textContent = 'Record video'; }
+function finishRecord() {
+  const blob = new Blob(recChunks, { type: recMime || 'video/webm' }); lastBlob = blob;
+  const ext = /mp4/.test(blob.type) ? 'mp4' : 'webm', host = $('#recresult'); host.hidden = false; host.innerHTML = '';
+  const info = document.createElement('div'); info.className = 'note'; info.textContent = 'Recorded ' + (blob.size / 1048576).toFixed(1) + ' MB (' + ext.toUpperCase() + ').'; host.appendChild(info);
+  const v = document.createElement('video'); v.controls = true; v.playsInline = true; v.src = URL.createObjectURL(blob); host.appendChild(v);
+  const b = document.createElement('button'); b.className = 'btn primary'; b.textContent = 'Save .' + ext; b.onclick = () => saveFile('hillview-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.' + ext, blob); host.appendChild(b);
+  setStatus('Recording ready.');
+}
+
+/* ================================================================ boot */
+window.hillview = {   // small surface used by tests
+  hash01, sourceValue, paramsAt, rgbToOklab, oklabToRgb, normalize, loadConfig, getState: () => S, openBitmap, setWorkingWidth: w => { forcedW = w; if (source) afterSource(); },
+  pauseAt(t) { clock.playing = false; clock.t = t; syncPlayBtn(); },
+  readCanvas() { render(); const px = new Uint8Array(W * H * 4); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px); return Array.from(px); },
+  stillRGBA() { dirty = true; render(); const px = new Uint8Array(W * H * 4); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px); return { w: W, h: H, data: Array.from(px) }; },
+  get format() { return FMT && FMT.name; }, source: () => source && { kind: source.kind, w: source.w, h: source.h, fps: source.fps },
+};
+function boot() {
+  if (!glOK) { $('#stage').innerHTML = '<p style="padding:24px;color:var(--dim)">This browser does not support WebGL 2, which HillView needs to process video on the GPU.</p>'; return; }
+  try { initGL(); } catch (e) { $('#stage').innerHTML = '<p style="padding:24px;color:var(--rec)">Could not start the GPU pipeline: ' + String(e.message || e).replace(/</g, '&lt;') + '</p>'; return; }
+  canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); setStatus('The GPU context was lost. Reload the page to continue.'); });
+  loadConfig(PRESETS['Glitch pop']); renderRules(); renderMods();
+  useDemo();
+  requestAnimationFrame(tick);
+}
+boot();
+(async () => { try { dl = (await window.claude?.use?.('downloads')) || null; } catch (e) { dl = null; } updateExportUI(); })();
+updateExportUI();
+})();
+</script>

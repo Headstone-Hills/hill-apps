@@ -8,6 +8,26 @@ Two deliverables share one engine:
 2. **Host plugins**: DaVinci Resolve (OpenFX, assumed to load in the free version), then Premiere Pro (After Effects SDK),
    then Final Cut Pro (FxPlug). **Not written yet**; see [DESIGN.md](DESIGN.md). Avid is out of scope.
 
+## Claude Artifact (browser version)
+
+`artifact/hillview.html` is HillView as a single-page Claude Artifact: the same pipeline (frame sampling, quantize, smooth, colour remap with
+OKLab distance, blur, modulation) running as WebGL2 shaders on the viewer's GPU, with no ffmpeg, Python or upload. It opens on a built-in demo
+with a synthetic beat; you can open a video or image, add a music file, pick remap colours with an eyedropper on the picture, and record the
+processed result. Presets use the same JSON as the desktop app and CLI. Export (video, PNG, preset) goes through the artifact `downloads`
+capability, so the viewer confirms each save.
+
+Differences from the desktop app, by design: audio analysis is live (a slow adaptive gain instead of the desktop's whole-file normalisation),
+so audio-reactive results differ from an offline render; recording is real time and produces WebM (MP4 on Safari); palette k-means is a small
+JS implementation, not numpy, so palettes differ; frame interpolation delays output by one step because a live player cannot see the next frame.
+
+```
+artifact/tests/run.sh    # needs ffmpeg and `npm i -g playwright`; headless Chromium on software WebGL
+```
+37 checks: modulation hash bit-identical to Python (incl. negative and 2^40 inputs), LFO/noise/steps within 1e-15, OKLab within 3e-7,
+shader output within 1 level of numpy for posterize, remap (with hue shift and offsets) and blur, interpolation is an exact midpoint cross-fade,
+hold is exact, video/music/record/save flows with `downloads` stubbed, phone layout. **Not verified:** the real claude.ai viewer (its media
+and download policies), MP4/H.264 input in the test browser (Playwright's Chromium has no H.264), and speed on real GPUs.
+
 ## Native core (optional, 10-30x faster)
 
 `core/` is a C++17 library with a plain C interface (`core/include/hillview/hillview.h`) and no host-SDK dependencies. The Python app uses it
