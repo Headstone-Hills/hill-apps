@@ -5,7 +5,7 @@
  * inputs: no hidden state, so frames can be rendered in any order.
  *
  * Images are interleaved RGB, row-major, no padding: f32 in [0,1] or u8.
- * Return values: 0 on success, negative on invalid arguments.
+ * Return values: 0 on success, -1 invalid arguments, -2 out of memory.
  */
 #ifndef HILLVIEW_H
 #define HILLVIEW_H

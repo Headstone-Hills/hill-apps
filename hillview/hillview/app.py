@@ -15,7 +15,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from . import audio as audio_mod, video_io
+from . import audio as audio_mod, native, video_io
 from .engine import Engine
 from .pngio import encode_png
 from .render import render_video, Cancelled
@@ -260,6 +260,7 @@ def serve(port=8765, open_browser=True, host="127.0.0.1"):
         os.makedirs(d, exist_ok=True)
     srv = ThreadingHTTPServer((host, port), Handler)
     url = f"http://127.0.0.1:{srv.server_address[1]}/"
+    print(native.describe())
     print(f"HillView running at {url}   (files are saved under {OUTPUT})\nCtrl+C to quit.")
     if open_browser:
         webbrowser.open(url)

@@ -16,6 +16,7 @@ automatically when built, and the host plugins will link the same library. Witho
 ```
 core/build.sh            # needs cmake + a C++17 compiler; copies the library to hillview/_native/
 core/sanitize.sh         # native tests under AddressSanitizer + UBSan (Linux, g++)
+core/verify_arm64.sh     # ARM64 self-test under qemu + macOS dylib build and structure check
 python -m pytest tests   # native tests build the library themselves if cmake + g++ exist, else skip
 HILLVIEW_NO_NATIVE=1 ...  # force the numpy path;  HILLVIEW_LIB=/path/to/lib to point at a specific build
 ```
@@ -26,10 +27,40 @@ against the Python definitions bit-for-bit (they are what plugins must reproduce
 ctypes releases the GIL, so Python also overlaps two frames. AVX2/FMA versions of the hot loops are chosen at load time (x86-64 Linux);
 other platforms get the baseline build.
 
-**Verified:** Linux x86-64, g++ 13, on an AVX-512 CPU (so the AVX2 variants ran; the baseline variants were run via the sanitizer build).
-93 tests pass; the 33 native tests also pass under ASan + UBSan. **Not verified:** macOS, Windows, ARM builds (the CMake is portable and
-the SIMD dispatch is compiled out there, but I have not built it), and any GPU backend (none exists yet).
+**Verified:** Linux x86-64 (g++ 13, AVX-512 CPU, so the AVX2 variants ran; the baseline variants ran via the sanitizer build) and
+Linux aarch64 under qemu (see Apple Silicon below). The Python suite passes and the native tests also pass under ASan + UBSan.
+`core/tests/selftest.cpp` is a Python-free C++ test (naive double-precision references, golden output from numpy, modulation values from Python).
+**Not verified:** Windows, Intel Macs, any GPU backend (none exists yet).
 
+## Apple Silicon (macOS arm64)
+
+`prebuilt/macos-arm64/libhillview.dylib` is a ready-made arm64 build (macOS >= 11, 71 KB, depends only on libSystem, ad-hoc signed).
+On an Apple Silicon Mac the app finds it automatically; reproduce it with `core/build_macos_arm64.sh` (on a Mac: Apple clang via CMake;
+elsewhere: cross-compiled with zig, `pip install ziglang`, no Apple SDK needed; the output is byte-identical between runs).
+SHA-256 is in `prebuilt/macos-arm64/SHA256SUMS`.
+
+**What I could verify without a Mac** (`core/verify_arm64.sh` reruns all of it):
+- The ARM64 build of the core, run as real aarch64 machine code under qemu, passes the 110-check self-test and produces output identical to x86
+  (same golden matches, same rounding differences). This covers NEON code generation and ARM floating-point behaviour.
+- The dylib's Mach-O structure (`core/tools/macho_info.py`, guarded by `tests/test_macos_arm64.py`): arm64, dylib, min macOS 11.0, embedded ad-hoc code
+  signature (Apple Silicon refuses unsigned libraries), exports only `hv_*`, imports only libSystem (no C++ runtime).
+- Library lookup and platform detection logic, and that a load failure is reported with its reason rather than silently falling back.
+- CMake's Apple settings, by configuring and building with zig as a Darwin cross toolchain.
+
+**What I could NOT verify:** that macOS actually loads and runs the dylib, and how fast it is on an M-series chip. qemu proves the logic, not the
+speed (emulation timing means nothing) and not dyld/Gatekeeper behaviour. Please confirm on your Mac:
+
+```
+brew install ffmpeg                      # the app shells out to ffmpeg/ffprobe
+pip3 install -r requirements.txt
+python3 -m hillview app                  # first line printed: "native core: .../libhillview.dylib"  (or why it is unavailable)
+python3 -m pytest tests                  # native tests exercise the dylib directly
+```
+
+If that first line says *unavailable*, the reason is printed. Likely causes: macOS quarantined a file you downloaded as a zip
+(`xattr -d com.apple.quarantine prebuilt/macos-arm64/libhillview.dylib`), or you want a build from your own toolchain
+(`core/build.sh`, needs Xcode command line tools + cmake; it takes priority over the prebuilt one). Without the library everything still works through numpy,
+just slower. Not done: a double-clickable `.app`, bundling Python/ffmpeg, notarization, an Intel Mac build.
 ## Standalone app
 
 ```

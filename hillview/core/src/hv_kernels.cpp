@@ -3,11 +3,26 @@
 
 #include <cmath>
 #include <cstring>
+#include <utility>
 
 #include "hv_color.hpp"
 #include "hv_util.hpp"
 
 namespace hv {
+
+namespace {
+struct LutHolder {
+    float v[kLutN + 1];
+    LutHolder() {
+        for (int i = 0; i <= kLutN; ++i) {
+            double x = (double)i / kLutN;
+            v[i] = (float)(x <= 0.04045 ? x / 12.92 : std::pow((x + 0.055) / 1.055, 2.4));
+        }
+    }
+};
+const LutHolder g_lut;   // constructed at load time
+}  // namespace
+const float *const kSrgbLut = g_lut.v;
 
 // ------------------------------------------------------------------ quantize
 HV_MV static void posterize_span(const float *in, float *out, size_t n, float levels_m1, float inv) {
@@ -60,21 +75,24 @@ static void box_valid_rgb(const float *in, float *out, int n, int k) {
 }
 
 // Horizontal blur: each row is edge-padded by 3r once, then three box passes.
-static void hblur(const float *src, float *dst, int w, int h, int r, int threads) {
+static bool hblur(const float *src, float *dst, int w, int h, int r, int threads) {
+    std::atomic<bool> oom{false};
     parallel_for(h, threads, 8, [&](int y0, int y1) {
         int pw = w + 6 * r;
-        std::vector<float> A((size_t)pw * 3), B((size_t)pw * 3);
+        FBuf A((size_t)pw * 3), B((size_t)pw * 3);
+        if (!A.ok() || !B.ok()) { oom = true; return; }
         for (int y = y0; y < y1; ++y) {
             const float *row = src + (size_t)y * w * 3;
-            for (int i = 0; i < 3 * r; ++i) std::memcpy(&A[3 * i], row, 3 * sizeof(float));
-            std::memcpy(&A[3 * 3 * r], row, (size_t)w * 3 * sizeof(float));
-            for (int i = 0; i < 3 * r; ++i) std::memcpy(&A[3 * (3 * r + w + i)], row + 3 * (w - 1), 3 * sizeof(float));
-            float *in = A.data(), *out = B.data();
+            for (int i = 0; i < 3 * r; ++i) std::memcpy(A.get() + 3 * i, row, 3 * sizeof(float));
+            std::memcpy(A.get() + 3 * 3 * r, row, (size_t)w * 3 * sizeof(float));
+            for (int i = 0; i < 3 * r; ++i) std::memcpy(A.get() + 3 * (3 * r + w + i), row + 3 * (w - 1), 3 * sizeof(float));
+            float *in = A.get(), *out = B.get();
             int n = pw;
             for (int p = 0; p < 3; ++p) { box_valid_rgb(in, out, n, 2 * r); std::swap(in, out); n -= 2 * r; }
             std::memcpy(dst + (size_t)y * w * 3, in, (size_t)w * 3 * sizeof(float));
         }
     });
+    return !oom;
 }
 
 // acc += add - sub; out = acc * scale   (vector over a band of columns)
@@ -87,20 +105,22 @@ HV_MV static void run_init(float *acc, const float *rows, int stride, int count,
 }
 
 // Vertical blur in column bands: a band's padded copy stays in L2 while the three passes run.
-static void vblur(const float *src, float *dst, int w, int h, int r, int threads) {
+static bool vblur(const float *src, float *dst, int w, int h, int r, int threads) {
     const int BW = 16;                         // pixels per band
     int nb = (w + BW - 1) / BW;
+    std::atomic<bool> oom{false};
     parallel_for(nb, threads, 1, [&](int b0, int b1) {
         int ph = h + 6 * r, k = 2 * r;
-        std::vector<float> A((size_t)ph * BW * 3), B((size_t)ph * BW * 3);
+        FBuf A((size_t)ph * BW * 3), B((size_t)ph * BW * 3);
+        if (!A.ok() || !B.ok()) { oom = true; return; }
         float acc[BW * 3];
         for (int b = b0; b < b1; ++b) {
             int x0 = b * BW, bwpx = std::min(BW, w - x0), n = bwpx * 3;
             for (int i = 0; i < ph; ++i) {
                 int sy = std::min(std::max(i - 3 * r, 0), h - 1);
-                std::memcpy(&A[(size_t)i * n], src + ((size_t)sy * w + x0) * 3, (size_t)n * sizeof(float));
+                std::memcpy(A.get() + (size_t)i * n, src + ((size_t)sy * w + x0) * 3, (size_t)n * sizeof(float));
             }
-            float *in = A.data(), *out = B.data();
+            float *in = A.get(), *out = B.get();
             int rows = ph;
             float scale = 1.0f / (float)(k + 1);
             for (int p = 0; p < 3; ++p) {
@@ -114,15 +134,16 @@ static void vblur(const float *src, float *dst, int w, int h, int r, int threads
             for (int y = 0; y < h; ++y) std::memcpy(dst + ((size_t)y * w + x0) * 3, in + (size_t)y * n, (size_t)n * sizeof(float));
         }
     });
+    return !oom;
 }
 
-bool blur(const float *in, float *out, float *tmp, int w, int h, float sigma, int threads) {
-    if (sigma < 0.4f) return false;
+int blur(const float *in, float *out, float *tmp, int w, int h, float sigma, int threads) {
+    if (sigma < 0.4f) return 0;
     int r = (int)std::nearbyint((std::sqrt(4.0 * sigma * sigma + 1.0) - 1.0) / 2.0);   // 3 boxes: var = 3(w^2-1)/12
     if (r < 1) r = 1;
-    vblur(in, tmp, w, h, r, threads);
-    hblur(tmp, out, w, h, r, threads);
-    return true;
+    if (!vblur(in, tmp, w, h, r, threads)) return -2;
+    if (!hblur(tmp, out, w, h, r, threads)) return -2;
+    return 0;
 }
 
 // ------------------------------------------------------------------ colour remap
@@ -169,7 +190,7 @@ static void remap_span(const float *in, float *out, int npx, const HVRule *rules
 }
 
 void remap(const float *in, float *out, int w, int h, const HVRule *rules, int nr, int threads) {
-    const float *lv = lut().v;
+    const float *lv = kSrgbLut;
     parallel_for(h, threads, 16, [&](int y0, int y1) {
         remap_span(in + (size_t)y0 * w * 3, out + (size_t)y0 * w * 3, (y1 - y0) * w, rules, nr, lv);
     });

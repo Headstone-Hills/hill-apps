@@ -18,6 +18,7 @@ int run_chain(const float *in, float *out, int w, int h, const HVFrameParams &p,
     if (remaining == 0) { std::memcpy(out, in, n * sizeof(float)); return 0; }
 
     float *bufs[3] = {hv::scratch(first_slot, n), hv::scratch(first_slot + 1, n), hv::scratch(first_slot + 2, n)};
+    if (!bufs[0] || !bufs[1] || !bufs[2]) return -2;
     auto pick = [&](const float *a, const float *b) -> float * {
         for (float *x : bufs) if (x != a && x != b) return x;
         return bufs[0];
@@ -31,9 +32,10 @@ int run_chain(const float *in, float *out, int w, int h, const HVFrameParams &p,
         else hv::apply_palette(cur, d, w, h, p.palette, p.palette_n, threads);
         cur = d;
     }
+    int rc = 0;
     auto do_blur = [&](float sigma) {
         float *d = dest(--remaining == 0);
-        hv::blur(cur, d, pick(cur, d), w, h, sigma, threads);
+        if (rc == 0) rc = hv::blur(cur, d, pick(cur, d), w, h, sigma, threads);
         cur = d;
     };
     if (smooth) do_blur(p.smooth_sigma);
@@ -43,7 +45,7 @@ int run_chain(const float *in, float *out, int w, int h, const HVFrameParams &p,
         cur = d;
     }
     if (blur2) do_blur(p.blur_sigma);
-    return 0;
+    return rc;
 }
 
 inline bool bad(int w, int h, const void *a, const void *b, const HVFrameParams *p) {
@@ -65,6 +67,7 @@ int hv_process_u8(const uint8_t *in, uint8_t *out, int w, int h, const HVFramePa
     if (bad(w, h, in, out, p)) return -1;
     const size_t n = (size_t)w * h * 3;
     float *fin = hv::scratch(3, n), *fout = hv::scratch(4, n);   // slots 0-2 belong to run_chain
+    if (!fin || !fout) return -2;
     hv::u8_to_f32(in, fin, w, h, threads);
     int rc = run_chain(fin, fout, w, h, *p, threads, 0);
     if (rc == 0) hv::f32_to_u8(fout, out, w, h, threads);

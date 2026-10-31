@@ -1,11 +1,13 @@
 """ctypes binding for the C++ core (core/). Optional: everything falls back to numpy.
 
-Lookup order: $HILLVIEW_LIB, hillview/_native/, ../core/build/. Build with core/build.sh.
+Lookup order: $HILLVIEW_LIB, hillview/_native/ (your own build: core/build.sh), prebuilt/<os>-<arch>/ (checked in),
+../core/build/.
 ctypes releases the GIL during calls, so Python threads can drive it in parallel.
 """
 import ctypes as C
 import glob
 import os
+import platform
 import sys
 import numpy as np
 
@@ -29,14 +31,30 @@ EXPECTED_VERSION = 1
 _lib, _tried = None, False
 
 
+def platform_tag():
+    """e.g. 'macos-arm64', 'linux-x86_64': names the prebuilt/ subdirectory for this machine."""
+    osname = {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux")
+    m = platform.machine().lower()
+    return f"{osname}-{ {'x86_64': 'x86_64', 'amd64': 'x86_64', 'arm64': 'arm64', 'aarch64': 'arm64'}.get(m, m) }"
+
+
+def _libname():
+    return {"win32": "hillview.dll", "darwin": "libhillview.dylib"}.get(sys.platform, "libhillview.so")
+
+
 def _candidates():
     env = os.environ.get("HILLVIEW_LIB")
     if env:
         yield env
-    ext = {"win32": "hillview.dll", "darwin": "libhillview.dylib"}.get(sys.platform, "libhillview.so")
-    for d in (os.path.join(_here, "_native"), os.path.join(_here, "..", "core", "build")):
-        yield os.path.join(d, ext)
-        yield from sorted(glob.glob(os.path.join(d, ext + "*")))
+    name = _libname()
+    for d in (os.path.join(_here, "_native"),
+              os.path.join(_here, "..", "prebuilt", platform_tag()),
+              os.path.join(_here, "..", "core", "build")):
+        yield os.path.join(d, name)
+        yield from sorted(glob.glob(os.path.join(d, name + "*")))
+
+
+_errors = []
 
 
 def load(force=False):
@@ -45,7 +63,9 @@ def load(force=False):
     if _tried and not force:
         return _lib
     _tried, _lib = True, None
+    del _errors[:]
     if os.environ.get("HILLVIEW_NO_NATIVE"):
+        _errors.append("disabled by HILLVIEW_NO_NATIVE")
         return None
     for path in _candidates():
         if not os.path.exists(path):
@@ -53,6 +73,7 @@ def load(force=False):
         try:
             lib = C.CDLL(path)
             if lib.hv_version() != EXPECTED_VERSION:
+                _errors.append(f"{path}: core version {lib.hv_version()}, expected {EXPECTED_VERSION}")
                 continue
             fp, u8 = C.POINTER(C.c_float), C.POINTER(C.c_uint8)
             pp = C.POINTER(HVFrameParams)
@@ -65,10 +86,20 @@ def load(force=False):
             lib.hv_mod_source.argtypes = [C.c_int, C.c_int, C.c_double, C.c_double, C.c_double, C.c_int64, C.c_double]
             lib.hv_mod_source.restype = C.c_double
             _lib = lib
+            _errors.append(f"loaded {os.path.abspath(path)}")
             return lib
-        except (OSError, AttributeError):
-            continue
+        except (OSError, AttributeError) as e:   # e.g. wrong architecture, missing/invalid code signature
+            _errors.append(f"{path}: {e}")
     return None
+
+
+def describe():
+    """One line for logs: which core is in use, or why numpy is being used instead."""
+    if load() is not None:
+        return f"native core: {_errors[-1][len('loaded '):]}"
+    why = "; ".join(e for e in _errors if not e.startswith("loaded")) or \
+        f"no library found for {platform_tag()} (build it: core/build.sh)"
+    return f"native core: unavailable ({why}); using the slower numpy path"
 
 
 def available():

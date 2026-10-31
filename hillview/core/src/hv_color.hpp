@@ -8,16 +8,8 @@ namespace hv {
 
 constexpr int kLutN = 4096;
 
-struct Lut {
-    float v[kLutN + 1];
-    Lut() {
-        for (int i = 0; i <= kLutN; ++i) {
-            double x = (double)i / kLutN;
-            v[i] = (float)(x <= 0.04045 ? x / 12.92 : std::pow((x + 0.055) / 1.055, 2.4));
-        }
-    }
-};
-inline const Lut &lut() { static const Lut l; return l; }
+// sRGB decode table, filled when the library loads (a function-local static would need the C++ runtime's init guard).
+extern const float *const kSrgbLut;   // kLutN + 1 entries; defined in hv_kernels.cpp
 
 // Cube root for x >= 0: bit-trick seed + two Halley steps (rel. error ~1e-7); vectorises, unlike cbrtf.
 inline float fast_cbrt(float x) {

@@ -3,7 +3,7 @@ import json
 import os
 import sys
 from .modulation import AudioMod
-from . import audio as audio_mod, video_io
+from . import audio as audio_mod, native, video_io
 from .render import render_video
 
 
@@ -25,6 +25,7 @@ def cmd_render(a):
     if not fmt:  # infer from extension
         ext = os.path.splitext(a.output)[1].lstrip(".").lower()
         fmt = next((k for k, v in video_io.available_formats().items() if v["ext"] == ext and v["kind"] != "seq"), "h264")
+    print(native.describe(), file=sys.stderr)
     info = video_io.probe(a.input, a.fps)
     am = None
     if a.audio_mod:
