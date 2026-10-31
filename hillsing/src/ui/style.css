@@ -93,3 +93,9 @@ kbd { padding: 0 5px; margin: 0 1px; border: 1px solid var(--line); border-radiu
 table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
 td { padding: 3px 4px; border-bottom: 1px solid var(--line); }
 td:last-child { text-align: right; white-space: nowrap; }
+
+#midi-file canvas { display: block; width: 100%; height: 150px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; margin-top: 8px; }
+#midi-file input[type='file'] { color: var(--muted); font-size: 13px; }
+select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; max-width: 60vw; }
+button:disabled { opacity: 0.45; cursor: default; }
+.hint.error { color: #ff8a80; }

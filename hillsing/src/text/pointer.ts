@@ -13,6 +13,9 @@ export class LyricPointer {
   get index(): number {
     return this._index;
   }
+  get current(): Lyrics {
+    return this.lyrics;
+  }
   get length(): number {
     return this.lyrics.syllables.length;
   }

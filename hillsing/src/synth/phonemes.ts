@@ -240,3 +240,19 @@ export function buildSyllable(plan: SyllablePlan, scale: number, legato: boolean
   // swept during aspiration make that transition short but still smooth.
   return { onset, nucleus, coda };
 }
+
+export interface SyllableTiming {
+  /** Time the onset consonants take before the vowel starts. */
+  onsetSec: number;
+  /** Time the coda consonants take after note-off (excluding the final fade). */
+  codaSec: number;
+  /** Shortest time the vowel is held once reached, even for a tap. */
+  minVowelSec: number;
+}
+
+/** How long a syllable's consonants take. Used to start consonants early / end them inside a note. */
+export function syllableTiming(plan: SyllablePlan, scale: number): SyllableTiming {
+  const segs = buildSyllable(plan, scale, false);
+  const total = (list: Segment[]): number => list.reduce((t, s) => t + s.dur, 0) / 1000;
+  return { onsetSec: total(segs.onset), codaSec: total(segs.coda), minVowelSec: MIN_VOWEL_HOLD_MS / 1000 };
+}

@@ -1,6 +1,7 @@
 // AudioWorklet entry point: wraps KlattVoice. Bundled by Vite via `?worker&url`.
 import { KlattVoice, type VoiceParamName } from './klatt';
-import type { SyllablePlan } from './types';
+import { SequenceRunner } from './sequence';
+import type { SeqCommand, SyllablePlan } from './types';
 
 // Minimal typings for the AudioWorkletGlobalScope (not part of lib.dom).
 declare class AudioWorkletProcessor {
@@ -15,13 +16,30 @@ export type WorkletMessage =
   | { type: 'noteOff' }
   | { type: 'f0'; f0: number }
   | { type: 'param'; name: VoiceParamName; value: number }
-  | { type: 'stop' };
+  | { type: 'stop' }
+  | { type: 'seqLoad'; cmds: SeqCommand[]; lengthSec: number; startSec: number }
+  | { type: 'seqPlay' }
+  | { type: 'seqPause' }
+  | { type: 'seqStop' }
+  | { type: 'seqSeek'; sec: number }
+  | { type: 'seqLoop'; loop: boolean };
+
+/** Messages the worklet posts back to the main thread. */
+export type WorkletEvent =
+  | { type: 'seqPos'; sec: number; playing: boolean }
+  | { type: 'seqEnded' };
+
+/** Report the sequence position about every 2048 samples (~46 ms at 44.1 kHz). */
+const POS_REPORT_SAMPLES = 2048;
 
 class KlattProcessor extends AudioWorkletProcessor {
   private readonly voice = new KlattVoice(sampleRate);
+  private readonly seq = new SequenceRunner(this.voice, sampleRate);
+  private sinceReport = 0;
 
   constructor() {
     super();
+    this.seq.onEnded = () => this.port.postMessage({ type: 'seqEnded' } satisfies WorkletEvent);
     this.port.onmessage = (e: MessageEvent<WorkletMessage>) => {
       const m = e.data;
       switch (m.type) {
@@ -40,6 +58,28 @@ class KlattProcessor extends AudioWorkletProcessor {
         case 'stop':
           this.voice.stop();
           break;
+        case 'seqLoad':
+          this.seq.load(m.cmds, m.lengthSec, m.startSec);
+          this.report();
+          break;
+        case 'seqPlay':
+          this.seq.play();
+          break;
+        case 'seqPause':
+          this.seq.pause();
+          this.report();
+          break;
+        case 'seqStop':
+          this.seq.stop();
+          this.report();
+          break;
+        case 'seqSeek':
+          this.seq.seek(m.sec);
+          this.report();
+          break;
+        case 'seqLoop':
+          this.seq.loop = m.loop;
+          break;
       }
     };
   }
@@ -47,9 +87,16 @@ class KlattProcessor extends AudioWorkletProcessor {
   process(_inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     const out = outputs[0];
     if (!out || out.length === 0) return true;
-    this.voice.render(out[0]);
+    this.seq.render(out[0]);
     for (let c = 1; c < out.length; c++) out[c].set(out[0]);
+    this.sinceReport += out[0].length;
+    if (this.seq.isPlaying && this.sinceReport >= POS_REPORT_SAMPLES) this.report();
     return true;
+  }
+
+  private report(): void {
+    this.sinceReport = 0;
+    this.port.postMessage({ type: 'seqPos', sec: this.seq.positionSec, playing: this.seq.isPlaying } satisfies WorkletEvent);
   }
 }
 

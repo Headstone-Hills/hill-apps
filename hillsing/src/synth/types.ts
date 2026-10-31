@@ -51,3 +51,12 @@ export interface Segment {
   /** Minimum time to stay in a hold segment after note-off is requested. */
   minHold?: number;
 }
+
+/**
+ * A voice command scheduled at a time in seconds (engine time). The sequencer applies it at
+ * the exact sample, inside the AudioWorklet, so playback timing does not depend on the main
+ * thread.
+ */
+export type SeqCommand =
+  | { t: number; kind: 'on'; plan: SyllablePlan; f0: number; velocity: number; legato: boolean }
+  | { t: number; kind: 'off' };

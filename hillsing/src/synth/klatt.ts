@@ -231,9 +231,13 @@ export class KlattVoice {
     }
   }
 
-  /** One control-rate update: parameter interpolation, segment sequencing, pitch, filters. */
-  private tick(): void {
-    this.elapsed += BLOCK;
+  /**
+   * One control-rate update covering the next `n` samples: parameter interpolation, segment
+   * sequencing, pitch, filters. `n` is the real chunk length (<= BLOCK), so timing stays exact
+   * when a render call is split at sequencer command boundaries.
+   */
+  private tick(n: number): void {
+    this.elapsed += n;
     const seg = this.queue[this.qi];
     const a = Math.min(1, this.elapsed / this.transSamples);
     for (const k of TARGET_KEYS) this.cur[k] = this.from[k] + (this.to[k] - this.from[k]) * a;
@@ -245,7 +249,7 @@ export class KlattVoice {
     }
 
     // Pitch: glide, vibrato, tiny random drift for naturalness.
-    const dt = BLOCK / this.fs;
+    const dt = n / this.fs;
     const glideTau = Math.max(0.001, this.portamento / 1000 / 3);
     this.logF0 += (this.logF0Target - this.logF0) * (1 - Math.exp(-dt / glideTau));
     this.vibPhase += this.vibratoRate * dt;
@@ -286,7 +290,7 @@ export class KlattVoice {
         out.fill(0, b);
         return;
       }
-      this.tick();
+      this.tick(m);
       if (!this.active) {
         out.fill(0, b);
         return;

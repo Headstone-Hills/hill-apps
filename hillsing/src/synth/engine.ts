@@ -1,16 +1,26 @@
 import type { VoiceSink } from '../engine/performance';
 import type { VoiceParamName } from './klatt';
-import type { SyllablePlan } from './types';
-import type { WorkletMessage } from './worklet';
+import type { SeqCommand, SyllablePlan } from './types';
+import type { WorkletEvent, WorkletMessage } from './worklet';
 import workletUrl from './worklet.ts?worker&url';
 
 /** Main-thread handle to the synth running in an AudioWorklet. */
 export class SingerEngine implements VoiceSink {
+  /** Sequence position updates from the worklet (engine seconds). */
+  onSeqPosition: ((sec: number, playing: boolean) => void) | null = null;
+  onSeqEnded: (() => void) | null = null;
+
   private constructor(
     readonly context: AudioContext,
     private readonly node: AudioWorkletNode,
     private readonly analyser: AnalyserNode,
-  ) {}
+  ) {
+    node.port.onmessage = (e: MessageEvent<WorkletEvent>) => {
+      const m = e.data;
+      if (m.type === 'seqPos') this.onSeqPosition?.(m.sec, m.playing);
+      else if (m.type === 'seqEnded') this.onSeqEnded?.();
+    };
+  }
 
   /** Must be called from a user gesture so the AudioContext may start. */
   static async create(): Promise<SingerEngine> {
@@ -42,6 +52,26 @@ export class SingerEngine implements VoiceSink {
   }
   stop(): void {
     this.post({ type: 'stop' });
+  }
+
+  // ---- Sequence (MIDI file) playback, scheduled sample-accurately in the worklet ----
+  seqLoad(cmds: SeqCommand[], lengthSec: number, startSec: number): void {
+    this.post({ type: 'seqLoad', cmds, lengthSec, startSec });
+  }
+  seqPlay(): void {
+    this.post({ type: 'seqPlay' });
+  }
+  seqPause(): void {
+    this.post({ type: 'seqPause' });
+  }
+  seqStop(): void {
+    this.post({ type: 'seqStop' });
+  }
+  seqSeek(sec: number): void {
+    this.post({ type: 'seqSeek', sec });
+  }
+  seqLoop(loop: boolean): void {
+    this.post({ type: 'seqLoop', loop });
   }
 
   /** Peak absolute sample of the most recent ~1024 output samples (0..1). */

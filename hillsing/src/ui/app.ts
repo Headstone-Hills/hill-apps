@@ -6,6 +6,7 @@ import type { VoiceParamName } from '../synth/klatt';
 import { loadDict, makeLookup, type PhonemeLookup } from '../text/cmudict';
 import { buildLyrics } from '../text/lyrics';
 import { LyricPointer } from '../text/pointer';
+import { MidiFilePanel } from './midifile';
 
 const DEFAULT_LYRICS = 'Twinkle twinkle little star, how I wonder what you are';
 const LYRICS_KEY = 'hillsing.lyrics.v1';
@@ -44,6 +45,7 @@ export function startApp(): void {
   };
   const performance = new Performance(sink, pointer);
   const bindings = new NavBindings(storage);
+  let filePanel: MidiFilePanel | null = null;
 
   // ---- Lyrics ----------------------------------------------------------------------
   const lyricsBox = $<HTMLTextAreaElement>('lyrics');
@@ -87,6 +89,7 @@ export function startApp(): void {
     end.title = 'End of text';
     sylBox.append(end);
     updatePointerView();
+    filePanel?.lyricsChanged();
   }
 
   function updatePointerView(): void {
@@ -197,6 +200,7 @@ export function startApp(): void {
       paramValues.set(p.name, v);
       out.textContent = p.fmt(v);
       engine?.setParam(p.name, v);
+      if (p.name === 'consonantScale') filePanel?.settingsChanged(); // changes consonant pre-roll
     };
     input.addEventListener('input', apply);
     input.addEventListener('pointerup', () => input.blur()); // so computer keys play again
@@ -218,6 +222,7 @@ export function startApp(): void {
     try {
       engine = await SingerEngine.create();
       for (const [name, value] of paramValues) engine.setParam(name, value);
+      filePanel?.engineReady(engine);
       audioStatus.textContent = `Audio on (${engine.context.sampleRate} Hz)`;
       startBtn.textContent = 'Audio running';
       window.setTimeout(() => {
@@ -238,6 +243,15 @@ export function startApp(): void {
     }
   }
   startBtn.addEventListener('click', () => void startAudio());
+
+  filePanel = new MidiFilePanel({
+    syllables: () => pointer.current.syllables,
+    consonantScale: () => paramValues.get('consonantScale') ?? 0.7,
+    ensureEngine: async () => {
+      await startAudio();
+      return engine;
+    },
+  });
 
   // ---- Input: MIDI + computer keyboard ---------------------------------------------
   function handleEvent(ev: MidiEvent): void {
@@ -303,6 +317,9 @@ export function startApp(): void {
     } else if (e.code === 'KeyX') {
       octave = Math.min(3, octave + 1);
       showOctave();
+    } else if (e.code === 'Space' && !(e.target instanceof HTMLButtonElement)) {
+      void filePanel?.togglePlay();
+      e.preventDefault();
     } else if (e.code === 'ArrowLeft') {
       (e.shiftKey ? navActions.wordBack : navActions.back)();
       e.preventDefault();
