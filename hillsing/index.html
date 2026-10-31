@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HillSing</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <header>
+      <h1>HillSing</h1>
+      <div class="status">
+        <button id="start" type="button">Start audio</button>
+        <span id="audio-status">Audio off</span>
+        <span id="midi-status">MIDI: not connected</span>
+        <span id="latency"></span>
+        <div class="meter" title="Output level"><div id="meter-fill"></div></div>
+      </div>
+    </header>
+
+    <main>
+      <section>
+        <h2>Lyrics</h2>
+        <textarea id="lyrics" rows="4" spellcheck="false" aria-label="Lyrics text"></textarea>
+        <div id="dict-status" class="hint">Loading dictionary…</div>
+      </section>
+
+      <section>
+        <h2>Syllables <span id="position" class="hint"></span></h2>
+        <div class="nav">
+          <button id="nav-reset" type="button" title="Home">⏮ Start</button>
+          <button id="nav-word-back" type="button" title="Shift+Left">◀◀ Word</button>
+          <button id="nav-back" type="button" title="Left">◀ Syllable</button>
+          <button id="nav-forward" type="button" title="Right">Syllable ▶</button>
+          <button id="nav-word-forward" type="button" title="Shift+Right">Word ▶▶</button>
+          <label class="inline"><input id="wrap" type="checkbox" /> Loop at end</label>
+        </div>
+        <div id="syllables" class="syllables" aria-live="polite"></div>
+        <div class="hint">Each new note sings the highlighted syllable. Click a syllable to jump to it.</div>
+      </section>
+
+      <section class="grid">
+        <div>
+          <h2>Voice</h2>
+          <label>Formant shift <output id="out-formant"></output>
+            <input id="formant" type="range" min="0.7" max="1.4" step="0.01" value="1" />
+          </label>
+          <label>Consonant length <output id="out-consonant"></output>
+            <input id="consonant" type="range" min="0.3" max="1.2" step="0.01" value="0.7" />
+          </label>
+          <label>Glide time (legato) <output id="out-glide"></output>
+            <input id="glide" type="range" min="0" max="300" step="1" value="45" />
+          </label>
+          <label>Volume <output id="out-volume"></output>
+            <input id="volume" type="range" min="0" max="1" step="0.01" value="0.8" />
+          </label>
+        </div>
+
+        <div>
+          <h2>Play without a MIDI keyboard</h2>
+          <p class="hint">
+            Computer keys: <kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><kbd>F</kbd><kbd>G</kbd><kbd>H</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd>
+            are white keys, <kbd>W</kbd><kbd>E</kbd><kbd>T</kbd><kbd>Y</kbd><kbd>U</kbd><kbd>O</kbd><kbd>P</kbd> are black keys.
+            <kbd>Z</kbd>/<kbd>X</kbd> change octave (<span id="octave"></span>). Hold one key and press another for legato.
+            Arrow keys / Home navigate the lyrics when the text box is not focused.
+          </p>
+          <h2>MIDI navigation</h2>
+          <p class="hint">Bind a spare key, pad or CC button: click Learn, then press it. Bound notes are not sung.</p>
+          <table id="bindings"></table>
+          <p class="hint">Mod wheel = vibrato, pitch wheel = bend (±2 semitones), sustain pedal holds the vowel.</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

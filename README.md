@@ -6,6 +6,7 @@ A suite of four custom music apps for the RG35XXSP handheld (muOS / PortMaster):
 - **HillChord** — chord/note instrument with looper, arpeggiator, and effects
 - **HillSequencer** — 8-track step sequencer built on HillChord's instrument engine
 - **HillBand** — 8-track × 16-step hybrid (4 melodic tracks + 4 drum tracks)
+- **HillSing** — browser-based singing instrument: type lyrics, play them on a MIDI keyboard through a formant synth (a TypeScript web app, not a handheld port)
 
 Each app has its own `README.md` with architecture notes, button bindings, and known quirks.
 
@@ -16,6 +17,7 @@ hillbeat/        drum machine
 hillchord/       chord/note instrument
 hillsequencer/   8-track sequencer
 hillband/        melodic + drum hybrid sequencer
+hillsing/        lyric-singing formant synth (web app; see its README)
 ```
 
 ## Samples
