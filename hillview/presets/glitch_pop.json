@@ -1,0 +1,20 @@
+{
+  "seed": 7,
+  "quantize": {"enabled": true, "mode": "kmeans", "colors": 5},
+  "smooth": {"sigma": 2.0},
+  "remap": {
+    "rules": [
+      {"from": "#202020", "to": "#ff00aa", "threshold": 0.18, "softness": 0.08},
+      {"from": "#e0e0e0", "to": "#00ffd0", "threshold": 0.2, "softness": 0.08}
+    ],
+    "hue_shift": 0.0
+  },
+  "blur": {"sigma": 0.0},
+  "sampling": {"step": 4, "interp": "blend"},
+  "modulation": [
+    {"source": {"type": "audio", "channel": "low"},  "target": "smooth.sigma",    "depth": 8},
+    {"source": {"type": "audio", "channel": "onset"}, "target": "remap.threshold", "depth": 0.25},
+    {"source": {"type": "noise", "hz": 0.7, "seed": 3}, "target": "remap.hue_shift", "depth": 3.14},
+    {"source": {"type": "steps", "hz": 2, "seed": 9}, "target": "blur.sigma", "depth": 3, "bipolar": false}
+  ]
+}
