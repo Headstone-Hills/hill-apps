@@ -267,6 +267,27 @@ Code: `src/editor/notes.ts` (note operations and undo history, pure), `src/edito
 edits, pure), `src/ui/pianoroll.ts` (the canvas), `src/ui/midifile.ts` (wiring to playback). Tests:
 `tests/editor.test.ts`. The canvas only covers the visible window, so long songs do not hit canvas size limits.
 
+## UTAU voicebanks (stage 1)
+
+A second voice source next to the formant synth: recorded UTAU samples, pitch-shifted by a TD-PSOLA
+sampler. **Stage 1 is the loader and an alias audition panel**; connecting it to the sequencer and the
+editor (English lyrics -> the bank's aliases) comes next.
+
+- **Loading:** *UTAU voicebank* panel -> pick the folder that contains `oto.ini` (or a parent of it). Files are
+  read in place by the browser; nothing is uploaded, copied or bundled. **Voicebanks are copyrighted and their
+  terms usually forbid redistribution, so none may ever be added to this repository or the app.**
+- **Formats:** `oto.ini` (Shift-JIS or UTF-8), 8/16/24/32-bit PCM or float WAV, and UTAU `.frq` pitch files
+  (`FREQ0003`). Cutoff follows UTAU: negative = usable length after the offset, positive = trimmed from the end.
+- **Sampler:** `src/utau/psola.ts`. The consonant part (the oto *consonant* length) plays at natural speed;
+  the rest is stretched to the requested length; voiced parts are re-spaced at the target pitch from the bank's
+  own pitch track, unvoiced parts are copied unshifted. Good for moderate shifts (about a fourth either way).
+- **Tests:** `tests/utau.test.ts` uses synthetic data only. To also check a real bank on your machine:
+  `HILLSING_UTAU_BANK=/path/to/bank/folder npx vitest run tests/utau.test.ts`.
+
+Checked against the English "Kasane Teto" bank (X-SAMPA phonemes, VCV + CV aliases such as `- @`, `@ h@`, `h@`):
+2,681 entries, no missing WAVs, and a rendered sample's measured pitch is within 0.5% of the request from
+180 to 330 Hz.
+
 ## Roadmap
 
 Agreed scope, in order: (1) **v0.1 live singing**, done; (2) **MIDI file import and playback**

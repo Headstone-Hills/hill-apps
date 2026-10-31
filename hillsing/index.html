@@ -84,6 +84,22 @@
         <div class="hint">Double-click empty space to add a note, drag to move, drag an edge to resize, Delete to remove. Double-click a word under a note to change it; <b>Hold vowel ~</b> makes a note continue the previous vowel (melisma). Chords are reduced to their top note; overlapping notes are legato. Click the ruler to move the playhead; Cmd/Ctrl+scroll zooms.</div>
       </section>
 
+      <section id="utau">
+        <h2>UTAU voicebank <span id="utau-name" class="hint"></span></h2>
+        <div class="nav">
+          <label class="inline">Voicebank folder <input id="utau-folder" type="file" webkitdirectory aria-label="Choose a UTAU voicebank folder" /></label>
+        </div>
+        <div id="utau-status" class="hint">Pick a UTAU voicebank folder (the one with oto.ini). The files are read in place; nothing is uploaded or copied. Voicebanks are never included with HillSing.</div>
+        <div class="nav">
+          <label class="inline">Alias <input id="utau-alias" list="utau-alias-list" size="14" autocomplete="off" spellcheck="false" /></label>
+          <datalist id="utau-alias-list"></datalist>
+          <label class="inline">Pitch (MIDI note) <input id="utau-pitch" type="number" min="24" max="96" step="1" value="60" style="width: 5em" /></label>
+          <span id="utau-pitch-name" class="hint"></span>
+          <label class="inline" title="0 keeps the sample's natural length; otherwise the vowel part is stretched">Length (ms) <input id="utau-len" type="number" min="0" step="50" value="0" style="width: 6em" /></label>
+          <button id="utau-play" type="button" disabled>▶ Play alias</button>
+        </div>
+      </section>
+
       <section id="lab">
         <h2>Voice lab</h2>
         <div class="nav">

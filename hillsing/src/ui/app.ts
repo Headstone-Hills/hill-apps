@@ -9,6 +9,7 @@ import { LyricPointer } from '../text/pointer';
 import { getVoice, VOICES } from '../synth/voices';
 import { VoiceLab } from './lab';
 import { MidiFilePanel } from './midifile';
+import { UtauPanel } from './utau';
 import { Spectrogram } from './spectrogram';
 
 const DEFAULT_LYRICS = 'Twinkle twinkle little star, how I wonder what you are';
@@ -288,6 +289,8 @@ export function startApp(): void {
     },
     lookup: () => lookup,
   });
+
+  new UtauPanel();
 
   const spectrogram = new Spectrogram($<HTMLCanvasElement>('spectrogram'));
   lab = new VoiceLab({
