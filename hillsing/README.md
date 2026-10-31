@@ -254,5 +254,6 @@ through the same engine, done in v0.2; (2b) **voice lab, multiple voices, legato
 consonants, melisma data model**, done in v0.3; (3) piano-roll editor with a syllable row (the current preview is read-only); (4) per-note tuning: pitch
 offset/curve, vibrato, formant shift, consonant/vowel timing, with global → selection → note
 overrides; (5) record live performances into the editor as notes + syllables; (6) Electron wrapper
-for Apple Silicon Mac (Electron rather than Tauri, since Chromium keeps Web MIDI behaviour
-identical); (7) WAV export through the same engine in an `OfflineAudioContext`.
+for Apple Silicon Mac, **done** (`electron/main.cjs`; `npm run app:build` writes
+`release/HillSing-darwin-arm64/HillSing.app`; Electron rather than Tauri, since Chromium keeps Web MIDI
+behaviour identical); (7) WAV export through the same engine in an `OfflineAudioContext`.
