@@ -607,6 +607,14 @@ export function startApp(): void {
           return;
         }
         lastNoteOn = ev.note;
+        if (pointer.atEnd && !performance.hold && !pointer.wrap && pointer.length > 0) {
+          // Every key is silent at the end of the text: say why, instead of leaving it looking broken.
+          audioStatus.textContent = 'End of the lyrics: press ⏮ Start (Home) to sing from the beginning, or tick Loop.';
+          for (const id of ['nav-reset', 'piano-start']) $(id).classList.add('nudge');
+          window.setTimeout(() => {
+            for (const id of ['nav-reset', 'piano-start']) $(id).classList.remove('nudge');
+          }, 1500);
+        }
         performance.noteOn(ev.note, ev.velocity);
         break;
       case 'noteOff':
@@ -776,11 +784,27 @@ export function startApp(): void {
   // ---- On-screen piano: for phones and tablets, or anywhere with no keyboard; shown by default on touch screens ----
   const PIANO_KEY = 'hillsing.piano.v1';
   const pianoBar = $('piano');
+  // Inside a frame (the artifact viewer) the page is as tall as its content, so "fixed to the bottom" would put the piano
+  // below everything. There it sits in the page instead, right under the syllables.
+  const framed = (() => {
+    try {
+      return window.self !== window.top;
+    } catch {
+      return true;
+    }
+  })();
+  if (framed) {
+    pianoBar.classList.add('in-page');
+    document.body.classList.add('piano-inline');
+    $('sec-syllables').after(pianoBar);
+  }
   const pianoToggle = $<HTMLButtonElement>('piano-toggle');
   const piano = new OnScreenPiano(
     $('piano-keys'),
     {
       noteOn: (note) => {
+        // iPhones only let audio resume from inside a touch: do it here, in the gesture, not after any waiting.
+        if (engine && engine.context.state !== 'running') void engine.context.resume();
         if (!engine) {
           void startAudio(); // this touch is the user gesture; the next one will sound
           audioStatus.textContent = 'Audio starting: tap a key again.';
@@ -797,6 +821,7 @@ export function startApp(): void {
   );
   $('piano-down').addEventListener('click', () => piano.shiftOctave(-1));
   $('piano-up').addEventListener('click', () => piano.shiftOctave(1));
+  $('piano-start').addEventListener('click', () => navActions.reset());
   $('piano-back').addEventListener('click', () => navActions.back());
   $('piano-fwd').addEventListener('click', () => navActions.forward());
   const setPiano = (on: boolean, remember = true): void => {

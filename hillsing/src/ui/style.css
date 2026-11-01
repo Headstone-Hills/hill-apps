@@ -279,7 +279,7 @@ button.collapse { height: 18px; padding: 0 6px; line-height: 1; font-size: 11px;
 .pk.white.down { background: linear-gradient(#b4dbff, #6cb6ff); }
 .pk.black.down { background: linear-gradient(#3b7fc0, #1d4d7e); }
 .pk-label { position: absolute; bottom: 4px; left: 0; right: 0; text-align: center; font-size: 10px; pointer-events: none; }
-body.piano-on { padding-bottom: var(--piano-h, 200px); }
+body.piano-on:not(.piano-inline) { padding-bottom: var(--piano-h, 200px); }
 #piano-melisma.active, #piano-hold.active { background: var(--next); border-color: var(--next); color: #1a1405; }
 @media (max-width: 760px) {
   .piano-keys { height: 104px; }
@@ -302,3 +302,6 @@ body.piano-on { padding-bottom: var(--piano-h, 200px); }
 @media (max-width: 760px) {
   .voice-load button { padding: 8px 12px; font-size: 14px; min-height: 40px; }
 }
+button.nudge { outline: 2px solid var(--next); box-shadow: 0 0 10px var(--next); }
+.piano-bar.in-page { position: static; z-index: auto; grid-column: 1 / -1; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.piano-bar.in-page[hidden] { display: none; }
