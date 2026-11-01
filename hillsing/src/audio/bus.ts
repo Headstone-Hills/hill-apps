@@ -50,6 +50,46 @@ export class AudioBus {
     this.outputId = id;
   }
 
+  private mic: { stream: MediaStream; source: MediaStreamAudioSourceNode; gain: GainNode } | null = null;
+  private micLevel = 1;
+
+  /** The audio inputs (microphones) the browser can see, without the virtual cables (a cable that carries our own output would loop). */
+  async inputDevices(): Promise<Array<{ id: string; label: string }>> {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    const all = await navigator.mediaDevices.enumerateDevices();
+    return all
+      .filter((d) => d.kind === 'audioinput' && !/blackhole|loopback|soundflower|aggregate/i.test(d.label))
+      .map((d, i) => ({ id: d.deviceId, label: d.label || `Microphone ${i + 1} (name not available)` }));
+  }
+
+  /**
+   * Mix a microphone into the output (for talking over the music on a call). It goes straight to the output device, past
+   * the effects, the limiter and the second-device monitor, so you do not hear yourself back. No echo cancellation,
+   * noise suppression or auto-gain, which would mangle it. Pass null to turn it off.
+   */
+  async setMic(id: string | null): Promise<void> {
+    if (this.mic) {
+      this.mic.source.disconnect();
+      this.mic.gain.disconnect();
+      for (const t of this.mic.stream.getTracks()) t.stop();
+      this.mic = null;
+    }
+    if (id === null) return;
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { deviceId: id ? { exact: id } : undefined, echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
+    });
+    const source = this.ctx.createMediaStreamSource(stream);
+    const gain = this.ctx.createGain();
+    gain.gain.value = this.micLevel;
+    source.connect(gain).connect(this.ctx.destination);
+    this.mic = { stream, source, gain };
+  }
+
+  setMicLevel(level: number): void {
+    this.micLevel = Math.max(0, Math.min(2, level));
+    if (this.mic) this.mic.gain.gain.setTargetAtTime(this.micLevel, this.ctx.currentTime, 0.02);
+  }
+
   get currentOutput(): string {
     return this.outputId;
   }

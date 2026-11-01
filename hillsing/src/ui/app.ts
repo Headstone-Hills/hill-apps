@@ -516,8 +516,56 @@ export function startApp(): void {
       );
       monSel.blur();
     });
-    navigator.mediaDevices?.addEventListener?.('devicechange', () => void refresh());
+    // Microphone mixed into the output (so you can talk while the music plays into a call).
+    const micSel = $<HTMLSelectElement>('mic-device');
+    const micLevel = $<HTMLInputElement>('mic-level');
+    const MIC_KEY = 'hillsing.mic.v1';
+    const MIC_LEVEL_KEY = 'hillsing.micLevel.v1';
+    const savedLevel = Number(storage?.getItem(MIC_LEVEL_KEY));
+    if (Number.isFinite(savedLevel) && savedLevel >= 0 && savedLevel <= 2 && storage?.getItem(MIC_LEVEL_KEY) !== null) micLevel.value = String(savedLevel);
+    bus.setMicLevel(Number(micLevel.value));
+    micLevel.addEventListener('input', () => {
+      bus.setMicLevel(Number(micLevel.value));
+      try {
+        storage?.setItem(MIC_LEVEL_KEY, micLevel.value);
+      } catch {
+        /* storage unavailable: fine */
+      }
+    });
+    const refreshMics = async (): Promise<void> => {
+      const mics = await bus.inputDevices();
+      micSel.textContent = '';
+      micSel.append(new Option('Off', ''));
+      for (const d of mics) micSel.append(new Option(d.label, d.id));
+      const saved = find(mics, storage?.getItem(MIC_KEY));
+      if (saved) {
+        micSel.value = saved.id;
+        bus.setMic(saved.id).catch(() => (micSel.value = ''));
+      }
+    };
+    micSel.addEventListener('change', () => {
+      bus.setMic(micSel.value === '' ? null : micSel.value).then(
+        () => {
+          note.textContent = micSel.value ? `Mixing in: ${labelOf(micSel)}. Use headphones so it does not hear the music again.` : 'Microphone off.';
+          try {
+            storage?.setItem(MIC_KEY, labelOf(micSel));
+          } catch {
+            /* storage unavailable: fine */
+          }
+        },
+        (err: unknown) => {
+          note.textContent = `Could not use the microphone: ${err instanceof Error ? err.message : String(err)}. If macOS asked, allow the microphone for HillSing in System Settings → Privacy & Security → Microphone.`;
+          micSel.value = '';
+        },
+      );
+      micSel.blur();
+    });
+    navigator.mediaDevices?.addEventListener?.('devicechange', () => {
+      void refresh();
+      void refreshMics();
+    });
     await refresh();
+    await refreshMics();
   }
 
   // ---- Audio start -----------------------------------------------------------------

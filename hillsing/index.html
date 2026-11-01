@@ -29,8 +29,10 @@
       <table class="midi-map" id="audio-out-table">
         <tr><td>Play to</td><td><select id="out-device" aria-label="Audio output device"></select></td></tr>
         <tr><td>Also hear it on</td><td><select id="out-monitor" aria-label="Second output to listen on"></select></td></tr>
+        <tr><td>Mix in microphone</td><td><select id="mic-device" aria-label="Microphone to mix into the output"></select></td></tr>
+        <tr><td>Mic volume</td><td><input id="mic-level" type="range" min="0" max="2" step="0.05" value="1" aria-label="Microphone volume" /></td></tr>
       </table>
-      <p id="out-note" class="hint">Start audio first. To send HillSing into Discord: play to BlackHole 2ch, and choose your speakers or headphones under "Also hear it on".</p>
+      <p id="out-note" class="hint">Start audio first. To send HillSing into Discord: play to BlackHole 2ch, and choose your speakers or headphones under "Also hear it on", and pick your microphone under "Mix in microphone" to talk over it. Wear headphones: with speakers, the microphone picks HillSing up again. The first time, macOS asks to allow the microphone.</p>
       <div class="midi-row"><b>MIDI</b> <span id="midi-last" class="hint">Nothing received yet: play a key or move a knob.</span></div>
       <div class="midi-row"><span class="hint">Inputs:</span> <span id="midi-inputs" class="hint">none found yet</span></div>
       <table class="midi-map">
