@@ -361,3 +361,11 @@ While you hold **Shift** (or press and hold the **〰 Melisma** button, which is
 ## Sample voice tuning
 
 The **Sample voice tuning** panel (in both Studio and Perform) holds the knobs a UTAU editor gives you, for live keys and for melodies sung by the voicebank: consonant speed (velocity), consonant level, consonant tone (a low-pass that rounds off harsh K/T/S bursts), gender (formant colour, pitch unchanged), vibrato depth and rate, glide (portamento between legato keys, live only), fine tune and volume. Changes are saved, and the next Play of a melody renders with them. Per-note tuning in the piano roll is not built yet.
+
+## Scope, recording and test text (Perform tab)
+
+The **Scope** shows the last few seconds of everything you hear: a waveform (read before the output limiter, so a peak past full scale shows red) over a spectrogram (0-8 kHz), on one time axis, with a gold line for every syllable and every key release. **Freeze** stops it so you can hover and read off the moment (time, peak, loudest band, the syllable); **Freeze on clip** freezes it by itself the instant the signal reaches full scale. **PNG** and **Copy** export the picture with the voice, tuning and effects settings printed at the top.
+
+**Record** keeps everything the scope sees (up to three minutes). Stop it and the whole recording is saved as one tall PNG, in rows of about eleven seconds, with the syllable marks, a time axis and a count of clipped columns. After a recording, **PNG** and **Copy** export it; **Clear** goes back to the live window.
+
+The **Test text** buttons next to the lyrics box load a text that uses every sound of English once (**All sounds**) or an ordinary sentence (**Sentence**).

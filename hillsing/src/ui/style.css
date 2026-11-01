@@ -130,14 +130,11 @@ button:disabled { opacity: 0.45; cursor: default; }
 .tab:focus-visible { outline: 2px solid var(--next); outline-offset: 2px; }
 
 /* ---- Perform view: voice, lyrics, syllables and effects on one screen; everything else hidden ---- */
-body[data-view="perform"] main { max-width: none; padding: 10px 14px 20px; gap: 10px; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); align-items: start; }
+body[data-view="perform"] main { max-width: none; padding: 10px 14px 20px; gap: 10px; grid-template-columns: minmax(0, 1fr); align-items: start; }
 body[data-view="perform"] main > section:not(.perf) { display: none; }
 body[data-view="perform"] .long { display: none; }
 body[data-view="perform"] section { padding: 10px 12px; }
 body[data-view="perform"] h2 { margin-bottom: 6px; }
-body[data-view="perform"] #sec-lyrics { grid-column: 1; }
-body[data-view="perform"] #sec-syllables { grid-column: 2; }
-body[data-view="perform"] #fx { grid-column: 1 / -1; }
 body[data-view="perform"] #lyrics { height: 5.2em; min-height: 0; }
 body[data-view="perform"] .syllables { max-height: 15em; overflow: auto; font-size: 17px; }
 body[data-view="perform"] .syl { padding: 3px 7px; }
@@ -186,7 +183,7 @@ body[data-view="perform"] .fx-knob { --size: 38px; }
 #tuning .nav { margin: 6px 0; }
 .tune-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 10px 6px; padding: 10px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
 #tuning .fx-knob { --size: 42px; }
-body[data-view="perform"] #tuning { grid-column: 1 / -1; padding-bottom: 8px; }
+body[data-view="perform"] #tuning { padding-bottom: 8px; }
 body[data-view="perform"] #tuning .nav { margin: 0 0 4px; }
 body[data-view="perform"] .tune-grid { grid-template-columns: repeat(9, minmax(0, 1fr)); padding: 6px 4px; gap: 4px; }
 body[data-view="perform"] #tuning .fx-knob { --size: 36px; }
@@ -197,3 +194,54 @@ body[data-view="perform"] #tuning .fx-knob { --size: 36px; }
 /* The meter's border goes red for a moment when the signal reached full scale before the output limiter. */
 .meter.clip { border-color: #ff4a3d; box-shadow: 0 0 6px #ff4a3d; }
 .meter.clip #meter-fill { background: #ff4a3d; }
+
+/* ---- Scope (Perform tab only) ---- */
+body:not([data-view="perform"]) #scope { display: none; }
+.scope-wrap { display: flex; flex-direction: column; gap: 4px; }
+#scope canvas { display: block; width: 100%; border: 1px solid var(--line); border-radius: 6px; background: #0b0f16; }
+#scope-wave { height: 50px; cursor: crosshair; }
+#scope-spec { height: 80px; background: #000028; cursor: crosshair; }
+#scope .spec-wrap { position: relative; margin: 0; }
+.scope-readout { min-height: 1.4em; margin: 2px 0 4px; font-variant-numeric: tabular-nums; }
+#scope-freeze.active { background: var(--next); border-color: var(--next); color: #1a1405; }
+body[data-view="perform"] #scope .nav { margin: 0 0 2px; }
+@media (max-width: 760px) {
+  body[data-view="perform"] #scope { grid-column: 1; grid-row: auto; }
+}
+
+/* Perform: keep the left column short so the scope, tuning and effects still fit on one screen */
+body[data-view="perform"] .nav button { padding: 4px 8px; }
+body[data-view="perform"] #sec-syllables .nav { gap: 6px; }
+body[data-view="perform"] #voice-main-desc { font-size: 11px; line-height: 1.3; max-height: 2.6em; overflow: hidden; }
+body[data-view="perform"] #dict-status { font-size: 11px; }
+body[data-view="perform"] #lyrics { height: 4.2em; }
+body[data-view="perform"] .syllables { max-height: 8em; }
+
+/* Perform on a wide screen: voice, text, parser, scope and tuning on the left, all seven effects on the right */
+@media (min-width: 1250px) {
+  body[data-view="perform"] main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  body[data-view="perform"] #sec-lyrics { grid-column: 1; grid-row: 1; }
+  body[data-view="perform"] #sec-syllables { grid-column: 1; grid-row: 2; }
+  body[data-view="perform"] #scope { grid-column: 1; grid-row: 3; }
+  body[data-view="perform"] #tuning { grid-column: 1; grid-row: 4; }
+  body[data-view="perform"] #fx { grid-column: 2; grid-row: 1 / span 4; }
+  body[data-view="perform"] .fx-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  body[data-view="perform"] .tune-grid { grid-template-columns: repeat(9, minmax(0, 1fr)); }
+  body[data-view="perform"] .tune-grid .fx-label { font-size: 8px; }
+}
+
+body[data-view="perform"] .nav button { padding: 4px 6px; }
+body[data-view="perform"] #dict-status:not(.error) { display: none; }
+body[data-view="perform"] #tuning .nav { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; }
+body[data-view="perform"] #tuning h2 { margin-bottom: 4px; }
+body[data-view="perform"] #lyrics { height: 3.6em; }
+body[data-view="perform"] .tune-grid { padding: 4px; }
+body[data-view="perform"] #tuning .fx-knob { --size: 34px; }
+#scope-rec.recording { background: #c0332b; border-color: #ff4a3d; color: #fff; }
+.test-text { margin: 4px 0 0; align-items: center; gap: 6px; }
+body[data-view="perform"] .test-text { margin: 2px 0 0; }
+body[data-view="perform"] .syllables { max-height: 5.4em; }
+body[data-view="perform"] #sec-syllables .nav { margin: 0 0 4px; }
+body[data-view="perform"] .test-text { margin: 0; }
+body[data-view="perform"] #sec-lyrics .lyrics-row { gap: 8px; }
+body[data-view="perform"] .nav label.inline { font-size: 12px; }

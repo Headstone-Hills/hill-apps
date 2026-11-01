@@ -33,6 +33,11 @@
             <div id="voice-main-desc" class="hint"></div>
           </div>
         </div>
+        <div class="nav test-text">
+          <span class="hint">Test text</span>
+          <button id="text-sounds" type="button" title="Short words that between them use every sound of English once: vowels, diphthongs, stops, fricatives, nasals, liquids">All sounds</button>
+          <button id="text-sentence" type="button" title="An ordinary sentence to sing">Sentence</button>
+        </div>
         <div id="dict-status" class="hint">Loading dictionary…</div>
       </section>
 
@@ -45,8 +50,8 @@
           <button id="nav-forward" type="button" title="Right">Syllable ▶</button>
           <button id="nav-word-forward" type="button" title="Shift+Right">Word ▶▶</button>
           <button id="nav-hold" type="button" aria-pressed="false" title="Stay on the current word: new notes sing it again instead of moving on (`)">⏸ Hold word</button>
-          <button id="nav-melisma" type="button" title="Press and hold (or hold Shift): notes you play glide on the vowel being sung instead of moving to the next syllable">〰 Melisma (Shift)</button>
-          <label class="inline"><input id="wrap" type="checkbox" /> Loop at end</label>
+          <button id="nav-melisma" type="button" title="Press and hold (or hold Shift): notes you play glide on the vowel being sung instead of moving to the next syllable">〰 Melisma<span class="long"> (Shift)</span></button>
+          <label class="inline"><input id="wrap" type="checkbox" /> Loop<span class="long"> at end</span></label>
         </div>
         <div id="syllables" class="syllables" aria-live="polite"></div>
         <div class="hint long">Each new note sings the highlighted syllable. Click a syllable to jump to it. Hold <kbd>Shift</kbd> while playing more notes to stretch the current vowel across them. Put <code>~</code> after a word to hold its vowel across another note (melisma), e.g. <code>love ~ ~</code>.</div>
@@ -112,6 +117,30 @@
           <span id="utau-pitch-name" class="hint"></span>
           <label class="inline" title="0 keeps the sample's natural length; otherwise the vowel part is stretched">Length (ms) <input id="utau-len" type="number" min="0" step="50" value="0" style="width: 6em" /></label>
           <button id="utau-play" type="button" disabled>▶ Play alias</button>
+        </div>
+      </section>
+
+      <section id="scope" class="perf">
+        <h2>Scope <span class="hint long">waveform (before the limiter: red = full scale) and spectrogram of everything you hear, with the syllables marked</span></h2>
+        <div class="nav">
+          <button id="scope-freeze" type="button" aria-pressed="false" title="Stop the display so you can hover over it and read it">⏸ Freeze</button>
+          <label class="inline" title="Stop automatically the moment the signal reaches full scale"><input id="scope-clipfreeze" type="checkbox" /> Freeze on clip</label>
+          <button id="scope-rec" type="button" aria-pressed="false" title="Record everything the scope sees (up to 3 minutes). Stop it and the whole recording is saved as one tall PNG">⏺ Record</button>
+          <button id="scope-save" type="button" title="Save the last recording (or, if there is none, what is on screen now) as one PNG picture, with the voice and settings printed on it">⬇ PNG</button>
+          <button id="scope-copy" type="button" title="Copy the same picture to the clipboard">⧉ Copy</button>
+          <button id="scope-clear" type="button" hidden title="Forget the recording: Save and Copy go back to the live window">✕ Clear</button>
+          <label class="inline">Window <select id="scope-window"><option value="2">2 s</option><option value="4" selected>4 s</option><option value="8">8 s</option></select></label>
+        </div>
+        <div id="scope-readout" class="hint scope-readout" aria-live="polite">Start audio and play: the sound is drawn here as it happens.</div>
+        <div class="scope-wrap">
+          <canvas id="scope-wave" aria-label="Waveform of the output"></canvas>
+          <div class="spec-wrap">
+            <canvas id="scope-spec" aria-label="Spectrogram of the output, 0 to 8 kilohertz"></canvas>
+            <span class="spec-label" style="bottom: 12.5%">1k</span>
+            <span class="spec-label" style="bottom: 25%">2k</span>
+            <span class="spec-label" style="bottom: 50%">4k</span>
+            <span class="spec-label" style="bottom: 75%">6k</span>
+          </div>
         </div>
       </section>
 

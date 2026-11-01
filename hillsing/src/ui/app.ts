@@ -11,12 +11,15 @@ import { VoiceLab } from './lab';
 import { MidiFilePanel } from './midifile';
 import { fxModel, getBus } from '../audio/bus';
 import { UtauLiveVoice } from '../utau/live';
-import { TuningModel } from '../utau/tuning';
+import { EFFECTS } from '../audio/fxparams';
+import { formatTuning, TuningModel, TUNING_PARAMS } from '../utau/tuning';
 import { TuningPanel } from './tuning';
 import { UtauSession } from '../utau/session';
 import { EffectsPanel } from './effects';
 import { UtauPanel } from './utau';
 import { Spectrogram } from './spectrogram';
+import { Scope } from './scope';
+import { ALL_SOUNDS_TEXT, SENTENCE_TEXT } from '../text/testtext';
 
 const DEFAULT_LYRICS = 'Twinkle twinkle little star, how I wonder what you are';
 const LYRICS_KEY = 'hillsing.lyrics.v1';
@@ -54,10 +57,35 @@ export function startApp(): void {
   let utauLive: UtauLiveVoice | null = null;
   const sink: VoiceSink = {
     noteOn: (plan, f0, vel, legato) => (utauSession.active ? utauLive?.noteOn(plan, f0, vel, legato) : engine?.noteOn(plan, f0, vel, legato)),
-    noteOff: () => (utauSession.active ? utauLive?.noteOff() : engine?.noteOff()),
+    noteOff: () => {
+      scope.mark('↑');
+      if (utauSession.active) utauLive?.noteOff();
+      else engine?.noteOff();
+    },
     setF0: (f0) => (utauSession.active ? utauLive?.setF0(f0) : engine?.setF0(f0)),
   };
-  const performance = new Performance(sink, pointer);
+  const scope = new Scope($<HTMLCanvasElement>('scope-wave'), $<HTMLCanvasElement>('scope-spec'), {
+    freeze: $<HTMLButtonElement>('scope-freeze'),
+    clipFreeze: $<HTMLInputElement>('scope-clipfreeze'),
+    window: $<HTMLSelectElement>('scope-window'),
+    readout: $('scope-readout'),
+    save: $<HTMLButtonElement>('scope-save'),
+    copy: $<HTMLButtonElement>('scope-copy'),
+    record: $<HTMLButtonElement>('scope-rec'),
+    clear: $<HTMLButtonElement>('scope-clear'),
+    meta: () => {
+      const t = tuning.values;
+      const on = EFFECTS.filter((e) => fxModel.state.enabled[e.id]).map((e) => `${e.name} ${e.params.map((q) => `${q.id}=${fxModel.state.values[e.id][q.id]}`).join(' ')}`);
+      return [
+        `Voice: ${utauSession.active ? `sample-based (${utauSession.bank?.name ?? 'UTAU'})` : getVoice(voiceId).name} · lyrics: ${lyricsBox.value.replace(/\s+/g, ' ').slice(0, 60)}`,
+        `Tuning: ${TUNING_PARAMS.map((p) => `${p.id} ${formatTuning(p.id, t[p.id])}`).join(', ')}`,
+        `Effects on: ${on.length ? on.join(' | ') : 'none'}`,
+      ];
+    },
+  });
+  const performance = new Performance(sink, pointer, {
+    onSyllable: (i) => scope.mark(pointer.current.syllables[i]?.label ?? ''),
+  });
   const bindings = new NavBindings(storage);
   let filePanel: MidiFilePanel | null = null;
   let lab: VoiceLab | null = null;
@@ -287,6 +315,7 @@ export function startApp(): void {
     try {
       const bus = await getBus();
       effectsPanel.setBitcrushAvailable(bus.fx.bitcrushAvailable);
+      scope.attach(bus);
       engine = await SingerEngine.create(bus);
       utauLive = new UtauLiveVoice(engine.context, engine.audioInput, () => utauSession.bank, () => tuning.values);
       for (const [name, value] of paramValues) engine.setParam(name, value);
@@ -359,6 +388,16 @@ export function startApp(): void {
     },
     lookup: () => lookup,
   });
+
+  for (const [id, text] of [['text-sounds', ALL_SOUNDS_TEXT], ['text-sentence', SENTENCE_TEXT]] as const) {
+    const b = $<HTMLButtonElement>(id);
+    b.addEventListener('click', () => {
+      lyricsBox.value = text;
+      lyricsBox.dispatchEvent(new Event('input', { bubbles: true }));
+      navActions.reset();
+      b.blur();
+    });
+  }
 
   new UtauPanel(utauSession);
   new TuningPanel($('tune-grid'), $<HTMLButtonElement>('tune-reset'), tuning);

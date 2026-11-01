@@ -27,6 +27,24 @@ export class AudioBus {
     private readonly preMeter: AnalyserNode,
   ) {}
 
+  /** Fill `into` (up to 2048 samples) with the newest output samples as they were before the limiter, so clipping shows. */
+  waveformTail(into: Float32Array<ArrayBuffer>): void {
+    this.preMeter.getFloatTimeDomainData(into);
+  }
+
+  get waveformTailLength(): number {
+    return this.preMeter.fftSize;
+  }
+
+  /** Current output spectrum (after the limiter), 0-255 on the analyser's dB scale. */
+  spectrumInto(into: Uint8Array<ArrayBuffer>): void {
+    this.analyser.getByteFrequencyData(into);
+  }
+
+  get spectrumBins(): number {
+    return this.analyser.frequencyBinCount;
+  }
+
   /** Highest sample (absolute) of the last ~20 ms before the output limiter: 1 or more means it would have clipped. */
   overPeak(): number {
     const buf = new Float32Array(this.preMeter.fftSize);
@@ -50,7 +68,7 @@ export class AudioBus {
     // Output safety: whatever the effects add (make-up gain, EQ boosts, a reverb tail on top of a loud vowel), a fast
     // limiter catches the peaks and a soft knee rounds off any that get through, so nothing hard-clips at the speakers.
     const preMeter = ctx.createAnalyser();
-    preMeter.fftSize = 1024;
+    preMeter.fftSize = 2048;
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -3;
     limiter.knee.value = 0;

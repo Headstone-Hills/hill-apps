@@ -1,3 +1,4 @@
+import { ALL_SOUNDS_TEXT, ENGLISH_SOUNDS, SENTENCE_TEXT } from '../src/text/testtext';
 import { describe, expect, it } from 'vitest';
 import { guessPhonemes } from '../src/text/g2p';
 import { buildLyrics, splitSpelling, tokenize } from '../src/text/lyrics';
@@ -179,5 +180,24 @@ describe('melisma token', () => {
     p.setIndex(1);
     p.nextWord();
     expect(p.index).toBe(3);
+  });
+});
+
+describe('test texts', () => {
+  const sounds = (text: string): Set<string> => {
+    const lookup = realLookup();
+    const seen = new Set<string>();
+    for (const w of text.toLowerCase().split(/\s+/)) for (const ph of lookup(w) ?? []) seen.add(ph.replace(/\d/g, ''));
+    return seen;
+  };
+  it('the all-sounds text finds every word in the dictionary and uses all 39 sounds of English', () => {
+    const lookup = realLookup();
+    for (const w of ALL_SOUNDS_TEXT.split(/\s+/)) expect(lookup(w), w).toBeTruthy();
+    const seen = sounds(ALL_SOUNDS_TEXT);
+    expect(ENGLISH_SOUNDS.filter((p) => !seen.has(p))).toEqual([]);
+  });
+  it('the sentence is made of dictionary words', () => {
+    const lookup = realLookup();
+    for (const w of SENTENCE_TEXT.split(/\s+/)) expect(lookup(w), w).toBeTruthy();
   });
 });

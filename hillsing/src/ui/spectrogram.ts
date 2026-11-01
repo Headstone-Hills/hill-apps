@@ -6,7 +6,7 @@ const PIXELS_PER_SECOND = 110;
 const LABEL_HZ = [1000, 2000, 4000, 6000];
 
 /** Map 0..255 (analyser dB scale) to a dark-blue -> cyan -> yellow -> white colour. */
-function colour(v: number): [number, number, number] {
+export function colour(v: number): [number, number, number] {
   const t = v / 255;
   if (t < 0.35) return [0, 0, Math.round(40 + 400 * t)];
   if (t < 0.65) {
