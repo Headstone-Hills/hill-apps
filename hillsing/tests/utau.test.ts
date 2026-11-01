@@ -309,6 +309,20 @@ describe('live notes', () => {
     }
   });
 
+  it('sustains a held vowel for seconds without repeating a short slice', async () => {
+    const bank = await liveBank();
+    const a = (await buildAttack(bank, { onset: [], nucleus: 'AA1', coda: [] }, 220, null))!;
+    // a short loop would repeat 7-10 times a second (audible as a stutter); this one lasts several seconds
+    expect(a.loop!.length / SR).toBeGreaterThan(4);
+    // and its loudness does not pulse: 30 ms windows stay within 25% of the average
+    const w = Math.round(0.03 * SR);
+    const levels: number[] = [];
+    for (let i = 0; i + w <= a.loop!.length; i += w) levels.push(rms(a.loop!, i, i + w));
+    const mean = levels.reduce((p, c) => p + c, 0) / levels.length;
+    expect(Math.min(...levels) / mean).toBeGreaterThan(0.75);
+    expect(Math.max(...levels) / mean).toBeLessThan(1.25);
+  });
+
   it('smooths a loop seam', () => {
     const x = Float32Array.from({ length: 4000 }, (_, i) => Math.sin((2 * Math.PI * 300 * i) / SR) * (i < 2000 ? 1 : 0.5));
     const l = seamlessLoop(x, 400);
@@ -421,5 +435,9 @@ describe.skipIf(!bankDir)('real voicebank (HILLSING_UTAU_BANK)', () => {
       }
     }
     expect(Math.max(...times)).toBeLessThan(80);
+    for (const syl of syllables) {
+      const a = (await buildAttack(bank, { onset: syl.onset, nucleus: syl.nucleus, coda: syl.coda }, 262, null))!;
+      if (a.loop) expect(a.loop.length / SR, `${syl.label} sustain length`).toBeGreaterThan(4);
+    }
   });
 });

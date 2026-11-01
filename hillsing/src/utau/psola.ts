@@ -29,6 +29,8 @@ export interface SegmentRequest {
   gain?: number;
   /** Scale the result so the stretched part has the same loudness as the same part of the source (pitch shifting changes it). */
   matchLevel?: boolean;
+  /** Override the output-time -> source-position mapping (samples), e.g. to wander back and forth through a vowel. */
+  map?: (outSample: number) => number;
 }
 
 const UNVOICED_GRAIN = 512;
@@ -96,7 +98,7 @@ export function renderSegment(src: PsolaSource, req: SegmentRequest): Float32Arr
   const gain = req.gain ?? 1;
 
   // Output time -> source position.
-  const srcAt = (t: number): number => (t < fixedOut ? a + t : a + fixed + ((t - fixedOut) * vowelSrc) / vowelOut);
+  const srcAt = req.map ?? ((t: number): number => (t < fixedOut ? a + t : a + fixed + ((t - fixedOut) * vowelSrc) / vowelOut));
 
   const marks = pitchMarks(src, a, b);
   const nearestMark = (pos: number): number => {

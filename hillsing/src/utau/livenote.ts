@@ -35,6 +35,9 @@ const MIN_UNIT_SEC = 0.04;
 const CROSSFADE_SEC = 0.015;
 const LOOP_SEAM_SEC = 0.03;
 const MIN_LOOP_SEC = 0.1;
+/** The sustain wanders through the steady vowel and back once per SWEEP_SEC, for SWEEP_CYCLES cycles, so nothing repeats at a rate the ear can pick out. */
+const SWEEP_SEC = 2.4;
+const SWEEP_CYCLES = 3;
 
 interface Prepared {
   unit: Unit;
@@ -137,9 +140,21 @@ export async function buildAttack(bank: Voicebank, plan: SyllablePlan, f0: numbe
   }
   let end = out.length;
   while (end > 1 && Math.abs(out[end - 1]) < 1e-5) end--;
-  const loop = hasLoop
-    ? seamlessLoop(renderSegment(v.src, { start: l0, end: l1, fixed: 0, length: l1 - l0, f0, matchLevel: true }), Math.round(LOOP_SEAM_SEC * v.src.sampleRate))
-    : null;
+  let loop: Float32Array | null = null;
+  if (hasLoop) {
+    // Instead of repeating a short slice (7-10 repeats a second: audible as a stutter), render a long stretch of
+    // vowel whose source position sweeps slowly back and forth across the steady part. Pitch-synchronous grains
+    // make the direction change inaudible, and the result only repeats every few seconds.
+    const sr = v.src.sampleRate;
+    const length = Math.round(SWEEP_SEC * SWEEP_CYCLES * sr);
+    const half = Math.round((SWEEP_SEC / 2) * sr);
+    const span = l1 - l0;
+    const map = (t: number): number => {
+      const ph = (t % (2 * half)) / half; // 0..2
+      return l0 + (ph <= 1 ? ph : 2 - ph) * span;
+    };
+    loop = seamlessLoop(renderSegment(v.src, { start: l0, end: l1, fixed: 0, length, f0, matchLevel: true, map }), Math.round(LOOP_SEAM_SEC * sr));
+  }
   return { samples: out.subarray(0, end), loop, sampleRate: sr, crossfade: hasLoop ? CROSSFADE_SEC : 0, aliases: list.map((p) => p.unit.alias) };
 }
 
