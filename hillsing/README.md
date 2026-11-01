@@ -247,6 +247,22 @@ The formant values and gains in this project were chosen from commonly tabulated
 tuned against measurements; they were not copied from a specific table, so check the papers above
 before citing any individual number.
 
+## Effects
+
+Six effects apply to every voice (formant, live samples, sample melodies, Voice lab) through one shared audio path
+(`src/audio/bus.ts`): **bitcrush -> distortion -> EQ -> compressor -> delay -> reverb**, in that order. The *Effects*
+section has a card per effect (on/off + sliders), presets (small room, big hall, lo-fi tape, old radio, robot choir)
+and a reset; settings are saved in the browser. Everything is off by default. Meter and spectrogram show the
+processed sound. Bitcrush runs in its own AudioWorklet (`src/audio/bitcrush.worklet.ts`); if a browser blocks
+worklets the card says so and the other five still work. Reverb uses a generated impulse response (decaying
+noise that darkens with time; rebuilt shortly after you stop moving its sliders). Pure maths and the settings
+model are in `src/audio/fxparams.ts` (tested); the Web Audio wiring is `src/audio/effects.ts`.
+
+## Hold word
+
+*Hold word* (button, backtick key, or a MIDI-learned pad) stops the lyric pointer: new notes keep singing the current
+syllable, e.g. to give one word several notes, until you release the hold. The position label reads "holding on".
+
 ## Piano-roll editor
 
 The melody panel is an editor, not just a preview. Load a MIDI file (or press **New melody**) and:

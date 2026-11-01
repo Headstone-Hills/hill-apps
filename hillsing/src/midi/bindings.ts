@@ -1,6 +1,6 @@
 import type { MidiEvent } from './midi';
 
-export type NavAction = 'reset' | 'back' | 'forward' | 'wordBack' | 'wordForward';
+export type NavAction = 'reset' | 'back' | 'forward' | 'wordBack' | 'wordForward' | 'hold';
 
 export const NAV_ACTIONS: ReadonlyArray<{ action: NavAction; label: string }> = [
   { action: 'reset', label: 'Reset to start' },
@@ -8,6 +8,7 @@ export const NAV_ACTIONS: ReadonlyArray<{ action: NavAction; label: string }> = 
   { action: 'forward', label: 'Skip forward (syllable)' },
   { action: 'wordBack', label: 'Back (word)' },
   { action: 'wordForward', label: 'Forward (word)' },
+  { action: 'hold', label: 'Hold on the current word (toggle)' },
 ];
 
 export interface Binding {

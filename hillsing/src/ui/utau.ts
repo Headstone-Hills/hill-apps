@@ -1,6 +1,7 @@
 // UTAU voicebank panel (stage 1): pick a voicebank folder, see what is in it, and audition any alias at a
 // chosen pitch and length. The files are read in place by the browser; nothing is uploaded or copied.
 
+import { getBus } from '../audio/bus';
 import type { UtauSession } from '../utau/session';
 import { Voicebank, type BankFile } from '../utau/voicebank';
 import { openZip } from '../utau/zip';
@@ -11,7 +12,6 @@ const hzOf = (note: number): number => 440 * Math.pow(2, (note - 69) / 12);
 
 export class UtauPanel {
   private bank: Voicebank | null = null;
-  private ctx: AudioContext | null = null;
   private source: AudioBufferSourceNode | null = null;
 
   private readonly el = {
@@ -128,16 +128,16 @@ export class UtauPanel {
       return;
     }
     this.say(`${alias}: ${(out.samples.length / out.sampleRate).toFixed(2)} s at ${noteName(Number(this.el.pitch.value))}.`);
-    this.ctx ??= new AudioContext();
-    if (this.ctx.state !== 'running') await this.ctx.resume();
+    const bus = await getBus();
+    if (bus.ctx.state !== 'running') await bus.ctx.resume();
     this.source?.stop();
-    const buf = this.ctx.createBuffer(1, out.samples.length, out.sampleRate);
+    const buf = bus.ctx.createBuffer(1, out.samples.length, out.sampleRate);
     buf.getChannelData(0).set(out.samples);
-    const src = this.ctx.createBufferSource();
-    const gain = this.ctx.createGain();
+    const src = bus.ctx.createBufferSource();
+    const gain = bus.ctx.createGain();
     gain.gain.value = 0.5;
     src.buffer = buf;
-    src.connect(gain).connect(this.ctx.destination);
+    src.connect(gain).connect(bus.input);
     src.start();
     this.source = src;
   }

@@ -23,7 +23,8 @@ const noteToHz = (note: number, bendSemitones: number): number =>
  * - A note pressed while the voice is gated (another key held, or sustain pedal down) is
  *   *legato*: it consumes the next syllable but glides into it without a new onset.
  * - Each fresh note consumes one syllable from the pointer; at end of text, fresh notes
- *   are silent (until the pointer is moved, or wraps if enabled).
+ *   are silent (until the pointer is moved, or wraps if enabled). With `hold` on, notes
+ *   re-sing the current syllable instead and the pointer stays where it is.
  * - Releasing the top key while others are held glides back to the previous held pitch
  *   without consuming a syllable.
  */
@@ -34,6 +35,8 @@ export class Performance {
   private lastNote = 60;
   private bend = 0; // -1..1
   bendRange = 2; // semitones
+  /** While true, fresh notes sing the current syllable again and the lyric pointer does not move. */
+  hold = false;
 
   constructor(
     private sink: VoiceSink,
@@ -56,7 +59,7 @@ export class Performance {
     const f0 = this.frequency(note);
     const legato = this.gateOpen;
     const index = this.pointer.index;
-    const syl = this.pointer.advance();
+    const syl = this.hold ? this.pointer.peek() : this.pointer.advance();
     if (!syl) {
       // End of text: no new syllable. If already sounding, just follow the pitch.
       if (legato) this.sink.setF0(f0);

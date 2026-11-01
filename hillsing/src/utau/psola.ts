@@ -31,6 +31,8 @@ export interface SegmentRequest {
   matchLevel?: boolean;
   /** Override the output-time -> source-position mapping (samples), e.g. to wander back and forth through a vowel. */
   map?: (outSample: number) => number;
+  /** Play the fixed (consonant) part this many times faster (>= 1): UTAU's consonant velocity. */
+  fixedSpeed?: number;
 }
 
 const UNVOICED_GRAIN = 512;
@@ -93,12 +95,13 @@ export function renderSegment(src: PsolaSource, req: SegmentRequest): Float32Arr
   const vowelSrc = b - a - fixed;
   const n = out.length;
   if (n === 0) return out;
-  const fixedOut = Math.min(fixed, n);
+  const speed = Math.max(1, req.fixedSpeed ?? 1);
+  const fixedOut = Math.min(Math.round(fixed / speed), n);
   const vowelOut = Math.max(1, n - fixedOut);
   const gain = req.gain ?? 1;
 
   // Output time -> source position.
-  const srcAt = req.map ?? ((t: number): number => (t < fixedOut ? a + t : a + fixed + ((t - fixedOut) * vowelSrc) / vowelOut));
+  const srcAt = req.map ?? ((t: number): number => (t < fixedOut ? a + t * speed : a + fixed + ((t - fixedOut) * vowelSrc) / vowelOut));
 
   const marks = pitchMarks(src, a, b);
   const nearestMark = (pos: number): number => {

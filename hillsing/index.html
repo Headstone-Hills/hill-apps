@@ -40,6 +40,7 @@
           <button id="nav-back" type="button" title="Left">◀ Syllable</button>
           <button id="nav-forward" type="button" title="Right">Syllable ▶</button>
           <button id="nav-word-forward" type="button" title="Shift+Right">Word ▶▶</button>
+          <button id="nav-hold" type="button" aria-pressed="false" title="Stay on the current word: new notes sing it again instead of moving on (`)">⏸ Hold word</button>
           <label class="inline"><input id="wrap" type="checkbox" /> Loop at end</label>
         </div>
         <div id="syllables" class="syllables" aria-live="polite"></div>
@@ -107,6 +108,15 @@
           <label class="inline" title="0 keeps the sample's natural length; otherwise the vowel part is stretched">Length (ms) <input id="utau-len" type="number" min="0" step="50" value="0" style="width: 6em" /></label>
           <button id="utau-play" type="button" disabled>▶ Play alias</button>
         </div>
+      </section>
+
+      <section id="fx">
+        <h2>Effects <span class="hint">apply to every voice, in this order: bitcrush, distortion, EQ, compressor, delay, reverb</span></h2>
+        <div class="nav">
+          <label class="inline">Preset <select id="fx-preset" aria-label="Effect presets"></select></label>
+          <button id="fx-reset" type="button" title="Turn every effect off and restore its defaults">Reset effects</button>
+        </div>
+        <div id="fx-grid" class="fx-grid"></div>
       </section>
 
       <section id="lab">

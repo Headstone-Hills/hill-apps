@@ -118,3 +118,17 @@ button:disabled { opacity: 0.45; cursor: default; }
 .lyrics-row textarea { flex: 1 1 320px; min-width: 0; }
 .voice-pick { flex: 0 1 280px; display: flex; flex-direction: column; gap: 4px; min-width: 200px; }
 .voice-pick select { width: 100%; }
+
+.fx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin-top: 10px; }
+.fx-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.fx-card.on { border-color: var(--accent); }
+.fx-head { display: flex; flex-direction: column; gap: 2px; }
+.fx-toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.fx-params { display: flex; flex-direction: column; gap: 6px; }
+.fx-param { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.fx-param-top { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); }
+.fx-param input[type=range] { width: 100%; }
+.fx-card:not(.on) .fx-params { opacity: 0.55; }
+
+#nav-hold.active { background: var(--next); border-color: var(--next); color: #1a1405; }
+.syllables .syl.next.held { outline: 2px solid var(--next); }

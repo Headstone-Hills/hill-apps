@@ -1,3 +1,4 @@
+import type { AudioBus } from '../audio/bus';
 import type { VoiceSink } from '../engine/performance';
 import type { VoiceParamName } from './klatt';
 import type { SeqCommand, SyllablePlan } from './types';
@@ -14,6 +15,7 @@ export class SingerEngine implements VoiceSink {
     readonly context: AudioContext,
     private readonly node: AudioWorkletNode,
     private readonly analyser: AnalyserNode,
+    private readonly busInput: AudioNode,
   ) {
     node.port.onmessage = (e: MessageEvent<WorkletEvent>) => {
       const m = e.data;
@@ -22,23 +24,16 @@ export class SingerEngine implements VoiceSink {
     };
   }
 
-  /** Must be called from a user gesture so the AudioContext may start. */
-  static async create(): Promise<SingerEngine> {
-    const context = new AudioContext({ latencyHint: 'interactive' });
+  /** The synth plugs into the page's audio bus, so the effects apply to it like to every other voice. */
+  static async create(bus: AudioBus): Promise<SingerEngine> {
+    const context = bus.ctx;
     await context.audioWorklet.addModule(workletUrl);
     const node = new AudioWorkletNode(context, 'klatt-voice', {
       numberOfInputs: 0,
       outputChannelCount: [1],
     });
-    const analyser = context.createAnalyser();
-    analyser.fftSize = 2048;
-    analyser.smoothingTimeConstant = 0.15; // keep bursts visible in the spectrogram
-    analyser.minDecibels = -100;
-    analyser.maxDecibels = -20;
-    node.connect(analyser);
-    analyser.connect(context.destination);
-    if (context.state !== 'running') await context.resume();
-    return new SingerEngine(context, node, analyser);
+    node.connect(bus.input);
+    return new SingerEngine(context, node, bus.analyser, bus.input);
   }
 
   noteOn(plan: SyllablePlan, f0: number, velocity: number, legato: boolean): void {
@@ -80,9 +75,9 @@ export class SingerEngine implements VoiceSink {
     this.post({ type: 'seqLoop', loop });
   }
 
-  /** Where other sound sources can plug in so the level meter and spectrogram see them too (it feeds the speakers). */
+  /** Where other sound sources plug in so they get the effects and show on the meter and spectrogram. */
   get audioInput(): AudioNode {
-    return this.analyser;
+    return this.busInput;
   }
 
   /** Peak absolute sample of the most recent ~1024 output samples (0..1). */

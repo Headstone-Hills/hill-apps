@@ -394,6 +394,33 @@ describe('live notes', () => {
     expect(Math.abs(20 * Math.log10(opening(raw) / a.loopRms))).toBeGreaterThanOrEqual(0); // (the raw level is whatever the recording had)
   });
 
+  it('trims silence at the start of a sample (a stop\'s closure) so a key press sounds at once', async () => {
+    const silent = new Float32Array(Math.round(0.1 * SR)); // 100 ms of nothing, then a vowel
+    const tonePart = tone(200, 0.8);
+    const x = new Float32Array(silent.length + tonePart.length);
+    x.set(tonePart, silent.length);
+    const bank = await Voicebank.load(
+      [file('B/oto.ini', new TextEncoder().encode('v.wav=- A,0,200,-700,150,20\n')), file('B/v.wav', wavBytes(x)), file('B/v_wav.frq', frqBytes(frqFor(200, x.length, silent.length).f0))],
+      'B',
+    );
+    const a = (await buildAttack(bank, { onset: [], nucleus: 'AA1', coda: [] }, 220, null))!;
+    const peak = Math.max(...a.samples.map(Math.abs));
+    let first = 0;
+    while (first < a.samples.length && Math.abs(a.samples[first]) < peak * 0.05) first++;
+    expect(first / SR).toBeLessThan(0.02); // sound within 20 ms, not after the 100 ms of silence
+  });
+
+  it('plays the consonant faster live so the vowel arrives sooner, without changing pitch', async () => {
+    const bank = await liveBank();
+    const plan = { onset: [], nucleus: 'AA1', coda: [] };
+    const natural = (await buildAttack(bank, plan, 220, null, { consonantSpeed: 1 }))!;
+    const fast = (await buildAttack(bank, plan, 220, null, { consonantSpeed: 1.5 }))!;
+    // the sample's fixed (consonant) part is 50 ms: 1.5x saves about 17 ms
+    expect((natural.samples.length - fast.samples.length) / SR).toBeGreaterThan(0.008);
+    expect(Math.abs(estimateF0(fast.loop!.subarray(0, 9000), SR) / 220 - 1)).toBeLessThan(0.04);
+    expect(fast.hasLoop).toBe(true);
+  });
+
   it('smooths a loop seam', () => {
     const x = Float32Array.from({ length: 4000 }, (_, i) => Math.sin((2 * Math.PI * 300 * i) / SR) * (i < 2000 ? 1 : 0.5));
     const l = seamlessLoop(x, 400);

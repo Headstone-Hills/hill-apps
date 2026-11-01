@@ -35,6 +35,25 @@ describe('Performance (mono legato)', () => {
     expect(shown).toEqual([0, 1]);
   });
 
+  it('hold keeps singing the current syllable without moving the pointer, and releasing it resumes', () => {
+    const { calls, perf, pointer, shown } = setup('hello big world');
+    perf.noteOn(60, 1);
+    perf.noteOff(60);
+    expect(pointer.index).toBe(1); // "hel" sung, "lo" is next
+    perf.hold = true;
+    const next = pointer.peek()!.nucleus;
+    for (const n of [62, 64, 65]) {
+      perf.noteOn(n, 1);
+      perf.noteOff(n);
+    }
+    expect(pointer.index).toBe(1); // did not move
+    expect(shown).toEqual([0, 1, 1, 1]); // the same syllable each time
+    expect(calls.filter((c) => c.t === 'on').map((c) => c.nucleus).slice(1)).toEqual([next, next, next]);
+    perf.hold = false;
+    perf.noteOn(67, 1);
+    expect(pointer.index).toBe(2); // moves on again
+  });
+
   it('overlapping notes are legato and still consume a syllable', () => {
     const { calls, perf, pointer } = setup();
     perf.noteOn(60, 0.8);

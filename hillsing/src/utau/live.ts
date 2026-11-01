@@ -22,7 +22,7 @@ interface Playing {
   minReleaseAt: number;
 }
 
-const START_DELAY_SEC = 0.004;
+const START_DELAY_SEC = 0.0015;
 /** Shortest sustained vowel after the attack, so even a quick tap is heard as a vowel. */
 const MIN_SUSTAIN_SEC = 0.1;
 
@@ -118,7 +118,7 @@ export class UtauLiveVoice implements VoiceSink {
       sources.push(l);
     }
     // A tap still sings a syllable: the consonant, the start of the vowel and a short stretch of sustained vowel.
-    const minReleaseAt = t0 + Math.max(0, attackBuf.duration - attack.crossfade) + (attack.loop ? MIN_SUSTAIN_SEC : 0);
+    const minReleaseAt = t0 + Math.max(0, attackBuf.duration - attack.crossfade) + (attack.hasLoop ? MIN_SUSTAIN_SEC : 0);
     this.playing = { gain: note, sources, plan, f0, loopRms: attack.loopRms, minReleaseAt };
     if (!this.gateOpen) void this.release(); // the key came up while the note was being built
   }

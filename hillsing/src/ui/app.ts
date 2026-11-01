@@ -9,8 +9,10 @@ import { LyricPointer } from '../text/pointer';
 import { getVoice, VOICES } from '../synth/voices';
 import { VoiceLab } from './lab';
 import { MidiFilePanel } from './midifile';
+import { fxModel, getBus } from '../audio/bus';
 import { UtauLiveVoice } from '../utau/live';
 import { UtauSession } from '../utau/session';
+import { EffectsPanel } from './effects';
 import { UtauPanel } from './utau';
 import { Spectrogram } from './spectrogram';
 
@@ -115,7 +117,9 @@ export function startApp(): void {
     posLabel.textContent = pointer.length
       ? pointer.atEnd
         ? `— end of text (${pointer.length} syllables)`
-        : `— next: ${idx + 1} of ${pointer.length}`
+        : performance.hold
+          ? `— holding on: ${idx + 1} of ${pointer.length}`
+          : `— next: ${idx + 1} of ${pointer.length}`
       : '— type some lyrics';
     chips[idx]?.scrollIntoView({ block: 'nearest' });
   }
@@ -152,12 +156,26 @@ export function startApp(): void {
     forward: () => pointer.forward(),
     wordBack: () => pointer.prevWord(),
     wordForward: () => pointer.nextWord(),
+    hold: () => setHold(!performance.hold),
   };
   $('nav-reset').addEventListener('click', navActions.reset);
   $('nav-back').addEventListener('click', navActions.back);
   $('nav-forward').addEventListener('click', navActions.forward);
   $('nav-word-back').addEventListener('click', navActions.wordBack);
   $('nav-word-forward').addEventListener('click', navActions.wordForward);
+  const holdBtn = $<HTMLButtonElement>('nav-hold');
+  /** Hold on the current word: notes keep singing it and the lyric pointer does not move until hold is turned off. */
+  function setHold(on: boolean): void {
+    performance.hold = on;
+    holdBtn.setAttribute('aria-pressed', String(on));
+    holdBtn.classList.toggle('active', on);
+    holdBtn.textContent = on ? '▶ Release hold' : '⏸ Hold word';
+    updatePointerView();
+  }
+  holdBtn.addEventListener('click', () => {
+    navActions.hold();
+    holdBtn.blur(); // so computer keys play again
+  });
   const wrap = $<HTMLInputElement>('wrap');
   wrap.addEventListener('change', () => (pointer.wrap = wrap.checked));
 
@@ -233,13 +251,17 @@ export function startApp(): void {
   const meterFill = $('meter-fill');
   let starting = false;
 
+  const effectsPanel = new EffectsPanel($('fx-grid'), $<HTMLSelectElement>('fx-preset'), $<HTMLButtonElement>('fx-reset'), fxModel);
+
   async function startAudio(): Promise<void> {
     if (engine || starting) return;
     starting = true;
     startBtn.disabled = true;
     audioStatus.textContent = 'Starting audio…';
     try {
-      engine = await SingerEngine.create();
+      const bus = await getBus();
+      effectsPanel.setBitcrushAvailable(bus.fx.bitcrushAvailable);
+      engine = await SingerEngine.create(bus);
       utauLive = new UtauLiveVoice(engine.context, engine.audioInput, () => utauSession.bank);
       for (const [name, value] of paramValues) engine.setParam(name, value);
       engine.setVoice(voiceId);
@@ -265,6 +287,18 @@ export function startApp(): void {
       });
       (window as unknown as { __hillsing?: unknown }).__hillsing = {
         peakLevel: () => engine?.peakLevel() ?? 0,
+        // For automated checks: the effect settings, and the output's average level in a frequency band (dB).
+        fx: fxModel,
+        bandDb: (lo: number, hi: number): number => {
+          if (!engine) return -100;
+          const bins = new Uint8Array(engine.spectrumBins);
+          engine.spectrum(bins);
+          const nyq = engine.context.sampleRate / 2;
+          const a = Math.floor((lo / nyq) * bins.length), b = Math.max(a + 1, Math.ceil((hi / nyq) * bins.length));
+          let sum = 0;
+          for (let i = a; i < b; i++) sum += bins[i];
+          return -100 + ((sum / (b - a)) / 255) * 80;
+        },
       };
     } catch (err) {
       audioStatus.textContent = `Audio failed: ${String(err)}`;
@@ -315,6 +349,7 @@ export function startApp(): void {
           hillsing: '0.3',
           voice: voiceId,
           source: utauSession.active ? `utau:${utauSession.bank?.name}` : 'formant',
+          effects: fxModel.state,
           ...Object.fromEntries([...paramValues].map(([k, v]) => [k, Math.round(v * 1000) / 1000])),
         },
         null,
@@ -477,6 +512,9 @@ export function startApp(): void {
       e.preventDefault();
     } else if (e.code === 'ArrowRight') {
       (e.shiftKey ? navActions.wordForward : navActions.forward)();
+      e.preventDefault();
+    } else if (e.code === 'Backquote') {
+      navActions.hold();
       e.preventDefault();
     } else if (e.code === 'Home') {
       navActions.reset();

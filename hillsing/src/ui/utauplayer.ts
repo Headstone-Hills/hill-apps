@@ -1,10 +1,13 @@
-// Plays a rendered UTAU buffer with transport controls (play from a position, pause, seek, loop). Separate
-// from the formant engine's AudioWorklet: a UTAU render is a finished buffer, so a buffer source is all it needs.
+// Plays a rendered UTAU buffer with transport controls (play from a position, pause, seek, loop). A UTAU render is
+// a finished buffer, so a buffer source is all it needs; it plays through the page's audio bus (effects included).
+
+import { getBus } from '../audio/bus';
 
 export class UtauPlayer {
   private ctx: AudioContext | null = null;
   private source: AudioBufferSourceNode | null = null;
   private buffer: AudioBuffer | null = null;
+  private audio: { samples: Float32Array; sampleRate: number } | null = null;
   private startedAtCtx = 0;
   private startedAtSec = 0;
   private raf = 0;
@@ -21,22 +24,26 @@ export class UtauPlayer {
     return this.active;
   }
   get durationSec(): number {
-    return this.buffer?.duration ?? 0;
+    return this.audio ? this.audio.samples.length / this.audio.sampleRate : 0;
   }
 
   /** Replace the audio (stops playback). */
   setAudio(samples: Float32Array, sampleRate: number): void {
     this.stop();
-    this.ctx ??= new AudioContext();
-    const buf = this.ctx.createBuffer(1, samples.length, sampleRate);
-    buf.getChannelData(0).set(samples);
-    this.buffer = buf;
+    this.audio = { samples, sampleRate };
+    this.buffer = null; // built on the next play, on the bus's context
   }
 
   async play(fromSec: number): Promise<void> {
-    const ctx = this.ctx;
+    if (!this.audio) return;
+    const bus = await getBus();
+    const ctx = bus.ctx;
+    this.ctx = ctx;
+    if (!this.buffer || this.buffer.length !== this.audio.samples.length) {
+      this.buffer = ctx.createBuffer(1, this.audio.samples.length, this.audio.sampleRate);
+      this.buffer.getChannelData(0).set(this.audio.samples);
+    }
     const buf = this.buffer;
-    if (!ctx || !buf) return;
     if (ctx.state !== 'running') await ctx.resume();
     this.halt();
     const src = ctx.createBufferSource();
@@ -44,7 +51,7 @@ export class UtauPlayer {
     gain.gain.value = 0.7;
     src.buffer = buf;
     src.loop = this.loop;
-    src.connect(gain).connect(ctx.destination);
+    src.connect(gain).connect(bus.input);
     const from = Math.max(0, Math.min(buf.duration - 0.01, fromSec));
     src.onended = () => {
       if (this.source === src && this.active) {
