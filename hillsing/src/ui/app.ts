@@ -624,6 +624,30 @@ export function startApp(): void {
           const ev = parseMidiMessage(bytes);
           if (ev) handleEvent(ev);
         },
+        // The newest output samples as they are before the limiter (for measuring the output stage).
+        tail: (): number[] => {
+          const buf = new Float32Array(bus.waveformTailLength);
+          bus.waveformTail(buf);
+          return Array.from(buf);
+        },
+        // Band level (dB) of the signal before and after the output stage, measured the same way, for checking it is transparent.
+        stageDb: (lo: number, hi: number): { pre: number; post: number } => {
+          const pre = bus.preAnalyser;
+          pre.smoothingTimeConstant = bus.analyser.smoothingTimeConstant;
+          pre.minDecibels = bus.analyser.minDecibels;
+          pre.maxDecibels = bus.analyser.maxDecibels;
+          const band = (an: AnalyserNode): number => {
+            const bins = new Float32Array(an.frequencyBinCount);
+            an.getFloatFrequencyData(bins);
+            const nyq = bus.ctx.sampleRate / 2;
+            const a0 = Math.floor((lo / nyq) * bins.length);
+            const b0 = Math.max(a0 + 1, Math.ceil((hi / nyq) * bins.length));
+            let sum = 0;
+            for (let i = a0; i < b0; i++) sum += Math.pow(10, bins[i] / 10);
+            return 10 * Math.log10(sum + 1e-20);
+          };
+          return { pre: band(pre), post: band(bus.analyser) };
+        },
         pitchHz: (): number => {
           const buf = new Float32Array(bus.waveformTailLength);
           bus.waveformTail(buf);

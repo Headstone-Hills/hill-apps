@@ -118,6 +118,11 @@ export class AudioBus {
     this.monitor = { dest, el };
   }
 
+  /** The analyser that watches the signal before the output limiter (for measuring). */
+  get preAnalyser(): AnalyserNode {
+    return this.preMeter;
+  }
+
   /** Fill `into` (up to 2048 samples) with the newest output samples as they were before the limiter, so clipping shows. */
   waveformTail(into: Float32Array<ArrayBuffer>): void {
     this.preMeter.getFloatTimeDomainData(into);
