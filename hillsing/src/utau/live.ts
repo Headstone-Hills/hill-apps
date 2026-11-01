@@ -9,7 +9,7 @@ import type { VoiceSink } from '../engine/performance';
 import type { SyllablePlan } from '../synth/types';
 import { alignOffset, buildAttack, buildRelease } from './livenote';
 import { xsampaVowel } from './planner';
-import { centsToRatio, genderToFormant, type Tuning } from './tuning';
+import { centsToRatio, diag, genderToFormant, type Tuning } from './tuning';
 import type { Voicebank } from './voicebank';
 
 interface Playing {
@@ -97,7 +97,7 @@ export class UtauLiveVoice implements VoiceSink {
     const t = this.tuning();
     f0 *= centsToRatio(t.tune);
     const shaping = { formant: genderToFormant(t.gender), fixedGain: t.consonant, fixedSoftness: t.tone };
-    const attack = await buildAttack(bank, plan, f0, prevVowel, { consonantSpeed: Math.max(1, LIVE_BASE_SPEED * t.velocity), shaping });
+    const attack = await buildAttack(bank, plan, f0, prevVowel, { consonantSpeed: Math.max(1, LIVE_BASE_SPEED * t.velocity), shaping, sweepFraction: diag.stillSustain ? 0.02 : undefined });
     if (!attack || mine !== this.token) return; // nothing to sing, or a newer key press took over
     if (this.ctx.state !== 'running') await this.ctx.resume();
     if (mine !== this.token) return;
@@ -114,6 +114,9 @@ export class UtauLiveVoice implements VoiceSink {
 
     const attackBuf = this.buffer(attack.samples, attack.sampleRate);
     const attackGain = this.ctx.createGain();
+    const aLevel = diag.muteAttack ? 0 : 1;
+    const lLevel = diag.muteSustain ? 0 : 1;
+    attackGain.gain.value = aLevel;
     attackGain.connect(note);
     const a = this.ctx.createBufferSource();
     a.buffer = attackBuf;
@@ -126,9 +129,9 @@ export class UtauLiveVoice implements VoiceSink {
       const loopGain = this.ctx.createGain();
       loopGain.gain.setValueAtTime(0, t0);
       loopGain.gain.setValueAtTime(0, loopAt);
-      loopGain.gain.linearRampToValueAtTime(1, loopAt + attack.crossfade);
+      loopGain.gain.linearRampToValueAtTime(lLevel, loopAt + attack.crossfade);
       loopGain.connect(note);
-      attackGain.gain.setValueAtTime(1, loopAt);
+      attackGain.gain.setValueAtTime(aLevel, loopAt);
       attackGain.gain.linearRampToValueAtTime(0, loopAt + attack.crossfade);
       const l = this.ctx.createBufferSource();
       l.buffer = this.buffer(attack.loop, attack.sampleRate);
@@ -175,7 +178,7 @@ export class UtauLiveVoice implements VoiceSink {
       const noteLevel = p.gain.gain.value;
       const out = this.ctx.createGain();
       out.gain.setValueAtTime(0, t);
-      out.gain.linearRampToValueAtTime(noteLevel, t + tail.overlap);
+      out.gain.linearRampToValueAtTime(diag.muteEnd ? 0 : noteLevel, t + tail.overlap);
       out.connect(this.master);
       const s = this.ctx.createBufferSource();
       s.buffer = this.buffer(tail.samples, tail.sampleRate);

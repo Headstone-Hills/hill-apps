@@ -150,7 +150,14 @@
 
       <section id="tuning" class="perf">
         <h2>Sample voice tuning <span class="hint long">like a UTAU editor's parameters: applies to live keys and to melodies sung by the voicebank</span></h2>
-        <div class="nav"><button id="tune-reset" type="button" title="Put every tuning knob back to its default">Reset tuning</button><span id="tune-note" class="hint"></span></div>
+        <div class="nav"><button id="tune-reset" type="button" title="Put every tuning knob back to its default">Reset tuning</button><span id="tune-note" class="hint"></span>
+          <span class="diag" title="Listening switches for finding which part of a note has an artifact: mute the consonant and start of the vowel, the held vowel, or the ending, or hold the vowel still instead of letting it drift">
+            Hear only:
+            <label class="inline"><input id="diag-attack" type="checkbox" /> start</label>
+            <label class="inline"><input id="diag-sustain" type="checkbox" /> held vowel</label>
+            <label class="inline"><input id="diag-end" type="checkbox" /> ending</label>
+            <label class="inline"><input id="diag-still" type="checkbox" /> still vowel</label>
+          </span></div>
         <div id="tune-grid" class="tune-grid"></div>
       </section>
 

@@ -107,3 +107,15 @@ export class TuningModel {
     }
   }
 }
+
+/**
+ * Listening switches for finding which part of a live sample note carries an artifact: mute the attack (the consonant
+ * and start of the vowel), the held vowel or the ending, or hold the vowel still instead of letting it drift. Not saved.
+ */
+export interface Diag {
+  muteAttack: boolean;
+  muteSustain: boolean;
+  muteEnd: boolean;
+  stillSustain: boolean;
+}
+export const diag: Diag = { muteAttack: false, muteSustain: false, muteEnd: false, stillSustain: false };

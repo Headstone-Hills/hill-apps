@@ -12,7 +12,7 @@ import { MidiFilePanel } from './midifile';
 import { fxModel, getBus } from '../audio/bus';
 import { UtauLiveVoice } from '../utau/live';
 import { EFFECTS } from '../audio/fxparams';
-import { formatTuning, TuningModel, TUNING_PARAMS } from '../utau/tuning';
+import { diag, formatTuning, TuningModel, TUNING_PARAMS } from '../utau/tuning';
 import { TuningPanel } from './tuning';
 import { UtauSession } from '../utau/session';
 import { EffectsPanel } from './effects';
@@ -491,6 +491,22 @@ export function startApp(): void {
 
   new UtauPanel(utauSession);
   new TuningPanel($('tune-grid'), $<HTMLButtonElement>('tune-reset'), tuning);
+  // Listening switches: tick one or more parts of a note to hear only those; "still vowel" holds the vowel steady.
+  const solo = { attack: $<HTMLInputElement>('diag-attack'), sustain: $<HTMLInputElement>('diag-sustain'), end: $<HTMLInputElement>('diag-end') };
+  const still = $<HTMLInputElement>('diag-still');
+  const applyDiag = (): void => {
+    const any = solo.attack.checked || solo.sustain.checked || solo.end.checked;
+    diag.muteAttack = any && !solo.attack.checked;
+    diag.muteSustain = any && !solo.sustain.checked;
+    diag.muteEnd = any && !solo.end.checked;
+    diag.stillSustain = still.checked;
+  };
+  for (const c of [solo.attack, solo.sustain, solo.end, still]) {
+    c.addEventListener('change', () => {
+      applyDiag();
+      c.blur();
+    });
+  }
   const tuneNote = $('tune-note');
   const showTuneNote = (): void => {
     tuneNote.textContent = utauSession.active ? '' : 'These tune the sample-based voice: pick a voicebank in the Voice menu to hear them.';

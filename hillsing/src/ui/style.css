@@ -255,3 +255,7 @@ body[data-view="perform"] .nav label.inline { font-size: 12px; }
 body[data-view="perform"] #scope-wave { height: 44px; }
 body[data-view="perform"] #scope-spec { height: 70px; }
 body[data-view="perform"] section { padding: 8px 12px; }
+.diag { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; font-size: 12px; color: var(--muted); }
+body[data-view="perform"] .scope-status .scope-readout { margin: 0 0 1px; min-height: 1.2em; }
+body[data-view="perform"] #tuning .nav { flex-wrap: nowrap; }
+body[data-view="perform"] .diag { gap: 6px; white-space: nowrap; }

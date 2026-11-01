@@ -371,3 +371,5 @@ The **Scope** shows the last few seconds of everything you hear: a waveform (rea
 The **Test text** buttons next to the lyrics box load a text that uses every sound of English once (**All sounds**) or an ordinary sentence (**Sentence**).
 
 **Flagging artifacts:** press **Q** while a syllable is playing (or within a couple of seconds after it) to flag it as having a strange sound artifact. The syllable's chip gets a red outline, a red ⚠ line goes on the scope (and into a recording's PNG), and it is added to a saved list. **⚑ n** copies the list as text (syllable, its sounds, note, voice, time); **✕** clears it.
+
+**Finding which part of a note has an artifact:** the **Hear only** tick boxes in the tuning row mute everything except the parts you tick: **start** (the consonant and the opening of the vowel), **held vowel**, **ending**. **still vowel** holds the vowel steady instead of letting it drift slowly. They apply to live sample-voice notes and are not saved.
