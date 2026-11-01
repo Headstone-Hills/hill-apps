@@ -1,4 +1,4 @@
-// The Effects section: a stompbox per effect (footswitch + LED + knobs), a preset menu and a reset button. It only edits
+// The Effects section: a panel per effect (on/off switch + knobs), a preset menu and a reset button. It only edits
 // the FxModel; the audio rack follows the model (see audio/bus.ts), so the panel works before audio has started.
 
 import { EFFECTS, FX_PRESETS, formatParam, sliderToValue, valueToSlider, type EffectId, type FxModel } from '../audio/fxparams';
@@ -84,6 +84,7 @@ export class EffectsPanel {
       this.model.setEnabled(id, on.checked);
       card.classList.toggle('on', on.checked);
       foot.setAttribute('aria-pressed', String(on.checked));
+      foot.textContent = on.checked ? 'On' : 'Off';
     });
     this.toggles.set(id, on);
 
@@ -189,6 +190,7 @@ export class EffectsPanel {
     foot.type = 'button';
     foot.className = 'fx-foot';
     foot.setAttribute('aria-pressed', 'false');
+    foot.textContent = 'Off';
     foot.setAttribute('aria-label', `${spec.name} on/off`);
     foot.title = `${spec.name}: click to switch on or off`;
     foot.addEventListener('click', () => {
@@ -208,6 +210,8 @@ export class EffectsPanel {
       const t = this.toggles.get(e.id);
       if (t) t.checked = on;
       this.cards.get(e.id)?.querySelector('.fx-foot')?.setAttribute('aria-pressed', String(on));
+      const f = this.cards.get(e.id)?.querySelector('.fx-foot');
+      if (f) f.textContent = on ? 'On' : 'Off';
       this.cards.get(e.id)?.classList.toggle('on', on);
     }
     for (const r of this.rows) {

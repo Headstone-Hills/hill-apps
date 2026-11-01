@@ -147,56 +147,37 @@ body[data-view="perform"] #fx .nav { margin: 0 0 6px; }
   body[data-view="perform"] #sec-lyrics, body[data-view="perform"] #sec-syllables { grid-column: 1; }
 }
 
-/* ---- Effects as stompboxes: one enclosure per effect with knobs, an LED and a footswitch ---- */
-.fx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-top: 10px; align-items: stretch; }
-.fx-card {
-  --pedal: #4a5463; --pedal-hi: #5d6a7c; --ink: #fff;
-  position: relative; display: flex; flex-direction: column; gap: 8px; min-width: 0;
-  padding: 12px 10px 10px; border-radius: 10px; border: 1px solid rgba(0,0,0,0.55);
-  background: linear-gradient(165deg, var(--pedal-hi), var(--pedal) 55%);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), inset 0 -2px 6px rgba(0,0,0,0.3), 0 4px 10px rgba(0,0,0,0.45);
-  color: var(--ink);
-}
-.fx-card::before, .fx-card::after { content: ''; position: absolute; top: 5px; width: 6px; height: 6px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #ddd, #555); box-shadow: 0 1px 1px rgba(0,0,0,0.6); }
-.fx-card::before { left: 6px; } .fx-card::after { right: 6px; }
-.fx-card[data-fx="bitcrush"]   { --pedal: #a8481f; --pedal-hi: #d4672f; }
-.fx-card[data-fx="distortion"] { --pedal: #a0262b; --pedal-hi: #cf3b40; }
-.fx-card[data-fx="eq"]         { --pedal: #2a5f93; --pedal-hi: #3f82c4; }
-.fx-card[data-fx="compressor"] { --pedal: #2f7a5a; --pedal-hi: #46a47c; }
-.fx-card[data-fx="chorus"]     { --pedal: #1f7683; --pedal-hi: #33a3b3; }
-.fx-card[data-fx="delay"]      { --pedal: #6a4a9e; --pedal-hi: #8c68c8; }
-.fx-card[data-fx="reverb"]     { --pedal: #8a6a1c; --pedal-hi: #bd9330; }
-.fx-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px; margin-top: 4px; }
-.fx-name { font: 800 13px/1.1 system-ui, sans-serif; letter-spacing: 0.14em; text-transform: uppercase; text-shadow: 0 1px 0 rgba(0,0,0,0.45); }
-.fx-led { flex: none; width: 10px; height: 10px; border-radius: 50%; background: #3a1010; border: 1px solid rgba(0,0,0,0.6); box-shadow: inset 0 1px 2px rgba(0,0,0,0.7); }
-.fx-card.on .fx-led { background: #ff4a3d; box-shadow: 0 0 8px 2px rgba(255,74,61,0.8), inset 0 -1px 2px rgba(255,255,255,0.4); }
-.fx-params { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 4px; padding: 8px 4px; border-radius: 6px; background: rgba(0,0,0,0.2); box-shadow: inset 0 1px 3px rgba(0,0,0,0.4); }
+/* ---- Effects: a panel per effect with an on/off switch and rotary knobs ---- */
+.fx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin-top: 10px; align-items: stretch; }
+.fx-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 10px 10px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.fx-card.on { border-color: var(--accent); }
+.fx-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fx-name { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
+.fx-led { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--done); }
+.fx-card.on .fx-led { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.fx-params { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 4px; }
 .fx-param { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; text-align: center; }
-.fx-label { font: 700 9px/1.15 system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.92; }
-.fx-param output { font: 11px/1.1 ui-monospace, monospace; color: rgba(255,255,255,0.85); white-space: nowrap; }
+.fx-label { font-size: 9.5px; line-height: 1.15; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.fx-param output { font: 11px/1.1 ui-monospace, monospace; color: var(--text); white-space: nowrap; }
 .fx-knob {
-  --t: 0; --size: 44px; --arc: rgba(255,255,255,0.95);
+  --t: 0; --size: 44px; --arc: var(--accent);
   position: relative; width: var(--size); height: var(--size); border-radius: 50%; cursor: ns-resize; touch-action: none; user-select: none;
-  background: conic-gradient(from -135deg, var(--arc) calc(var(--t) * 270deg), rgba(0,0,0,0.45) 0 270deg, transparent 0);
+  background: conic-gradient(from -135deg, var(--arc) calc(var(--t) * 270deg), var(--line) 0 270deg, transparent 0);
 }
-.fx-knob::before { content: ''; position: absolute; inset: 5px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #5b616b, #1b1e23 75%); box-shadow: 0 2px 4px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.25); }
-.fx-knob::after { content: ''; position: absolute; left: calc(50% - 1.5px); top: 7px; width: 3px; height: calc(var(--size) / 2 - 9px); border-radius: 2px; background: #fff; transform-origin: 50% calc(var(--size) / 2 - 7px); transform: rotate(calc(-135deg + var(--t) * 270deg)); }
+.fx-knob::before { content: ''; position: absolute; inset: 5px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #3a424e, #14171c 78%); box-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+.fx-knob::after { content: ''; position: absolute; left: calc(50% - 1.5px); top: 7px; width: 3px; height: calc(var(--size) / 2 - 9px); border-radius: 2px; background: var(--text); transform-origin: 50% calc(var(--size) / 2 - 7px); transform: rotate(calc(-135deg + var(--t) * 270deg)); }
 .fx-knob:focus-visible { outline: 2px solid var(--next); outline-offset: 3px; }
-.fx-card:not(.on) .fx-knob { --arc: rgba(255,255,255,0.45); }
-.fx-foot {
-  align-self: center; margin-top: auto; width: 56px; height: 34px; border-radius: 8px; cursor: pointer; padding: 0;
-  border: 1px solid #111; background: linear-gradient(#cfd3d9, #8a9099 60%, #767c85); box-shadow: 0 3px 0 #2b2f35, 0 5px 8px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.7);
-}
-.fx-foot:active, .fx-foot[aria-pressed="true"] { transform: translateY(2px); box-shadow: 0 1px 0 #2b2f35, 0 2px 4px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.5); }
-.fx-foot:focus-visible { outline: 2px solid var(--next); outline-offset: 3px; }
-.fx-warn { margin: 0; color: #ffd9d6; font-size: 11px; }
+.fx-card:not(.on) .fx-knob { --arc: var(--done); }
+.fx-foot { margin-top: auto; align-self: stretch; padding: 3px 0; font-size: 12px; cursor: pointer; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--muted); }
+.fx-foot[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #0b1118; font-weight: 600; }
+.fx-foot:focus-visible { outline: 2px solid var(--next); outline-offset: 2px; }
+.fx-warn { margin: 0; font-size: 11px; }
 
-/* Perform: seven pedals side by side when there is room, with slightly smaller knobs */
+/* Perform: seven panels side by side when there is room, with slightly smaller knobs */
 body[data-view="perform"] #fx .nav { margin: 0 0 4px; }
 body[data-view="perform"] .fx-grid { gap: 8px; margin-top: 6px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-body[data-view="perform"] .fx-card { padding: 10px 6px 8px; gap: 6px; }
+body[data-view="perform"] .fx-card { padding: 8px 6px 6px; gap: 6px; }
 body[data-view="perform"] .fx-knob { --size: 38px; }
-body[data-view="perform"] .fx-params { gap: 6px 2px; padding: 6px 2px; }
 @media (min-width: 1500px) {
   body[data-view="perform"] .fx-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); }
 }
