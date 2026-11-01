@@ -92,6 +92,7 @@ export function pitchMarks(src: PsolaSource, start: number, end: number): number
       }
     }
     const last = marks[marks.length - 1];
+    if (last !== undefined) best = trackMark(x, last, Math.round(pos), period, best);
     if (last === undefined || best - last >= period * 0.6) {
       marks.push(best);
       pos = best + period;
@@ -100,6 +101,39 @@ export function pitchMarks(src: PsolaSource, start: number, end: number): number
     }
   }
   return marks;
+}
+
+/**
+ * Place the next mark by waveform shape rather than by the biggest peak. Vowels with two strong peaks per cycle (the
+ * bright front vowels) make "the biggest peak" flip between the two from one cycle to the next; grains cut around
+ * flipping marks sit out of step and the vowel skips and warbles. Instead, among positions near where the next cycle is
+ * expected, take the one whose surrounding cycle best matches the cycle at the previous mark (normalised correlation),
+ * so every mark sits at the same point of the waveform. Falls back to the peak position when the signal is too quiet.
+ */
+function trackMark(x: Float32Array, prev: number, expected: number, period: number, peak: number): number {
+  const half = Math.max(4, Math.round(period / 2));
+  const reach = Math.max(2, Math.round(period / 4));
+  if (prev - half < 0 || expected + reach + half >= x.length) return peak;
+  let e0 = 0;
+  for (let i = -half; i < half; i++) e0 += x[prev + i] * x[prev + i];
+  if (e0 < 1e-9) return peak;
+  let bestC = -Infinity;
+  let bestAt = peak;
+  for (let cand = expected - reach; cand <= expected + reach; cand++) {
+    let c = 0;
+    let e1 = 0;
+    for (let i = -half; i < half; i++) {
+      const v = x[cand + i];
+      c += x[prev + i] * v;
+      e1 += v * v;
+    }
+    const score = c / (Math.sqrt(e0 * e1) + 1e-12) - 0.0005 * Math.abs(cand - expected);
+    if (score > bestC) {
+      bestC = score;
+      bestAt = cand;
+    }
+  }
+  return bestAt;
 }
 
 /** +1 when the voiced part of [start, end) peaks higher above zero than below it, else -1. */
