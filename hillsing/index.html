@@ -15,6 +15,7 @@
       </nav>
       <div class="status">
         <button id="start" type="button">Start audio</button>
+        <button id="piano-toggle" type="button" aria-pressed="false" title="Show or hide an on-screen piano you can play by touch">🎹 Piano</button>
         <span id="audio-status">Audio off</span>
         <span id="midi-status">MIDI: not connected</span>
         <span id="latency"></span>
@@ -45,11 +46,11 @@
         <h2>Syllables <span id="position" class="hint"></span></h2>
         <div class="nav">
           <button id="nav-reset" type="button" title="Home">⏮ Start</button>
-          <button id="nav-word-back" type="button" title="Shift+Left">◀◀ Word</button>
-          <button id="nav-back" type="button" title="Left">◀ Syllable</button>
-          <button id="nav-forward" type="button" title="Right">Syllable ▶</button>
-          <button id="nav-word-forward" type="button" title="Shift+Right">Word ▶▶</button>
-          <button id="nav-hold" type="button" aria-pressed="false" title="Stay on the current word: new notes sing it again instead of moving on (`)">⏸ Hold word</button>
+          <button id="nav-word-back" type="button" title="Alt/Option+Left">◀◀ Word</button>
+          <button id="nav-back" type="button" title="Left arrow">◀ Syllable</button>
+          <button id="nav-forward" type="button" title="Right arrow">Syllable ▶</button>
+          <button id="nav-word-forward" type="button" title="Alt/Option+Right">Word ▶▶</button>
+          <button id="nav-hold" type="button" aria-pressed="false" title="Stay on the current syllable: new notes sing it again instead of moving on (` or Caps Lock)">⏸ Hold word</button>
           <button id="nav-melisma" type="button" title="Press and hold (or hold Shift): notes you play glide on the vowel being sung instead of moving to the next syllable">〰 Melisma<span class="long"> (Shift)</span></button>
           <label class="inline"><input id="wrap" type="checkbox" /> Loop<span class="long"> at end</span></label>
         </div>
@@ -239,7 +240,7 @@
             Computer keys: <kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><kbd>F</kbd><kbd>G</kbd><kbd>H</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd>
             are white keys, <kbd>W</kbd><kbd>E</kbd><kbd>T</kbd><kbd>Y</kbd><kbd>U</kbd><kbd>O</kbd><kbd>P</kbd> are black keys.
             <kbd>Z</kbd>/<kbd>X</kbd> change octave (<span id="octave"></span>). Hold one key and press another for legato.
-            Arrow keys / Home navigate the lyrics when the text box is not focused.
+            Left / Right arrow keys step back and forward by syllable (Alt/Option + arrow jumps a word, Home goes to the start) when the text box is not focused. On a phone, use the on-screen piano.
           </p>
           <h2>MIDI navigation</h2>
           <p class="hint">Bind a spare key, pad or CC button: click Learn, then press it. Bound notes are not sung.</p>
@@ -248,5 +249,17 @@
         </div>
       </section>
     </main>
+    <div id="piano" class="piano-bar" hidden>
+      <div class="piano-tools">
+        <button id="piano-down" type="button" aria-label="Octave down">◀</button>
+        <span id="piano-range" class="piano-range"></span>
+        <button id="piano-up" type="button" aria-label="Octave up">▶</button>
+        <button id="piano-back" type="button" title="Back one syllable">◀ Syl</button>
+        <button id="piano-fwd" type="button" title="Forward one syllable">Syl ▶</button>
+        <button id="piano-melisma" type="button" title="Press and hold with one finger while you play with another: the notes glide on the vowel being sung">〰 Melisma</button>
+        <button id="piano-hold" type="button" aria-pressed="false" title="Stay on the current word">⏸ Hold</button>
+      </div>
+      <div id="piano-keys" class="piano-keys" aria-label="Piano keyboard"></div>
+    </div>
   </body>
 </html>

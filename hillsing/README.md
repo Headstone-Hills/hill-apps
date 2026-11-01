@@ -356,7 +356,7 @@ The **Perform** tab in the header puts the voice picker, the lyrics box, the syl
 
 ## Melisma (hold Shift)
 
-While you hold **Shift** (or press and hold the **〰 Melisma** button, which is the way to do it on a phone), notes you play while a word is sounding glide to the new pitch on the vowel being sung, with no new syllable and no new onset. If the first key has already come up by the time you press Shift, the next note sings the same vowel again without its consonant. Release Shift and the next note sings the next syllable. This is the live version of writing `~` after a word.
+While you hold **Shift** (or press and hold the **〰 Melisma** button, which is the way to do it on a phone), notes you play while a word is sounding glide to the new pitch on the vowel being sung, with no new syllable and no new onset. If no key is down when you press Shift, the next note simply sings the next syllable. Release Shift and the next note sings the next syllable. This is the live version of writing `~` after a word.
 
 ## Sample voice tuning
 
@@ -375,3 +375,5 @@ The **Test text** buttons next to the lyrics box load a text that uses every sou
 **Finding which part of a note has an artifact:** the **Hear only** tick boxes in the tuning row mute everything except the parts you tick: **start** (the consonant and the opening of the vowel), **held vowel**, **ending**. **still vowel** holds the vowel steady instead of letting it drift slowly. They apply to live sample-voice notes and are not saved.
 
 The Scope can be folded away with the ▾ button in its heading (the choice is remembered). A recording keeps running while it is folded, and the heading shows a red ● REC.
+
+**Locking and highlighting:** **Caps Lock** locks on the current syllable (the same as the Hold button) until you switch it off; if you turn it on while a syllable is sounding, that syllable is the one locked. While a key is held, the syllable being sung stays highlighted (solid gold) and the highlight moves to the next one only when the key comes up. The arrow keys always step by syllable; Alt/Option+arrow jumps a whole word.

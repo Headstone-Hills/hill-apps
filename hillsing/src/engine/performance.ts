@@ -11,6 +11,8 @@ export interface VoiceSink {
 export interface PerformanceEvents {
   /** Called when a syllable starts sounding (for UI highlighting). */
   onSyllable?: (index: number) => void;
+  /** Called when the voice starts sounding (true) and when the last key comes up and it stops (false). */
+  onGate?: (open: boolean) => void;
 }
 
 const A4 = 440;
@@ -43,8 +45,6 @@ export class Performance {
    * (melisma): no new syllable, no new onset. With nothing sounding it plays normally.
    */
   melisma = false;
-  /** The syllable most recently sung, so melisma can sing its vowel again after the key came up. */
-  private lastPlan: { nucleus: string; holdFirst?: boolean } | null = null;
 
   constructor(
     private sink: VoiceSink,
@@ -70,12 +70,6 @@ export class Performance {
       this.sink.setF0(f0);
       return;
     }
-    if (this.melisma && this.lastPlan) {
-      // Nothing is sounding any more (the first key came up): sing the same vowel again, with no consonant, and stay on this syllable.
-      this.sink.noteOn({ onset: [], nucleus: this.lastPlan.nucleus, coda: [], holdFirst: this.lastPlan.holdFirst }, f0, velocity01, false);
-      this.gateOpen = true;
-      return;
-    }
     const index = this.pointer.index;
     const syl = this.hold ? this.pointer.peek() : this.pointer.advance();
     if (!syl) {
@@ -83,15 +77,16 @@ export class Performance {
       if (legato) this.sink.setF0(f0);
       return;
     }
-    this.lastPlan = { nucleus: syl.nucleus, holdFirst: syl.holdFirst };
     this.sink.noteOn(
       { onset: syl.onset, nucleus: syl.nucleus, coda: syl.coda, holdFirst: syl.holdFirst },
       f0,
       velocity01,
       legato,
     );
+    const wasOpen = this.gateOpen;
     this.gateOpen = true;
     this.events.onSyllable?.(index);
+    if (!wasOpen) this.events.onGate?.(true);
   }
 
   noteOff(note: number): void {
@@ -127,6 +122,7 @@ export class Performance {
 
   private closeGate(): void {
     this.gateOpen = false;
+    this.events.onGate?.(false);
     this.sink.noteOff();
   }
 

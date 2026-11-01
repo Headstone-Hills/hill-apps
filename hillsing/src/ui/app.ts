@@ -19,6 +19,7 @@ import { EffectsPanel } from './effects';
 import { UtauPanel } from './utau';
 import { Spectrogram } from './spectrogram';
 import { Scope } from './scope';
+import { OnScreenPiano } from './keyboard';
 import { ALL_SOUNDS_TEXT, SENTENCE_TEXT } from '../text/testtext';
 
 const DEFAULT_LYRICS = 'Twinkle twinkle little star, how I wonder what you are';
@@ -111,11 +112,18 @@ export function startApp(): void {
 
   // The syllable that is sounding (or sounded last), so the Q key can flag it as having an artifact.
   let playing: { index: number; note: number; at: number } | null = null;
+  let sounding = false; // a key is down (or the pedal holds the note): the syllable being sung stays highlighted
   let lastNoteOn = 60;
   const performance = new Performance(sink, pointer, {
     onSyllable: (i) => {
       playing = { index: i, note: lastNoteOn, at: window.performance.now() };
+      sounding = true;
+      updatePointerView();
       scope.mark(pointer.current.syllables[i]?.label ?? '');
+    },
+    onGate: (open) => {
+      sounding = open;
+      updatePointerView();
     },
   });
   const bindings = new NavBindings(storage);
@@ -253,19 +261,26 @@ export function startApp(): void {
   }
 
   function updatePointerView(): void {
-    const idx = pointer.index;
+    // While a key is down the syllable being sung stays highlighted; the highlight moves on when the key comes up.
+    // (If you have jumped somewhere else with the arrows or a click, the highlight follows that instead.)
+    const next = pointer.index;
+    const singing = sounding && playing !== null && (next === playing.index + 1 || next === playing.index);
+    const idx = singing && playing ? playing.index : next;
     chips.forEach((chip, i) => {
       chip.classList.toggle('done', i < idx);
       chip.classList.toggle('next', i === idx);
+      chip.classList.toggle('playing', singing && i === idx);
     });
     const end = document.getElementById('end-marker');
-    if (end) end.style.opacity = pointer.atEnd ? '1' : '0.25';
+    if (end) end.style.opacity = pointer.atEnd && !singing ? '1' : '0.25';
     posLabel.textContent = pointer.length
-      ? pointer.atEnd
-        ? `— end of text (${pointer.length} syllables)`
-        : performance.hold
-          ? `— holding on: ${idx + 1} of ${pointer.length}`
-          : `— next: ${idx + 1} of ${pointer.length}`
+      ? singing
+        ? `— singing: ${idx + 1} of ${pointer.length}`
+        : pointer.atEnd
+          ? `— end of text (${pointer.length} syllables)`
+          : performance.hold
+            ? `— locked on: ${idx + 1} of ${pointer.length}`
+            : `— next: ${idx + 1} of ${pointer.length}`
       : '— type some lyrics';
     chips[idx]?.scrollIntoView({ block: 'nearest' });
   }
@@ -310,39 +325,55 @@ export function startApp(): void {
   $('nav-word-back').addEventListener('click', navActions.wordBack);
   $('nav-word-forward').addEventListener('click', navActions.wordForward);
   const holdBtn = $<HTMLButtonElement>('nav-hold');
+  const pianoHold = $<HTMLButtonElement>('piano-hold');
   /** Hold on the current word: notes keep singing it and the lyric pointer does not move until hold is turned off. */
   function setHold(on: boolean): void {
+    // Turning the lock on while a syllable is sounding locks on that syllable (the pointer has already moved past it).
+    if (on && !performance.hold && sounding && playing) pointer.setIndex(playing.index);
+    // Letting go of the lock after the locked syllable has been sung: the next note moves on to the one after it.
+    if (!on && performance.hold && playing && pointer.index === playing.index) pointer.setIndex(pointer.index + 1);
     performance.hold = on;
-    holdBtn.setAttribute('aria-pressed', String(on));
-    holdBtn.classList.toggle('active', on);
+    for (const b of [holdBtn, pianoHold]) {
+      b.setAttribute('aria-pressed', String(on));
+      b.classList.toggle('active', on);
+    }
     holdBtn.textContent = on ? '▶ Release hold' : '⏸ Hold word';
+    pianoHold.textContent = on ? '▶ Release' : '⏸ Hold';
     updatePointerView();
   }
-  holdBtn.addEventListener('click', () => {
-    navActions.hold();
-    holdBtn.blur(); // so computer keys play again
-  });
-  // Melisma: while Shift (or the on-screen button) is held, notes glide on the vowel being sung.
-  const melismaBtn = $<HTMLButtonElement>('nav-melisma');
-  let shiftDown = false;
-  let melismaPressed = false;
-  function updateMelisma(): void {
-    const on = shiftDown || melismaPressed;
-    performance.melisma = on;
-    melismaBtn.classList.toggle('active', on);
+  for (const b of [holdBtn, pianoHold]) {
+    b.addEventListener('click', () => {
+      navActions.hold();
+      b.blur(); // so computer keys play again
+    });
   }
-  melismaBtn.addEventListener('pointerdown', (e) => {
-    e.preventDefault(); // keep focus where it is so computer keys keep playing
-    melismaBtn.setPointerCapture(e.pointerId);
-    melismaPressed = true;
-    updateMelisma();
-  });
-  const releaseMelisma = () => {
-    melismaPressed = false;
-    updateMelisma();
-  };
-  melismaBtn.addEventListener('pointerup', releaseMelisma);
-  melismaBtn.addEventListener('pointercancel', releaseMelisma);
+  // Melisma: while Shift (or an on-screen Melisma button) is held, notes glide on the vowel being sung.
+  const melismaBtns = [$<HTMLButtonElement>('nav-melisma'), $<HTMLButtonElement>('piano-melisma')];
+  const melismaHeld = new Set<HTMLElement>();
+  let shiftDown = false;
+  function updateMelisma(): void {
+    const on = shiftDown || melismaHeld.size > 0;
+    performance.melisma = on;
+    for (const b of melismaBtns) b.classList.toggle('active', on);
+  }
+  for (const btn of melismaBtns) {
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); // keep focus where it is so computer keys keep playing
+      try {
+        btn.setPointerCapture(e.pointerId);
+      } catch {
+        /* the pointer may already be gone */
+      }
+      melismaHeld.add(btn);
+      updateMelisma();
+    });
+    const release = (): void => {
+      melismaHeld.delete(btn);
+      updateMelisma();
+    };
+    btn.addEventListener('pointerup', release);
+    btn.addEventListener('pointercancel', release);
+  }
   const wrap = $<HTMLInputElement>('wrap');
   wrap.addEventListener('change', () => (pointer.wrap = wrap.checked));
 
@@ -737,16 +768,80 @@ export function startApp(): void {
   applyVoice(voiceId);
   fillMainVoice();
 
+  // ---- On-screen piano: for phones and tablets, or anywhere with no keyboard; shown by default on touch screens ----
+  const PIANO_KEY = 'hillsing.piano.v1';
+  const pianoBar = $('piano');
+  const pianoToggle = $<HTMLButtonElement>('piano-toggle');
+  const piano = new OnScreenPiano(
+    $('piano-keys'),
+    {
+      noteOn: (note) => {
+        if (!engine) {
+          void startAudio(); // this touch is the user gesture; the next one will sound
+          audioStatus.textContent = 'Audio starting: tap a key again.';
+          return;
+        }
+        handleEvent({ type: 'noteOn', note, velocity: 0.8 });
+      },
+      noteOff: (note) => handleEvent({ type: 'noteOff', note }),
+    },
+    60,
+    (label) => {
+      $('piano-range').textContent = label;
+    },
+  );
+  $('piano-down').addEventListener('click', () => piano.shiftOctave(-1));
+  $('piano-up').addEventListener('click', () => piano.shiftOctave(1));
+  $('piano-back').addEventListener('click', () => navActions.back());
+  $('piano-fwd').addEventListener('click', () => navActions.forward());
+  const setPiano = (on: boolean, remember = true): void => {
+    pianoBar.hidden = !on;
+    document.body.classList.toggle('piano-on', on);
+    pianoToggle.setAttribute('aria-pressed', String(on));
+    if (!on) piano.allOff();
+    if (remember) {
+      try {
+        storage?.setItem(PIANO_KEY, on ? '1' : '0');
+      } catch {
+        /* storage unavailable: fine */
+      }
+    }
+  };
+  pianoToggle.addEventListener('click', () => {
+    setPiano(pianoBar.hidden === true);
+    pianoToggle.blur();
+  });
+  // Keep the page's bottom clear of the piano, whatever size it ends up.
+  new ResizeObserver(() => document.body.style.setProperty('--piano-h', `${pianoBar.offsetHeight + 8}px`)).observe(pianoBar);
+  const savedPiano = storage?.getItem(PIANO_KEY);
+  setPiano(savedPiano === null || savedPiano === undefined ? window.matchMedia('(pointer: coarse)').matches || window.innerWidth <= 760 : savedPiano === '1', false);
+
   const pressed = new Map<string, number>(); // key code -> note (so octave changes don't strand notes)
+
+  // A dropdown keeps keyboard focus after you pick from it, and then swallows the arrow keys: let go of it.
+  document.addEventListener('change', (e) => {
+    if (e.target instanceof HTMLSelectElement) e.target.blur();
+  });
 
   const isTyping = (t: EventTarget | null): boolean =>
     t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement ||
     (t instanceof HTMLInputElement && t.type !== 'checkbox');
 
+  // Caps Lock locks on the current syllable (the same as the Hold button) until it is switched off.
+  let capsLock = false;
+  const syncCaps = (e: KeyboardEvent): void => {
+    const on = typeof e.getModifierState === 'function' && e.getModifierState('CapsLock');
+    if (on === capsLock) return;
+    capsLock = on;
+    setHold(on);
+  };
+
   window.addEventListener('keydown', (e) => {
+    syncCaps(e);
     shiftDown = e.shiftKey;
     updateMelisma();
-    if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+    const arrow = e.code === 'ArrowLeft' || e.code === 'ArrowRight';
+    if (isTyping(e.target) || e.ctrlKey || e.metaKey || (e.altKey && !arrow)) return;
     if (e.code in KEY_OFFSETS) {
       if (e.repeat || pressed.has(e.code)) return;
       if (!engine) {
@@ -770,10 +865,11 @@ export function startApp(): void {
       void filePanel?.togglePlay();
       e.preventDefault();
     } else if (e.code === 'ArrowLeft') {
-      (e.shiftKey ? navActions.wordBack : navActions.back)();
+      // Arrow keys step by syllable, Shift or not (Shift is for melisma); Alt/Option+arrow jumps a whole word.
+      (e.altKey ? navActions.wordBack : navActions.back)();
       e.preventDefault();
     } else if (e.code === 'ArrowRight') {
-      (e.shiftKey ? navActions.wordForward : navActions.forward)();
+      (e.altKey ? navActions.wordForward : navActions.forward)();
       e.preventDefault();
     } else if (e.code === 'Backquote') {
       navActions.hold();
@@ -784,6 +880,7 @@ export function startApp(): void {
     }
   });
   window.addEventListener('keyup', (e) => {
+    syncCaps(e);
     shiftDown = e.shiftKey;
     updateMelisma();
     const note = pressed.get(e.code);
@@ -793,7 +890,7 @@ export function startApp(): void {
   });
   window.addEventListener('blur', () => {
     shiftDown = false;
-    melismaPressed = false;
+    melismaHeld.clear();
     updateMelisma();
     pressed.clear();
     performance.allNotesOff();

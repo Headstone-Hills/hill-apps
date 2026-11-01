@@ -51,15 +51,32 @@ describe('Performance (mono legato)', () => {
     expect(pointer.index).toBe(2);
   });
 
-  it('melisma pressed only after the first key came up sings the same vowel again, with no consonant and no new syllable', () => {
+  it('melisma with nothing sounding (the first key already came up) still sings the next syllable', () => {
     const { calls, perf, pointer } = setup('hello big world');
     perf.noteOn(60, 1);
     perf.noteOff(60);
     perf.melisma = true;
     perf.noteOn(64, 1);
     expect(calls.map((c) => c.t)).toEqual(['on', 'off', 'on']);
-    expect(calls[2]).toMatchObject({ legato: false, nucleus: calls[0].nucleus, onset: [] });
-    expect(pointer.index).toBe(1);
+    expect(calls[2].legato).toBe(false);
+    expect(calls[2].onset.length + (calls[2].nucleus ? 1 : 0)).toBeGreaterThan(0);
+    expect(calls[2].nucleus).not.toBe(calls[0].nucleus); // the next syllable ("lo"), not the first one again
+    expect(pointer.index).toBe(2);
+  });
+
+  it('reports when the voice starts and stops sounding, for the highlight that follows the played syllable', () => {
+    const gates: boolean[] = [];
+    const sink: VoiceSink = { noteOn: () => {}, noteOff: () => {}, setF0: () => {} };
+    const pointer = new LyricPointer();
+    pointer.setLyrics(buildLyrics('hello big world', realLookup()));
+    const perf = new Performance(sink, pointer, { onGate: (open) => gates.push(open) });
+    perf.noteOn(60, 1);
+    perf.noteOn(64, 1); // legato: still one stretch of sound
+    expect(gates).toEqual([true]);
+    perf.noteOff(60);
+    expect(gates).toEqual([true]); // another key is still down
+    perf.noteOff(64);
+    expect(gates).toEqual([true, false]);
   });
 
   it('melisma does nothing special at the very first note', () => {

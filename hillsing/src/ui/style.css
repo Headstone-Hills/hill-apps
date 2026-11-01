@@ -257,8 +257,7 @@ body[data-view="perform"] #scope-spec { height: 70px; }
 body[data-view="perform"] section { padding: 8px 12px; }
 .diag { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; font-size: 12px; color: var(--muted); }
 body[data-view="perform"] .scope-status .scope-readout { margin: 0 0 1px; min-height: 1.2em; }
-body[data-view="perform"] #tuning .nav { flex-wrap: nowrap; }
-body[data-view="perform"] .diag { gap: 6px; white-space: nowrap; }
+body[data-view="perform"] .diag { gap: 6px; flex-wrap: wrap; }
 
 /* Scope can be folded away */
 button.collapse { padding: 0 6px; margin-right: 4px; font-size: 12px; line-height: 1.4; }
@@ -266,3 +265,31 @@ button.collapse { padding: 0 6px; margin-right: 4px; font-size: 12px; line-heigh
 #scope.collapsed h2 { margin-bottom: 0; }
 .rec-badge { color: #ff4a3d; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; }
 button.collapse { height: 18px; padding: 0 6px; line-height: 1; font-size: 11px; vertical-align: middle; }
+
+/* ---- On-screen piano ---- */
+.piano-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; background: var(--panel); border-top: 1px solid var(--line);
+  padding: 6px max(8px, env(safe-area-inset-left, 0px)) calc(8px + env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-right, 0px)); }
+.piano-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+.piano-tools button { padding: 6px 10px; min-height: 36px; touch-action: manipulation; }
+.piano-range { font-size: 12px; color: var(--muted); min-width: 4.5em; text-align: center; }
+.piano-keys { position: relative; height: 120px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.pk { position: absolute; top: 0; box-sizing: border-box; }
+.pk.white { height: 100%; background: linear-gradient(#fbfbfc, #d9dbe0); border: 1px solid #7d848f; border-radius: 0 0 6px 6px; color: #2a2f37; }
+.pk.black { height: 62%; background: linear-gradient(#30353d, #0b0d11); border: 1px solid #000; border-radius: 0 0 4px 4px; z-index: 2; }
+.pk.white.down { background: linear-gradient(#b4dbff, #6cb6ff); }
+.pk.black.down { background: linear-gradient(#3b7fc0, #1d4d7e); }
+.pk-label { position: absolute; bottom: 4px; left: 0; right: 0; text-align: center; font-size: 10px; pointer-events: none; }
+body.piano-on { padding-bottom: var(--piano-h, 200px); }
+#piano-melisma.active, #piano-hold.active { background: var(--next); border-color: var(--next); color: #1a1405; }
+@media (max-width: 760px) {
+  .piano-keys { height: 104px; }
+}
+@media (min-width: 1250px) {
+  body[data-view="perform"] #tuning .nav { flex-wrap: nowrap; }
+  body[data-view="perform"] .diag { white-space: nowrap; flex-wrap: nowrap; }
+}
+@media (max-width: 760px) {
+  .diag { margin-left: 0; width: 100%; }
+}
+.syl.playing { background: var(--next); color: #1a1405; border-color: var(--next); }
+.syl.playing .ph { color: #4a3a0a; }
