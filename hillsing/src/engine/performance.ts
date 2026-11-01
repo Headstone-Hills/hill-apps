@@ -5,7 +5,8 @@ import type { SyllablePlan } from '../synth/types';
 export interface VoiceSink {
   noteOn(plan: SyllablePlan, f0: number, velocity: number, legato: boolean): void;
   noteOff(): void;
-  setF0(f0: number): void;
+  /** `immediate` is for the pitch wheel: follow it at once instead of gliding at the legato glide time. */
+  setF0(f0: number, immediate?: boolean): void;
 }
 
 export interface PerformanceEvents {
@@ -111,7 +112,7 @@ export class Performance {
   /** Pitch bend as a normalized value in -1..1. */
   pitchBend(value: number): void {
     this.bend = Math.max(-1, Math.min(1, value));
-    if (this.gateOpen) this.sink.setF0(this.frequency(this.lastNote));
+    if (this.gateOpen) this.sink.setF0(this.frequency(this.lastNote), true);
   }
 
   allNotesOff(): void {

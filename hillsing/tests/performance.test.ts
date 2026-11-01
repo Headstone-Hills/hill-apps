@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Performance, type VoiceSink } from '../src/engine/performance';
 import { NavBindings, type NavAction } from '../src/midi/bindings';
-import { parseMidiMessage, type MidiEvent } from '../src/midi/midi';
+import { BendRangeTracker, parseMidiMessage, type MidiEvent } from '../src/midi/midi';
 import { buildLyrics } from '../src/text/lyrics';
 import { LyricPointer } from '../src/text/pointer';
 import { realLookup } from './helpers';
@@ -11,7 +11,7 @@ function setup(text = 'hello big world') {
   const sink: VoiceSink = {
     noteOn: (plan, f0, velocity, legato) => calls.push({ t: 'on', nucleus: plan.nucleus, onset: plan.onset, f0, velocity, legato }),
     noteOff: () => calls.push({ t: 'off' }),
-    setF0: (f0) => calls.push({ t: 'f0', f0 }),
+    setF0: (f0, immediate) => calls.push({ t: 'f0', f0, immediate }),
   };
   const pointer = new LyricPointer();
   pointer.setLyrics(buildLyrics(text, realLookup()));
@@ -182,6 +182,16 @@ describe('Performance (mono legato)', () => {
     expect(calls[3].f0).toBeCloseTo(hz(62), 6);
   });
 
+  it('the pitch wheel follows at once (not at the legato glide time), and a wider range from the keyboard is honoured', () => {
+    const { calls, perf } = setup();
+    perf.noteOn(60, 0.8);
+    perf.pitchBend(0.5);
+    expect(calls[1].immediate).toBe(true);
+    perf.bendRange = 12;
+    perf.pitchBend(1);
+    expect(calls[2].f0).toBeCloseTo(hz(72), 6);
+  });
+
   it('pitch bend while silent does nothing; allNotesOff closes the gate', () => {
     const { calls, perf } = setup();
     perf.pitchBend(0.5);
@@ -198,6 +208,18 @@ describe('parseMidiMessage', () => {
     expect(parseMidiMessage([0x93, 60, 127])).toEqual({ type: 'noteOn', note: 60, velocity: 1 });
     expect(parseMidiMessage([0x90, 60, 0])).toEqual({ type: 'noteOff', note: 60 });
     expect(parseMidiMessage([0x80, 61, 40])).toEqual({ type: 'noteOff', note: 61 });
+  });
+  it('follows the keyboard\'s own pitch bend range setting (RPN 0), and ignores data entry for anything else', () => {
+    const r = new BendRangeTracker();
+    expect(r.handle(6, 12)).toBeNull(); // data entry with no parameter selected
+    expect(r.handle(101, 0)).toBeNull();
+    expect(r.handle(100, 0)).toBeNull();
+    expect(r.handle(6, 12)).toBe(12);
+    expect(r.handle(38, 50)).toBeCloseTo(12.5, 6);
+    expect(r.handle(100, 1)).toBeNull(); // a different parameter now
+    expect(r.handle(6, 7)).toBeNull();
+    expect(r.handle(100, 0)).toBeNull();
+    expect(r.handle(6, 48)).toBe(24); // capped at two octaves
   });
   it('parses CC, pitch bend and all-notes-off; ignores the rest', () => {
     expect(parseMidiMessage([0xb0, 1, 64])).toEqual({ type: 'cc', controller: 1, value: 64 });

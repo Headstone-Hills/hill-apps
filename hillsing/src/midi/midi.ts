@@ -75,3 +75,27 @@ export async function connectMidi(
     },
   };
 }
+
+/**
+ * Follows the MIDI "pitch bend sensitivity" message (registered parameter 0: CC 101 = 0, CC 100 = 0, then data entry
+ * CC 6 = semitones and CC 38 = cents) that some keyboards and controllers send to set how far the wheel bends.
+ */
+export class BendRangeTracker {
+  private msb = -1;
+  private lsb = -1;
+  private semitones = 2;
+  private cents = 0;
+
+  /** Feed every control change; returns the new range in semitones when this message changed it, else null. */
+  handle(controller: number, value: number): number | null {
+    if (controller === 101) this.msb = value;
+    else if (controller === 100) this.lsb = value;
+    else if ((controller === 6 || controller === 38) && this.msb === 0 && this.lsb === 0) {
+      if (controller === 6) this.semitones = value;
+      else this.cents = value;
+      const range = this.semitones + this.cents / 100;
+      return range > 0 ? Math.min(24, range) : null;
+    }
+    return null;
+  }
+}

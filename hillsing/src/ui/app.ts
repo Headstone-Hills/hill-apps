@@ -1,6 +1,6 @@
 import { Performance, type VoiceSink } from '../engine/performance';
 import { NAV_ACTIONS, NavBindings, type NavAction } from '../midi/bindings';
-import { connectMidi, type MidiEvent } from '../midi/midi';
+import { BendRangeTracker, connectMidi, type MidiEvent } from '../midi/midi';
 import { SingerEngine } from '../synth/engine';
 import type { VoiceParamName } from '../synth/klatt';
 import { loadDict, makeLookup, type PhonemeLookup } from '../text/cmudict';
@@ -64,7 +64,7 @@ export function startApp(): void {
       if (utauSession.active) utauLive?.noteOff();
       else engine?.noteOff();
     },
-    setF0: (f0) => (utauSession.active ? utauLive?.setF0(f0) : engine?.setF0(f0)),
+    setF0: (f0, immediate) => (utauSession.active ? utauLive?.setF0(f0, immediate) : engine?.setF0(f0, immediate)),
   };
   const scope = new Scope($<HTMLCanvasElement>('scope-wave'), $<HTMLCanvasElement>('scope-spec'), {
     freeze: $<HTMLButtonElement>('scope-freeze'),
@@ -599,6 +599,7 @@ export function startApp(): void {
   });
 
   // ---- Input: MIDI + computer keyboard ---------------------------------------------
+  const bendRange = new BendRangeTracker();
   function handleEvent(ev: MidiEvent): void {
     if (bindings.handle(ev, (a) => navActions[a]())) return;
     switch (ev.type) {
@@ -627,10 +628,16 @@ export function startApp(): void {
       case 'allNotesOff':
         performance.allNotesOff();
         break;
-      case 'cc':
-        if (ev.controller === 1) engine?.setParam('vibratoDepth', ev.value / 127);
-        else if (ev.controller === 64) performance.sustain(ev.value >= 64);
+      case 'cc': {
+        if (ev.controller === 1) {
+          // Mod wheel or modulation knob: vibrato, on whichever voice is sounding.
+          engine?.setParam('vibratoDepth', ev.value / 127);
+          utauLive?.setModulation(ev.value / 127);
+        } else if (ev.controller === 64) performance.sustain(ev.value >= 64);
+        const range = bendRange.handle(ev.controller, ev.value);
+        if (range !== null) performance.bendRange = range;
         break;
+      }
     }
   }
 
@@ -900,6 +907,10 @@ export function startApp(): void {
       showOctave();
     } else if (e.code === 'Space' && !(e.target instanceof HTMLButtonElement)) {
       void filePanel?.togglePlay();
+      e.preventDefault();
+    } else if (e.code === 'Tab') {
+      // Tab steps back one syllable (Shift+Tab too). Typing in a text box is unaffected: that returns above.
+      navActions.back();
       e.preventDefault();
     } else if (e.code === 'ArrowLeft') {
       // Arrow keys step by syllable, Shift or not (Shift is for melisma); Alt/Option+arrow jumps a whole word.

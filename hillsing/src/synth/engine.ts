@@ -42,7 +42,7 @@ export class SingerEngine implements VoiceSink {
   noteOff(): void {
     this.post({ type: 'noteOff' });
   }
-  setF0(f0: number): void {
+  setF0(f0: number, _immediate?: boolean): void {
     this.post({ type: 'f0', f0 });
   }
   setParam(name: VoiceParamName, value: number): void {

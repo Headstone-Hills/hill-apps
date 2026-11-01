@@ -20,7 +20,7 @@ interface Playing {
   /** Loudness of the sustain, for matching the release to it. */
   loopRms: number;
   /** Vibrato oscillator, stopped with the note. */
-  lfo?: OscillatorNode;
+  lfo?: { osc: OscillatorNode; mod: GainNode };
   /** The sustain being looped, where it started (context time) and from which offset, to line the release up with it. */
   sustain?: { data: Float32Array; sampleRate: number; startAt: number; offsetSec: number };
   /** The earliest time the note may start to end: the consonant and the start of the vowel always play out. */
@@ -32,6 +32,8 @@ const START_DELAY_SEC = 0.0015;
 const BASE_LEVEL = 0.4;
 /** Live notes play consonants this much faster than recorded so the vowel arrives sooner; the tuning's speed scales it. */
 const LIVE_BASE_SPEED = 1.5;
+/** Vibrato depth at the top of the mod wheel, in cents (on top of the tuning's own). */
+const MOD_MAX_CENTS = 80;
 /** Shortest sustained vowel after the attack, so even a quick tap is heard as a vowel. */
 const MIN_SUSTAIN_SEC = 0.1;
 
@@ -42,6 +44,7 @@ export class UtauLiveVoice implements VoiceSink {
   private releasing: Playing | null = null;
   private tail: Playing | null = null;
   private gateOpen = false;
+  private modulation = 0;
   /** Bumped by every key press and by stop(), so a note that is still being built can tell it was superseded. */
   private token = 0;
 
@@ -70,12 +73,20 @@ export class UtauLiveVoice implements VoiceSink {
     void this.release();
   }
 
-  setF0(f0: number): void {
+  /** The mod wheel / modulation knob, 0..1: vibrato on top of the tuning's own, applied to what is sounding now too. */
+  setModulation(amount: number): void {
+    this.modulation = Math.max(0, Math.min(1, amount));
+    const p = this.playing;
+    if (p?.lfo) p.lfo.mod.gain.setTargetAtTime(this.modulation * MOD_MAX_CENTS, this.ctx.currentTime, 0.02);
+  }
+
+  setF0(f0: number, immediate = false): void {
     const p = this.playing;
     if (!p) return;
     const t = this.tuning();
     const cents = 1200 * Math.log2((f0 * centsToRatio(t.tune)) / p.f0);
-    const tc = Math.max(0.003, t.glide / 3000); // a time constant: the slide is about 95 % done after `glide` ms
+    // A time constant: the slide is about 95 % done after `glide` ms. The pitch wheel ignores the glide setting.
+    const tc = immediate ? 0.006 : Math.max(0.003, t.glide / 3000);
     for (const s of p.sources) s.detune.setTargetAtTime(cents, this.ctx.currentTime, tc);
   }
 
@@ -144,19 +155,24 @@ export class UtauLiveVoice implements VoiceSink {
     const minReleaseAt = t0 + Math.max(0, attackBuf.duration - attack.crossfade) + (attack.hasLoop ? MIN_SUSTAIN_SEC : 0);
     let sustain: Playing['sustain'];
     if (attack.loop) sustain = { data: attack.loop, sampleRate: attack.sampleRate, startAt: t0 + attackBuf.duration - attack.crossfade, offsetSec: attack.loopOffset };
-    let lfo: OscillatorNode | undefined;
-    if (t.vibratoDepth > 0) {
-      // Vibrato: a slow sine added to every source's pitch (in cents), fading in after the note has started.
-      lfo = this.ctx.createOscillator();
-      lfo.frequency.value = t.vibratoRate;
-      const depth = this.ctx.createGain();
-      depth.gain.setValueAtTime(0, t0);
-      depth.gain.setValueAtTime(0, t0 + 0.15);
-      depth.gain.linearRampToValueAtTime(t.vibratoDepth, t0 + 0.45);
-      lfo.connect(depth);
-      for (const s of sources) depth.connect(s.detune);
-      lfo.start(t0);
+    // Vibrato: one slow sine added to every source's pitch (in cents). The tuning's vibrato fades in after the start of
+    // the note; the mod wheel's part is immediate and can change while the note sounds.
+    const osc = this.ctx.createOscillator();
+    osc.frequency.value = t.vibratoRate;
+    const fade = this.ctx.createGain();
+    fade.gain.setValueAtTime(0, t0);
+    fade.gain.setValueAtTime(0, t0 + 0.15);
+    fade.gain.linearRampToValueAtTime(t.vibratoDepth, t0 + 0.45);
+    const mod = this.ctx.createGain();
+    mod.gain.value = this.modulation * MOD_MAX_CENTS;
+    osc.connect(fade);
+    osc.connect(mod);
+    for (const s of sources) {
+      fade.connect(s.detune);
+      mod.connect(s.detune);
     }
+    osc.start(t0);
+    const lfo = { osc, mod };
     this.playing = { gain: note, sources, plan, f0, loopRms: attack.loopRms, minReleaseAt, lfo, sustain };
     if (!this.gateOpen) void this.release(); // the key came up while the note was being built
   }
@@ -218,7 +234,7 @@ export class UtauLiveVoice implements VoiceSink {
       }
     }
     try {
-      p.lfo?.stop(at + seconds + 0.02);
+      p.lfo?.osc.stop(at + seconds + 0.02);
     } catch {
       /* already stopped */
     }
