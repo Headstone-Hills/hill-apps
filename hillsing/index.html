@@ -121,7 +121,8 @@
       </section>
 
       <section id="scope" class="perf">
-        <h2>Scope <span class="hint long">press <kbd>Q</kbd> while a syllable plays to flag it as having an artifact · waveform (before the limiter: red = full scale) and spectrogram of everything you hear, with the syllables marked</span></h2>
+        <h2><button id="scope-toggle" class="collapse" type="button" aria-expanded="true" aria-controls="scope-body" title="Show or hide the scope">▾</button> Scope <span id="scope-badge" class="rec-badge" hidden>● REC</span> <span class="hint long">press <kbd>Q</kbd> while a syllable plays to flag it as having an artifact · waveform (before the limiter: red = full scale) and spectrogram of everything you hear, with the syllables marked</span></h2>
+        <div id="scope-body">
         <div class="nav">
           <button id="scope-freeze" type="button" aria-pressed="false" title="Stop the display so you can hover over it and read it">⏸ Freeze</button>
           <label class="inline" title="Stop automatically the moment the signal reaches full scale"><input id="scope-clipfreeze" type="checkbox" /> Freeze on clip</label>
@@ -145,6 +146,7 @@
             <span class="spec-label" style="bottom: 50%">4k</span>
             <span class="spec-label" style="bottom: 75%">6k</span>
           </div>
+        </div>
         </div>
       </section>
 

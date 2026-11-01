@@ -73,6 +73,8 @@ export function startApp(): void {
     copy: $<HTMLButtonElement>('scope-copy'),
     record: $<HTMLButtonElement>('scope-rec'),
     clear: $<HTMLButtonElement>('scope-clear'),
+    toggle: $<HTMLButtonElement>('scope-toggle'),
+    badge: $('scope-badge'),
     meta: () => {
       const t = tuning.values;
       const on = EFFECTS.filter((e) => fxModel.state.enabled[e.id]).map((e) => `${e.name} ${e.params.map((q) => `${q.id}=${fxModel.state.values[e.id][q.id]}`).join(' ')}`);
@@ -84,6 +86,29 @@ export function startApp(): void {
       ];
     },
   });
+  // The scope can be folded away to save room; the choice is remembered.
+  const SCOPE_KEY = 'hillsing.scope.collapsed.v1';
+  const scopeToggle = $<HTMLButtonElement>('scope-toggle');
+  const scopeSection = $('scope');
+  const setScopeCollapsed = (collapsed: boolean, remember = true): void => {
+    scopeSection.classList.toggle('collapsed', collapsed);
+    scopeToggle.setAttribute('aria-expanded', String(!collapsed));
+    scopeToggle.textContent = collapsed ? '▸' : '▾';
+    if (remember) {
+      try {
+        storage?.setItem(SCOPE_KEY, collapsed ? '1' : '0');
+      } catch {
+        /* storage unavailable: fine */
+      }
+    }
+    if (!collapsed) window.requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+  };
+  scopeToggle.addEventListener('click', () => {
+    setScopeCollapsed(!scopeSection.classList.contains('collapsed'));
+    scopeToggle.blur();
+  });
+  setScopeCollapsed(storage?.getItem(SCOPE_KEY) === '1', false);
+
   // The syllable that is sounding (or sounded last), so the Q key can flag it as having an artifact.
   let playing: { index: number; note: number; at: number } | null = null;
   let lastNoteOn = 60;

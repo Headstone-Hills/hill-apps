@@ -42,6 +42,7 @@ export class Scope {
   private readonly clipFreeze: HTMLInputElement;
   private readonly readout: HTMLElement;
   private readonly meta: () => string[];
+  private readonly badge: HTMLElement | null;
   private readonly rec = new ScopeRecorder();
   private readonly recBtn: HTMLButtonElement;
   private readonly clearBtn: HTMLButtonElement;
@@ -60,6 +61,9 @@ export class Scope {
       clear: HTMLButtonElement;
       /** Lines describing the current voice, tuning and effects, printed at the top of an exported image. */
       meta: () => string[];
+      /** The button that folds the scope away, and the badge shown while a recording runs in the folded scope. */
+      toggle?: HTMLButtonElement;
+      badge?: HTMLElement;
     },
   ) {
     this.freezeBtn = controls.freeze;
@@ -76,6 +80,7 @@ export class Scope {
     });
     this.clipFreeze.addEventListener('change', () => this.clipFreeze.blur());
     this.meta = controls.meta;
+    this.badge = controls.badge ?? null;
     this.recBtn = controls.record;
     this.clearBtn = controls.clear;
     this.recBtn.addEventListener('click', () => {
@@ -240,6 +245,7 @@ export class Scope {
       this.rec.start(performance.now(), this.bus.ctx.sampleRate);
       this.recBtn.textContent = '⏹ Stop recording';
       this.recBtn.classList.add('recording');
+      if (this.badge) this.badge.hidden = false;
       this.recBtn.setAttribute('aria-pressed', 'true');
       this.clearBtn.hidden = true;
       this.readout.textContent = '● REC 0.0 s';
@@ -248,6 +254,7 @@ export class Scope {
     this.rec.stop();
     this.recBtn.textContent = '⏺ Record';
     this.recBtn.classList.remove('recording');
+    if (this.badge) this.badge.hidden = true;
     this.recBtn.setAttribute('aria-pressed', 'false');
     if (!this.rec.hasData) {
       this.readout.textContent = `${prefix}Nothing was recorded.`;

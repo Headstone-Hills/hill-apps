@@ -259,3 +259,10 @@ body[data-view="perform"] section { padding: 8px 12px; }
 body[data-view="perform"] .scope-status .scope-readout { margin: 0 0 1px; min-height: 1.2em; }
 body[data-view="perform"] #tuning .nav { flex-wrap: nowrap; }
 body[data-view="perform"] .diag { gap: 6px; white-space: nowrap; }
+
+/* Scope can be folded away */
+button.collapse { padding: 0 6px; margin-right: 4px; font-size: 12px; line-height: 1.4; }
+#scope.collapsed #scope-body { display: none; }
+#scope.collapsed h2 { margin-bottom: 0; }
+.rec-badge { color: #ff4a3d; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; }
+button.collapse { height: 18px; padding: 0 6px; line-height: 1; font-size: 11px; vertical-align: middle; }

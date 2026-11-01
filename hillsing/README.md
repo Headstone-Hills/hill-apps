@@ -373,3 +373,5 @@ The **Test text** buttons next to the lyrics box load a text that uses every sou
 **Flagging artifacts:** press **Q** while a syllable is playing (or within a couple of seconds after it) to flag it as having a strange sound artifact. The syllable's chip gets a red outline, a red ⚠ line goes on the scope (and into a recording's PNG), and it is added to a saved list. **⚑ n** copies the list as text (syllable, its sounds, note, voice, time); **✕** clears it.
 
 **Finding which part of a note has an artifact:** the **Hear only** tick boxes in the tuning row mute everything except the parts you tick: **start** (the consonant and the opening of the vowel), **held vowel**, **ending**. **still vowel** holds the vowel steady instead of letting it drift slowly. They apply to live sample-voice notes and are not saved.
+
+The Scope can be folded away with the ▾ button in its heading (the choice is remembered). A recording keeps running while it is folded, and the heading shows a red ● REC.
