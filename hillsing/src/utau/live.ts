@@ -16,13 +16,22 @@ interface Playing {
   sources: AudioBufferSourceNode[];
   plan: SyllablePlan;
   f0: number;
+  /** Loudness of the sustain, for matching the release to it. */
+  loopRms: number;
+  /** The earliest time the note may start to end: the consonant and the start of the vowel always play out. */
+  minReleaseAt: number;
 }
 
 const START_DELAY_SEC = 0.004;
+/** Shortest sustained vowel after the attack, so even a quick tap is heard as a vowel. */
+const MIN_SUSTAIN_SEC = 0.1;
 
 export class UtauLiveVoice implements VoiceSink {
   private readonly master: GainNode;
   private playing: Playing | null = null;
+  /** The note whose release is scheduled but has not finished, and its tail sound (cut short if a new note starts). */
+  private releasing: Playing | null = null;
+  private tail: Playing | null = null;
   private gateOpen = false;
   /** Bumped by every key press and by stop(), so a note that is still being built can tell it was superseded. */
   private token = 0;
@@ -57,8 +66,8 @@ export class UtauLiveVoice implements VoiceSink {
   stop(): void {
     this.token++;
     this.gateOpen = false;
-    if (this.playing) this.fadeOut(this.playing, 0.03);
-    this.playing = null;
+    for (const p of [this.playing, this.releasing, this.tail]) if (p) this.fadeOut(p, 0.03);
+    this.playing = this.releasing = this.tail = null;
   }
 
   private async start(plan: SyllablePlan, f0: number, velocity: number, legato: boolean): Promise<void> {
@@ -74,6 +83,9 @@ export class UtauLiveVoice implements VoiceSink {
     if (mine !== this.token) return;
 
     if (prev) this.fadeOut(prev, legato ? 0.06 : 0.03);
+    // A note still ending (a held-over release or its tail) gives way to the new one.
+    for (const p of [this.releasing, this.tail]) if (p) this.fadeOut(p, 0.03);
+    this.releasing = this.tail = null;
     const t0 = this.ctx.currentTime + START_DELAY_SEC;
     const note = this.ctx.createGain();
     note.gain.value = 0.4 + 0.6 * Math.min(1, Math.max(0, velocity));
@@ -105,7 +117,9 @@ export class UtauLiveVoice implements VoiceSink {
       l.start(loopAt);
       sources.push(l);
     }
-    this.playing = { gain: note, sources, plan, f0 };
+    // A tap still sings a syllable: the consonant, the start of the vowel and a short stretch of sustained vowel.
+    const minReleaseAt = t0 + Math.max(0, attackBuf.duration - attack.crossfade) + (attack.loop ? MIN_SUSTAIN_SEC : 0);
+    this.playing = { gain: note, sources, plan, f0, loopRms: attack.loopRms, minReleaseAt };
     if (!this.gateOpen) void this.release(); // the key came up while the note was being built
   }
 
@@ -114,22 +128,28 @@ export class UtauLiveVoice implements VoiceSink {
     const bank = this.bank();
     if (!p || !bank) return;
     const mine = this.token;
-    const tail = await buildRelease(bank, p.plan, p.f0);
+    const tail = await buildRelease(bank, p.plan, p.f0, p.loopRms);
     if (mine !== this.token || this.playing !== p) return; // a new note (or stop) already took over
-    const t = this.ctx.currentTime + START_DELAY_SEC;
+    // Never end before the attack has played out: a quick tap still sings the consonant and the start of the vowel.
+    const t = Math.max(this.ctx.currentTime + START_DELAY_SEC, p.minReleaseAt);
+    this.playing = null;
+    this.releasing = p;
     if (tail) {
+      // The ending sample fades in while the sustain fades out, so the level carries straight through.
+      const noteLevel = p.gain.gain.value;
       const out = this.ctx.createGain();
-      out.gain.value = p.gain.gain.value;
+      out.gain.setValueAtTime(0, t);
+      out.gain.linearRampToValueAtTime(noteLevel, t + tail.overlap);
       out.connect(this.master);
       const s = this.ctx.createBufferSource();
       s.buffer = this.buffer(tail.samples, tail.sampleRate);
       s.connect(out);
       s.start(t);
+      this.tail = { gain: out, sources: [s], plan: p.plan, f0: p.f0, loopRms: p.loopRms, minReleaseAt: t };
       this.fadeOut(p, tail.overlap, t);
     } else {
       this.fadeOut(p, 0.08, t);
     }
-    this.playing = null;
   }
 
   private fadeOut(p: Playing, seconds: number, at = this.ctx.currentTime): void {

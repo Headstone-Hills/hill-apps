@@ -19,6 +19,8 @@ export interface LiveAttack {
   sampleRate: number;
   /** The attack's last `crossfade` seconds overlap the start of the loop: start the loop that long before the attack ends. */
   crossfade: number;
+  /** Loudness (RMS) of the sustain, so the release can be matched to it. */
+  loopRms: number;
   aliases: string[];
 }
 
@@ -31,6 +33,13 @@ export interface LiveRelease {
 }
 
 const MAX_CONSONANT_UNIT_SEC = 0.16;
+/** The first milliseconds ramp in so a sample cut mid-sound does not click. */
+const ATTACK_FADE_IN_SEC = 0.0015;
+/** The very end of a final consonant fades in a few ms only: its burst sits right at the end of the sample. */
+const CODA_END_FADE_SEC = 0.006;
+const VOWEL_END_FADE_SEC = 0.03;
+/** The bank's vowel-to-silence samples fade out in about 120 ms; stretched by this much (pitch unchanged) a word dies away more gently. */
+const END_FADE_STRETCH = 1.7;
 const MIN_UNIT_SEC = 0.04;
 const CROSSFADE_SEC = 0.015;
 const LOOP_SEAM_SEC = 0.03;
@@ -50,7 +59,27 @@ interface Prepared {
   natural: number; // seconds after the beat
 }
 
-async function prepare(bank: Voicebank, units: ReadonlyArray<Unit>, skipPre = 0): Promise<Prepared[]> {
+/**
+ * Seconds from `start` at which a sample's steady vowel begins to fade (its level drops 3 dB below its opening
+ * level), or its whole length if it never does. Ending samples ("oU -") hold the vowel at full level and then
+ * die away; a live release should begin just before the fade, because the sustain it follows is already that vowel.
+ */
+export function decayStartSec(x: Float32Array, sampleRate: number, start: number, end: number): number {
+  const frame = Math.round(0.01 * sampleRate);
+  const levels: number[] = [];
+  for (let a = start; a + frame <= end; a += frame) {
+    let e = 0;
+    for (let i = a; i < a + frame; i++) e += x[i] * x[i];
+    levels.push(20 * Math.log10(Math.sqrt(e / frame) + 1e-6));
+  }
+  if (levels.length < 8) return (end - start) / sampleRate;
+  const head = levels.slice(0, 6).sort((p, q) => p - q);
+  const ref = head[3];
+  for (let i = 3; i + 1 < levels.length; i++) if (levels[i] < ref - 3 && levels[i + 1] < ref - 3) return (i * frame) / sampleRate;
+  return (end - start) / sampleRate;
+}
+
+async function prepare(bank: Voicebank, units: ReadonlyArray<Unit>, leadIn = -1): Promise<Prepared[]> {
   const out: Prepared[] = [];
   for (const u of units) {
     const e = bank.entry(u.alias);
@@ -61,9 +90,11 @@ async function prepare(bank: Voicebank, units: ReadonlyArray<Unit>, skipPre = 0)
     let preutter = Math.max(0, e.preutter / 1000);
     let start = r.start;
     let fixed = r.fixed;
-    if (out.length === 0 && skipPre > 0) {
-      // Release units begin with the vowel they came from: skip most of it, since the vowel is already sounding.
-      const skip = Math.min(Math.max(0, preutter - skipPre), (r.end - r.start - 2) / src.sampleRate);
+    if (out.length === 0 && leadIn >= 0) {
+      // Release units begin with the vowel they came from: skip the steady part (the sustain is already that vowel)
+      // and start `leadIn` seconds before the vowel starts to fade or the consonant begins.
+      const fade = decayStartSec(src.samples, src.sampleRate, r.start, r.end);
+      const skip = Math.min(Math.max(0, fade - leadIn), (r.end - r.start - 2) / src.sampleRate);
       start += Math.round(skip * src.sampleRate);
       fixed = Math.max(0, fixed - Math.round(skip * src.sampleRate));
       preutter -= skip;
@@ -138,6 +169,8 @@ export async function buildAttack(bank: Voicebank, plan: SyllablePlan, f0: numbe
     // join units hold the previous vowel: they keep its pitch, so the caller passes the previous f0 through `f0` of the note before; here all units use f0
     mixAt(out, seg, Math.round(starts[i] * sr), i === 0 ? 0 : Math.round(p.overlap * sr));
   }
+  const fadeIn = Math.min(out.length >> 1, Math.round(ATTACK_FADE_IN_SEC * sr));
+  for (let k = 0; k < fadeIn; k++) out[k] *= k / fadeIn;
   let end = out.length;
   while (end > 1 && Math.abs(out[end - 1]) < 1e-5) end--;
   let loop: Float32Array | null = null;
@@ -155,15 +188,26 @@ export async function buildAttack(bank: Voicebank, plan: SyllablePlan, f0: numbe
     };
     loop = seamlessLoop(renderSegment(v.src, { start: l0, end: l1, fixed: 0, length, f0, matchLevel: true, map }), Math.round(LOOP_SEAM_SEC * sr));
   }
-  return { samples: out.subarray(0, end), loop, sampleRate: sr, crossfade: hasLoop ? CROSSFADE_SEC : 0, aliases: list.map((p) => p.unit.alias) };
+  let loopRms = 0;
+  if (loop) {
+    let e = 0;
+    for (let i = 0; i < loop.length; i++) e += loop[i] * loop[i];
+    loopRms = Math.sqrt(e / loop.length);
+  }
+  return { samples: out.subarray(0, end), loop, sampleRate: sr, crossfade: hasLoop ? CROSSFADE_SEC : 0, loopRms, aliases: list.map((p) => p.unit.alias) };
 }
 
 /** The sound after the key is released: the syllable's final consonants, or the vowel dying away. */
-export async function buildRelease(bank: Voicebank, plan: SyllablePlan, f0: number): Promise<LiveRelease | null> {
+export async function buildRelease(bank: Voicebank, plan: SyllablePlan, f0: number, targetRms = 0): Promise<LiveRelease | null> {
   const units = planUnits((a) => bank.has(a), plan, { prevVowel: null, releaseAtEnd: true, melisma: false }).filter((u) => u.role === 'coda' || u.role === 'end');
   if (units.length === 0) return null;
-  const list = await prepare(bank, units, units[0].role === 'end' ? 0.04 : 0.1);
+  const list = await prepare(bank, units, units[0].role === 'end' ? 0.03 : 0.1);
   if (list.length === 0) return null;
+  for (const p of list) {
+    if (p.unit.role !== 'end') continue;
+    p.fixed = 0; // let the whole fade stretch, not just the part after the recorded consonant length
+    p.natural *= END_FADE_STRETCH;
+  }
   const sr = list[0].src.sampleRate;
   const starts = chain(list);
   const last = list.length - 1;
@@ -175,10 +219,23 @@ export async function buildRelease(bank: Voicebank, plan: SyllablePlan, f0: numb
     const length = Math.max(Math.round((Math.min(handOver, naturalEnd + 0.3) - starts[i]) * sr), Math.round(MIN_UNIT_SEC * sr));
     const seg = renderSegment(p.src, { start: p.start, end: p.end, fixed: p.fixed, length, f0, matchLevel: true });
     if (i === last) {
-      const f = Math.min(seg.length >> 1, Math.round(0.03 * sr));
+      const f = Math.min(seg.length >> 1, Math.round((p.unit.role === 'end' ? VOWEL_END_FADE_SEC : CODA_END_FADE_SEC) * sr));
       for (let k = 0; k < f; k++) seg[seg.length - 1 - k] *= k / f;
     }
     mixAt(out, seg, Math.round(starts[i] * sr), i === 0 ? 0 : Math.round(p.overlap * sr));
   });
-  return { samples: out, sampleRate: sr, overlap: Math.max(0.06, list[0].overlap), aliases: list.map((p) => p.unit.alias) };
+  const overlap = Math.max(0.06, list[0].overlap);
+  // Match the release's opening (the vowel it continues) to the loudness of the sustain it follows, so the
+  // handover has no jump in volume: each recording sits at its own level.
+  if (targetRms > 0) {
+    const n = Math.min(out.length, Math.round(Math.max(0.08, overlap) * sr));
+    let e = 0;
+    for (let i = 0; i < n; i++) e += out[i] * out[i];
+    const got = Math.sqrt(e / Math.max(1, n));
+    if (got > 1e-6) {
+      const k = Math.min(2.5, Math.max(0.4, targetRms / got));
+      for (let i = 0; i < out.length; i++) out[i] *= k;
+    }
+  }
+  return { samples: out, sampleRate: sr, overlap, aliases: list.map((p) => p.unit.alias) };
 }

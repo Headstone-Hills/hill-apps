@@ -380,6 +380,20 @@ describe('live notes', () => {
     expect(Math.max(...levels) / mean).toBeLessThan(1.25);
   });
 
+  it('starts an attack from silence (no click) and matches the release level to the sustain', async () => {
+    const bank = await liveBank();
+    const a = (await buildAttack(bank, { onset: [], nucleus: 'AA1', coda: [] }, 220, null))!;
+    const peak = Math.max(...a.samples.map(Math.abs));
+    expect(Math.abs(a.samples[0])).toBeLessThan(0.02 * peak);
+    expect(a.loopRms).toBeGreaterThan(0.01);
+    const opening = (r: { samples: Float32Array; overlap: number }) => rms(r.samples, 0, Math.round(Math.max(0.08, r.overlap) * SR));
+    const raw = (await buildRelease(bank, { onset: [], nucleus: 'AA1', coda: ['D'] }, 220))!;
+    const matched = (await buildRelease(bank, { onset: [], nucleus: 'AA1', coda: ['D'] }, 220, a.loopRms))!;
+    const dbOff = Math.abs(20 * Math.log10(opening(matched) / a.loopRms));
+    expect(dbOff).toBeLessThan(1);
+    expect(Math.abs(20 * Math.log10(opening(raw) / a.loopRms))).toBeGreaterThanOrEqual(0); // (the raw level is whatever the recording had)
+  });
+
   it('smooths a loop seam', () => {
     const x = Float32Array.from({ length: 4000 }, (_, i) => Math.sin((2 * Math.PI * 300 * i) / SR) * (i < 2000 ? 1 : 0.5));
     const l = seamlessLoop(x, 400);
@@ -395,6 +409,8 @@ describe('live notes', () => {
     expect(withCoda.overlap).toBeGreaterThanOrEqual(0.06);
     const noCoda = (await buildRelease(bank, { onset: [], nucleus: 'AA1', coda: [] }, 220))!;
     expect(noCoda.aliases).toEqual(['A -']);
+    // a vowel ending is stretched so the word dies away gently: longer than the recorded part it came from
+    expect(noCoda.samples.length / SR).toBeGreaterThan(0.2);
     expect(await buildRelease(bank, { onset: [], nucleus: 'IY1', coda: [] }, 220)).toBeNull(); // nothing for this vowel
     expect(await buildAttack(bank, { onset: [], nucleus: 'IY1', coda: [] }, 220, null)).toBeNull();
   });
@@ -496,6 +512,30 @@ describe.skipIf(!bankDir)('real voicebank (HILLSING_UTAU_BANK)', () => {
       const a = (await buildAttack(bank, { onset: syl.onset, nucleus: syl.nucleus, coda: syl.coda }, 262, null))!;
       if (a.loop) expect(a.loop.length / SR, `${syl.label} sustain length`).toBeGreaterThan(4);
     }
+  });
+
+  it('hands over from the sustain to the release without a jump in volume', async () => {
+    const root = bankDir!;
+    const files: BankFile[] = walk(root).map((p) => ({ path: relative(root, p).split('\\').join('/'), read: async () => new Uint8Array(readFileSync(p)) }));
+    const bank = await Voicebank.load(files, 'real');
+    const syllables = buildLyrics('hello world sing love ah song', realLookup()).syllables;
+    let worstBefore = 0, worstAfter = 0;
+    for (const syl of syllables) {
+      const plan = { onset: syl.onset, nucleus: syl.nucleus, coda: syl.coda };
+      const f0 = 196;
+      const a = await buildAttack(bank, plan, f0, null);
+      const raw = await buildRelease(bank, plan, f0);
+      const fixed = await buildRelease(bank, plan, f0, a!.loopRms);
+      if (!a || !raw || !fixed) continue;
+      const open = (r: { samples: Float32Array; overlap: number }) => rms(r.samples, 0, Math.round(Math.max(0.08, r.overlap) * SR));
+      const before = Math.abs(20 * Math.log10(open(raw) / a.loopRms));
+      const after = Math.abs(20 * Math.log10(open(fixed) / a.loopRms));
+      worstBefore = Math.max(worstBefore, before);
+      worstAfter = Math.max(worstAfter, after);
+      console.log(`${syl.label.padEnd(6)} release ${fixed.aliases.join('+').padEnd(10)} level step at handover: ${before.toFixed(1)} dB before matching, ${after.toFixed(1)} dB after`);
+    }
+    console.log(`worst: ${worstBefore.toFixed(1)} dB before, ${worstAfter.toFixed(1)} dB after`);
+    expect(worstAfter).toBeLessThan(2.5);
   });
 });
 
