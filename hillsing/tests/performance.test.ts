@@ -9,7 +9,7 @@ import { realLookup } from './helpers';
 function setup(text = 'hello big world') {
   const calls: any[] = [];
   const sink: VoiceSink = {
-    noteOn: (plan, f0, velocity, legato) => calls.push({ t: 'on', nucleus: plan.nucleus, f0, velocity, legato }),
+    noteOn: (plan, f0, velocity, legato) => calls.push({ t: 'on', nucleus: plan.nucleus, onset: plan.onset, f0, velocity, legato }),
     noteOff: () => calls.push({ t: 'off' }),
     setF0: (f0) => calls.push({ t: 'f0', f0 }),
   };
@@ -51,7 +51,18 @@ describe('Performance (mono legato)', () => {
     expect(pointer.index).toBe(2);
   });
 
-  it('melisma does nothing special when no word is sounding', () => {
+  it('melisma pressed only after the first key came up sings the same vowel again, with no consonant and no new syllable', () => {
+    const { calls, perf, pointer } = setup('hello big world');
+    perf.noteOn(60, 1);
+    perf.noteOff(60);
+    perf.melisma = true;
+    perf.noteOn(64, 1);
+    expect(calls.map((c) => c.t)).toEqual(['on', 'off', 'on']);
+    expect(calls[2]).toMatchObject({ legato: false, nucleus: calls[0].nucleus, onset: [] });
+    expect(pointer.index).toBe(1);
+  });
+
+  it('melisma does nothing special at the very first note', () => {
     const { calls, perf, pointer } = setup('hello big world');
     perf.melisma = true;
     perf.noteOn(60, 1);
