@@ -26,7 +26,12 @@ function registerProtocol() {
     if (file !== DIST && !file.startsWith(DIST + path.sep)) {
       return new Response('Forbidden', { status: 403 });
     }
-    return net.fetch(pathToFileURL(file).toString());
+    return net.fetch(pathToFileURL(file).toString()).then((res) => {
+      // Never cache the app's own files: a cached index.html would keep showing an old build after an update.
+      const headers = new Headers(res.headers);
+      headers.set('Cache-Control', 'no-store');
+      return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+    });
   });
 }
 
@@ -72,10 +77,12 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   registerProtocol();
   allowMidi();
   buildMenu();
+  // Start from an empty HTTP cache so nothing from an older build can be shown (settings in localStorage are untouched).
+  await session.defaultSession.clearCache().catch(() => {});
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -445,6 +445,7 @@ export function startApp(): void {
   }
 
   // ---- Audio start -----------------------------------------------------------------
+  $('build-id').textContent = typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : '';
   const startBtn = $<HTMLButtonElement>('start');
   const audioStatus = $('audio-status');
   const latencyLabel = $('latency');
