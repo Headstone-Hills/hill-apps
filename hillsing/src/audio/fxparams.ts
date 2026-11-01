@@ -2,7 +2,7 @@
 // panel edits (with persistence), and the pure maths behind the effects (waveshaper curve, reverb impulse
 // response, bit/rate reduction). No Web Audio here, so it is all testable in Node.
 
-export type EffectId = 'bitcrush' | 'distortion' | 'eq' | 'compressor' | 'delay' | 'reverb';
+export type EffectId = 'bitcrush' | 'distortion' | 'eq' | 'compressor' | 'chorus' | 'delay' | 'reverb';
 
 export interface ParamSpec {
   id: string;
@@ -78,6 +78,17 @@ export const EFFECTS: ReadonlyArray<EffectSpec> = [
     ],
   },
   {
+    id: 'chorus',
+    name: 'Chorus',
+    blurb: 'Two slightly detuned copies drifting left and right: a wider, thicker voice.',
+    params: [
+      p('rate', 'Rate', 0.05, 8, 0.05, 0.8, ' Hz', true),
+      p('depth', 'Depth', 0, 15, 0.1, 4, ' ms'),
+      p('delay', 'Delay', 5, 40, 0.5, 18, ' ms'),
+      p('mix', 'Mix', 0, 1, 0.01, 0.5),
+    ],
+  },
+  {
     id: 'delay',
     name: 'Delay',
     blurb: 'Echoes that fade, each a little darker.',
@@ -148,6 +159,11 @@ export const FX_PRESETS: ReadonlyArray<{ id: string; name: string; state: Partia
     id: 'hall',
     name: 'Big hall',
     state: { enabled: { reverb: true, delay: true }, values: { reverb: { size: 3.8, preDelay: 35, damping: 5000, mix: 0.4 }, delay: { time: 420, feedback: 0.3, tone: 3200, mix: 0.18 } } },
+  },
+  {
+    id: 'wide',
+    name: 'Wide chorus',
+    state: { enabled: { chorus: true, reverb: true }, values: { chorus: { rate: 0.6, depth: 5, delay: 20, mix: 0.55 }, reverb: { size: 1.6, preDelay: 15, damping: 7000, mix: 0.18 } } },
   },
   {
     id: 'lofi',

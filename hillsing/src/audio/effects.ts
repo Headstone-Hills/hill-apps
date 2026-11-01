@@ -1,4 +1,4 @@
-// The effects rack: bitcrush -> distortion -> EQ -> compressor -> delay -> reverb, in series. Every stage has
+// The effects rack: bitcrush -> distortion -> EQ -> compressor -> chorus -> delay -> reverb, in series. Every stage has
 // a dry path and a wet path so an effect that is off costs nothing audible and an effect with a Mix control
 // blends in the way you expect. The rack only follows an FxState; the panel edits the state (see fxparams.ts).
 
@@ -41,6 +41,11 @@ export class EffectsRack {
   private readonly high: BiquadFilterNode;
   private readonly comp: DynamicsCompressorNode;
   private readonly makeup: GainNode;
+  private readonly lfo: OscillatorNode;
+  private readonly depthA: GainNode;
+  private readonly depthB: GainNode;
+  private readonly chorusA: DelayNode;
+  private readonly chorusB: DelayNode;
   private readonly delay: DelayNode;
   private readonly feedback: GainNode;
   private readonly echoTone: BiquadFilterNode;
@@ -87,6 +92,29 @@ export class EffectsRack {
     cp.input.connect(this.comp).connect(this.makeup).connect(cp.wet);
     this.stages.set('compressor', cp);
 
+    // chorus: two delay lines whose times drift in opposite directions (one low-frequency oscillator, one copy of it
+    // inverted), panned left and right
+    const ch = makeStage(ctx);
+    this.lfo = ctx.createOscillator();
+    this.lfo.type = 'sine';
+    this.depthA = ctx.createGain();
+    this.depthB = ctx.createGain();
+    this.chorusA = ctx.createDelay(0.1);
+    this.chorusB = ctx.createDelay(0.1);
+    const panA = ctx.createStereoPanner();
+    const panB = ctx.createStereoPanner();
+    panA.pan.value = -0.8;
+    panB.pan.value = 0.8;
+    const voiceGain = ctx.createGain();
+    voiceGain.gain.value = 0.75;
+    this.lfo.connect(this.depthA).connect(this.chorusA.delayTime);
+    this.lfo.connect(this.depthB).connect(this.chorusB.delayTime);
+    ch.input.connect(this.chorusA).connect(panA).connect(voiceGain);
+    ch.input.connect(this.chorusB).connect(panB).connect(voiceGain);
+    voiceGain.connect(ch.wet);
+    this.lfo.start();
+    this.stages.set('chorus', ch);
+
     // delay: the echo loop runs through a tone filter, so each repeat is a little darker
     const dl = makeStage(ctx);
     this.delay = ctx.createDelay(2);
@@ -106,7 +134,7 @@ export class EffectsRack {
     this.stages.set('reverb', rv);
 
     // in series
-    const order: EffectId[] = ['bitcrush', 'distortion', 'eq', 'compressor', 'delay', 'reverb'];
+    const order: EffectId[] = ['bitcrush', 'distortion', 'eq', 'compressor', 'chorus', 'delay', 'reverb'];
     this.input = this.stages.get(order[0])!.input;
     this.output = this.stages.get(order[order.length - 1])!.output;
     for (let i = 0; i + 1 < order.length; i++) this.stages.get(order[i])!.output.connect(this.stages.get(order[i + 1])!.input);
@@ -173,6 +201,14 @@ export class EffectsRack {
     this.set(this.comp.knee, c.knee);
     this.set(this.makeup.gain, dbToGain(c.makeup));
     blend('compressor', null);
+
+    const ch = v.chorus;
+    this.set(this.lfo.frequency, ch.rate);
+    this.set(this.chorusA.delayTime, ch.delay / 1000);
+    this.set(this.chorusB.delayTime, ch.delay / 1000);
+    this.set(this.depthA.gain, ch.depth / 1000);
+    this.set(this.depthB.gain, -ch.depth / 1000);
+    blend('chorus', ch.mix);
 
     const y = v.delay;
     this.set(this.delay.delayTime, y.time / 1000);

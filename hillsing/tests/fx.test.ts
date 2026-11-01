@@ -5,8 +5,8 @@ import {
 } from '../src/audio/fxparams';
 
 describe('effect definitions', () => {
-  it('lists the six requested effects, each parameter with a default inside its range', () => {
-    expect(EFFECTS.map((e) => e.id)).toEqual(['bitcrush', 'distortion', 'eq', 'compressor', 'delay', 'reverb']);
+  it('lists the seven effects in chain order, each parameter with a default inside its range', () => {
+    expect(EFFECTS.map((e) => e.id)).toEqual(['bitcrush', 'distortion', 'eq', 'compressor', 'chorus', 'delay', 'reverb']);
     for (const e of EFFECTS) {
       expect(e.params.length).toBeGreaterThan(0);
       for (const q of e.params) {
@@ -90,7 +90,8 @@ describe('slider mapping and labels', () => {
   it('formats values for people', () => {
     expect(formatParam(freq, 6000)).toBe('6.0 kHz');
     expect(formatParam(freq, 800)).toBe('800 Hz');
-    expect(formatParam(EFFECTS[4].params[3], 0.3)).toBe('30%');
+    expect(formatParam(EFFECTS[5].params[3], 0.3)).toBe('30%'); // delay mix
+    expect(formatParam(EFFECTS[4].params[0], 0.8)).toBe('0.80 Hz'); // chorus rate
     expect(formatParam(bits, 8)).toBe('8 bits');
   });
 });

@@ -249,12 +249,12 @@ before citing any individual number.
 
 ## Effects
 
-Six effects apply to every voice (formant, live samples, sample melodies, Voice lab) through one shared audio path
-(`src/audio/bus.ts`): **bitcrush -> distortion -> EQ -> compressor -> delay -> reverb**, in that order. The *Effects*
-section has a card per effect (on/off + sliders), presets (small room, big hall, lo-fi tape, old radio, robot choir)
+Seven effects apply to every voice (formant, live samples, sample melodies, Voice lab) through one shared audio path
+(`src/audio/bus.ts`): **bitcrush -> distortion -> EQ -> compressor -> chorus -> delay -> reverb**, in that order. The *Effects*
+section has a card per effect (on/off + sliders), presets (small room, big hall, wide chorus, lo-fi tape, old radio, robot choir)
 and a reset; settings are saved in the browser. Everything is off by default. Meter and spectrogram show the
 processed sound. Bitcrush runs in its own AudioWorklet (`src/audio/bitcrush.worklet.ts`); if a browser blocks
-worklets the card says so and the other five still work. Reverb uses a generated impulse response (decaying
+worklets the card says so and the other five still work. Chorus is two delay lines modulated by one low-frequency oscillator in opposite directions, panned left and right. Reverb uses a generated impulse response (decaying
 noise that darkens with time; rebuilt shortly after you stop moving its sliders). Pure maths and the settings
 model are in `src/audio/fxparams.ts` (tested); the Web Audio wiring is `src/audio/effects.ts`.
 
