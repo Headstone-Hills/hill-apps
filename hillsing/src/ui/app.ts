@@ -1,6 +1,6 @@
 import { Performance, type VoiceSink } from '../engine/performance';
 import { NAV_ACTIONS, NavBindings, type NavAction } from '../midi/bindings';
-import { BendRangeTracker, connectMidi, parseMidiMessage, type MidiEvent } from '../midi/midi';
+import { BendRangeTracker, connectMidi, describeRaw, parseMidiMessage, type MidiEvent } from '../midi/midi';
 import { ControlMap, describeMidi } from '../midi/controls';
 import { SingerEngine } from '../synth/engine';
 import type { VoiceParamName } from '../synth/klatt';
@@ -494,6 +494,7 @@ export function startApp(): void {
         peakLevel: () => engine?.peakLevel() ?? 0,
         // For automated checks: feed a raw MIDI message as if it came from a keyboard, and estimate the output's pitch (Hz).
         midi: (bytes: number[]): void => {
+          showMidi(bytes);
           const ev = parseMidiMessage(bytes);
           if (ev) handleEvent(ev);
         },
@@ -623,7 +624,6 @@ export function startApp(): void {
   // ---- Input: MIDI + computer keyboard ---------------------------------------------
   const bendRange = new BendRangeTracker();
   function handleEvent(ev: MidiEvent): void {
-    showMidi(ev);
     // A knob mapped to pitch or modulation (or being learned for one) is ours; so is a binding for lyric navigation.
     const control = controls.handle(ev);
     if (control) {
@@ -684,9 +684,11 @@ export function startApp(): void {
   const bendInput = $<HTMLInputElement>('bend-range');
   let midiShown = 0;
   let midiText = '';
-  function showMidi(ev: MidiEvent): void {
+  /** Show a raw MIDI message from the keyboard, and what the app made of it. */
+  function showMidi(data: ArrayLike<number>): void {
+    const ev = parseMidiMessage(data);
     midiShown++;
-    midiText = `#${midiShown}: ${describeMidi(ev)}`;
+    midiText = `#${midiShown}: ${describeRaw(data)}${ev ? ` → ${describeMidi(ev)}` : ' → not used'}`;
     if (midiPending) return;
     midiPending = true;
     window.requestAnimationFrame(() => {
@@ -744,7 +746,8 @@ export function startApp(): void {
   const midiStatus = $('midi-status');
   connectMidi(handleEvent, (names) => {
     midiStatus.textContent = names.length ? `MIDI: ${names.join(', ')}` : 'MIDI: no input devices found';
-  }).catch((err: unknown) => {
+    $('midi-inputs').textContent = names.length ? names.join(', ') : 'none found: is the keyboard connected and switched on?';
+  }, showMidi).catch((err: unknown) => {
     midiStatus.textContent = `MIDI unavailable (${err instanceof Error ? err.message : String(err)}); use the computer keyboard`;
   });
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Performance, type VoiceSink } from '../src/engine/performance';
 import { NavBindings, type NavAction } from '../src/midi/bindings';
-import { BendRangeTracker, parseMidiMessage, type MidiEvent } from '../src/midi/midi';
+import { AFTERTOUCH_CONTROLLER, BendRangeTracker, describeRaw, parseMidiMessage, type MidiEvent } from '../src/midi/midi';
 import { buildLyrics } from '../src/text/lyrics';
 import { LyricPointer } from '../src/text/pointer';
 import { realLookup } from './helpers';
@@ -220,6 +220,13 @@ describe('parseMidiMessage', () => {
     expect(r.handle(6, 7)).toBeNull();
     expect(r.handle(100, 0)).toBeNull();
     expect(r.handle(6, 48)).toBe(24); // capped at two octaves
+  });
+  it('treats channel pressure as a controller (so it can be learned), and describes any raw message for the monitor', () => {
+    expect(parseMidiMessage([0xd0, 90])).toEqual({ type: 'cc', controller: AFTERTOUCH_CONTROLLER, value: 90 });
+    expect(describeRaw([0xb0, 74, 64])).toBe('B0 4A 40 · controller · channel 1');
+    expect(describeRaw([0xe2, 0, 64])).toContain('pitch bend');
+    expect(describeRaw([0xc1, 5])).toContain('program change');
+    expect(describeRaw([0xf0, 1, 2, 0xf7])).toContain('system exclusive');
   });
   it('parses CC, pitch bend and all-notes-off; ignores the rest', () => {
     expect(parseMidiMessage([0xb0, 1, 64])).toEqual({ type: 'cc', controller: 1, value: 64 });

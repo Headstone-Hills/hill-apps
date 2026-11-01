@@ -25,9 +25,33 @@ export function parseMidiMessage(data: ArrayLike<number>): MidiEvent | null {
       const raw = (d2 << 7) | d1; // 0..16383, centre 8192
       return { type: 'pitchBend', value: (raw - 8192) / 8192 };
     }
+    case 0xd0:
+      // Channel pressure (aftertouch): treated as controller 128, so it can be learned as a pitch or mod control.
+      return { type: 'cc', controller: AFTERTOUCH_CONTROLLER, value: d1 };
     default:
       return null;
   }
+}
+
+/** Channel pressure is reported as this pseudo-controller number (real controllers are 0..127). */
+export const AFTERTOUCH_CONTROLLER = 128;
+
+const STATUS_NAMES: Record<number, string> = {
+  0x80: 'note off',
+  0x90: 'note on',
+  0xa0: 'key pressure',
+  0xb0: 'controller',
+  0xc0: 'program change',
+  0xd0: 'channel pressure',
+  0xe0: 'pitch bend',
+};
+
+/** Any raw message as hex plus what kind it is, for the monitor (including kinds the app does not use). */
+export function describeRaw(data: ArrayLike<number>): string {
+  const hex = Array.from({ length: data.length }, (_, i) => data[i].toString(16).toUpperCase().padStart(2, '0')).join(' ');
+  const status = data[0] & 0xf0;
+  const kind = data[0] >= 0xf0 ? (data[0] === 0xf0 ? 'system exclusive' : 'system message') : STATUS_NAMES[status] ?? 'unknown';
+  return `${hex} · ${kind}${data[0] < 0xf0 ? ` · channel ${(data[0] & 0x0f) + 1}` : ''}`;
 }
 
 export interface MidiConnection {
@@ -43,6 +67,8 @@ export interface MidiConnection {
 export async function connectMidi(
   onEvent: (ev: MidiEvent) => void,
   onInputsChanged: (names: string[]) => void,
+  /** Every raw message, before it is interpreted (timing clock and active sensing are left out). */
+  onRaw?: (data: ArrayLike<number>) => void,
 ): Promise<MidiConnection> {
   if (typeof navigator === 'undefined' || !navigator.requestMIDIAccess) {
     throw new Error('Web MIDI is not supported in this browser');
@@ -50,6 +76,7 @@ export async function connectMidi(
   const access = await navigator.requestMIDIAccess();
   const handler = (e: MIDIMessageEvent): void => {
     if (!e.data) return;
+    if (e.data[0] !== 0xf8 && e.data[0] !== 0xfe) onRaw?.(e.data);
     const ev = parseMidiMessage(e.data);
     if (ev) onEvent(ev);
   };

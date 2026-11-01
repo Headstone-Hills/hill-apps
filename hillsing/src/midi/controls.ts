@@ -3,7 +3,7 @@
 // controller that moves becomes its source. Controllers used for something else (the sustain pedal, all-notes-off)
 // are ignored while learning.
 
-import type { MidiEvent } from './midi';
+import { AFTERTOUCH_CONTROLLER, type MidiEvent } from './midi';
 
 export type ControlTarget = 'pitch' | 'mod';
 
@@ -26,7 +26,7 @@ export class ControlMap {
       const raw = storage?.getItem(STORAGE_KEY);
       if (raw) {
         const obj = JSON.parse(raw) as Record<string, number>;
-        for (const t of ['pitch', 'mod'] as const) if (Number.isInteger(obj[t]) && obj[t] >= 0 && obj[t] < 128) this.map.set(t, obj[t]);
+        for (const t of ['pitch', 'mod'] as const) if (Number.isInteger(obj[t]) && obj[t] >= 0 && obj[t] <= AFTERTOUCH_CONTROLLER) this.map.set(t, obj[t]);
       }
     } catch {
       /* unreadable saved mapping: start with none */
@@ -89,7 +89,7 @@ export function describeMidi(ev: MidiEvent): string {
     case 'noteOff':
       return `note ${ev.note} off`;
     case 'cc':
-      return `controller CC ${ev.controller} = ${ev.value}`;
+      return ev.controller === AFTERTOUCH_CONTROLLER ? `channel pressure (aftertouch) = ${ev.value}` : `controller CC ${ev.controller} = ${ev.value}`;
     case 'pitchBend':
       return `pitch bend ${ev.value >= 0 ? '+' : ''}${ev.value.toFixed(2)}`;
     case 'allNotesOff':
