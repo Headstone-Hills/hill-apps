@@ -24,7 +24,7 @@ const q = (id: keyof Tuning, label: string, min: number, max: number, step: numb
 
 export const TUNING_PARAMS: ReadonlyArray<ParamSpec & { id: keyof Tuning; hint: string; live?: boolean }> = [
   { ...q('velocity', 'Consonant speed', 0.5, 2.5, 0.05, 1, '×'), hint: 'How fast consonants go by (UTAU velocity). Higher brings the vowel in sooner. Live keys already play consonants 1.5× faster; this scales that. In melodies, below 1× changes nothing.' },
-  { ...q('consonant', 'Consonant level', 0, 2, 0.05, 1), hint: 'How loud the consonants are against the vowel.' },
+  { ...q('consonant', 'Consonant level', 0, 3, 0.05, 2), hint: 'How loud the consonants are against the vowel. Above 100% they are louder than recorded; very loud ones are rounded off rather than clipped.' },
   { ...q('tone', 'Consonant tone', 2000, 16000, 1, 16000, ' Hz', true), hint: 'Rounds off harsh bursts and hiss in consonants. All the way up is off. Lower it if K, T or S clicks or sizzles.' },
   { ...q('gender', 'Gender', -1, 1, 0.01, 0), hint: 'Moves the voice colour (formants) without changing pitch: up is brighter and younger, down is darker and bigger.' },
   { ...q('vibratoDepth', 'Vibrato depth', 0, 100, 1, 0, ' cents'), hint: 'How far held notes wave in pitch. It fades in after the start of the note.' },
@@ -66,7 +66,7 @@ export function formatTuning(id: keyof Tuning, v: number): string {
 }
 
 type Store = Pick<Storage, 'getItem' | 'setItem'>;
-const KEY = 'hillsing.utau.tuning.v1';
+const KEY = 'hillsing.utau.tuning.v2'; // v2: the default consonant level went up, so older saved values are not carried over
 
 export class TuningModel {
   values: Tuning = defaultTuning();

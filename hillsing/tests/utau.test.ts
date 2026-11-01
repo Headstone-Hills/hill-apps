@@ -598,6 +598,18 @@ describe('sample voice tuning', () => {
     expect(Array.from(loud.subarray(8000, 12000))).toEqual(Array.from(base.subarray(8000, 12000))); // the vowel is untouched
   });
 
+  it('a big consonant boost is rounded off below full scale instead of being left to turn the whole syllable down', () => {
+    const src = source(220, 0.6, 4000);
+    // make the consonant hot: peaks near 0.6 in the recording
+    for (let i = 0; i < 4000; i++) src.samples[i] *= 4;
+    const req = { start: 0, end: src.samples.length, fixed: 4000, length: 24000, f0: 220 };
+    const loud = renderSegment(src, { ...req, fixedGain: 3 });
+    let pk = 0;
+    for (let i = 0; i < 3000; i++) pk = Math.max(pk, Math.abs(loud[i]));
+    expect(pk).toBeLessThan(0.8);
+    expect(pk).toBeGreaterThan(0.5); // still loud
+  });
+
   it('a pitch modulation makes the rendered pitch follow it', () => {
     const src = source(200, 1);
     const length = 40000;

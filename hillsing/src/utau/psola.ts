@@ -46,6 +46,8 @@ export interface SegmentRequest {
 }
 
 const UNVOICED_GRAIN = 512;
+/** Where a boosted consonant starts to round off (see the consonant shaping at the end of renderSegment). */
+const CONSONANT_CEILING = 0.8;
 /**
  * When the pitch is lowered by more than about an octave, two-period grains no longer touch: each cycle becomes a burst
  * with silence after it (measured: 82 dB deep gating and peaks 1.7x the recording at 131 Hz from a 279 Hz sample).
@@ -270,7 +272,11 @@ export function renderSegment(src: PsolaSource, req: SegmentRequest): Float32Arr
         v = y2;
       }
       const m = Math.min(1, (fixedOut - i) / blend);
-      out[i] = (v * m + raw * (1 - m)) * (1 + (g - 1) * m);
+      let y = (v * m + raw * (1 - m)) * (1 + (g - 1) * m);
+      // A boosted consonant is rounded off before it can reach full scale. Without this, the attack's peak cap would
+      // turn the whole syllable down, vowel included, and the boost would only make the vowel quieter.
+      if (g > 1) y = CONSONANT_CEILING * Math.tanh(y / CONSONANT_CEILING);
+      out[i] = y;
     }
   }
   return out;
