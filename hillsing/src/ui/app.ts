@@ -273,6 +273,8 @@ export function startApp(): void {
   const audioStatus = $('audio-status');
   const latencyLabel = $('latency');
   const meterFill = $('meter-fill');
+  const meterBox = meterFill.parentElement as HTMLElement;
+  let clipUntil = 0;
   let starting = false;
 
   const effectsPanel = new EffectsPanel($('fx-grid'), $<HTMLSelectElement>('fx-preset'), $<HTMLButtonElement>('fx-reset'), fxModel);
@@ -307,6 +309,8 @@ export function startApp(): void {
       }, 500);
       requestAnimationFrame(function meter() {
         if (engine) meterFill.style.width = `${Math.min(100, engine.peakLevel() * 140)}%`;
+        if (bus && bus.overPeak() >= 0.999) clipUntil = window.performance.now() + 900; // would have clipped: show it
+        meterBox.classList.toggle('clip', window.performance.now() < clipUntil);
         requestAnimationFrame(meter);
       });
       (window as unknown as { __hillsing?: unknown }).__hillsing = {

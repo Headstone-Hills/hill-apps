@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  crushBlock, defaultFxState, dbToGain, EFFECTS, formatParam, FxModel, FX_PRESETS, impulseResponse, mergeFxState,
+  crushBlock, defaultFxState, dbToGain, EFFECTS, formatParam, FxModel, FX_PRESETS, impulseResponse, limiterCurve, mergeFxState,
   sliderToValue, softClipCurve, valueToSlider,
 } from '../src/audio/fxparams';
 
@@ -105,6 +105,18 @@ describe('effect maths', () => {
     for (let i = 1; i < c.length; i++) expect(c[i]).toBeGreaterThanOrEqual(c[i - 1]);
     expect(c[1024 - 100] + c[100]).toBeCloseTo(0, 6);
     expect(c[768]).toBeGreaterThan(0.5 * (768 / 1024) * 2 - 0.5); // saturating: above the straight line near the knee
+  });
+
+  it('the output safety curve is unchanged below 0.8, never exceeds full scale, and bends smoothly past it', () => {
+    const c = limiterCurve(2049);
+    const at = (x: number): number => c[Math.round(((x / 2 + 1) / 2) * 2048)];
+    expect(at(0.5)).toBeCloseTo(0.5, 2);
+    expect(at(-0.7)).toBeCloseTo(-0.7, 2);
+    expect(at(0.9)).toBeLessThan(0.9);
+    expect(at(0.9)).toBeGreaterThan(0.8);
+    expect(at(2)).toBeLessThanOrEqual(1);
+    expect(at(-2)).toBeGreaterThanOrEqual(-1);
+    for (let i = 1; i < c.length; i++) expect(c[i]).toBeGreaterThanOrEqual(c[i - 1]);
   });
 
   it('builds a stereo reverb tail that decays about 60 dB, with pre-delay silence and decorrelated channels', () => {

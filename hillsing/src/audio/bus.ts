@@ -1,9 +1,10 @@
 // The one audio path for every voice: sources (formant synth, live samples, sample melodies, Voice lab) plug into
-// `input`; the effects rack processes the mix; an analyser (the meter and spectrogram read it) feeds the speakers.
+// `input`; the effects rack processes the mix; a limiter and soft clip protect the speakers; an analyser (the meter and
+// spectrogram read it) comes last.
 // One AudioContext for the whole page, created on the first click.
 
 import { EffectsRack } from './effects';
-import { FxModel } from './fxparams';
+import { FxModel, limiterCurve } from './fxparams';
 
 function pageStorage(): Storage | null {
   try {
@@ -23,7 +24,17 @@ export class AudioBus {
     readonly input: GainNode,
     readonly analyser: AnalyserNode,
     readonly fx: EffectsRack,
+    private readonly preMeter: AnalyserNode,
   ) {}
+
+  /** Highest sample (absolute) of the last ~20 ms before the output limiter: 1 or more means it would have clipped. */
+  overPeak(): number {
+    const buf = new Float32Array(this.preMeter.fftSize);
+    this.preMeter.getFloatTimeDomainData(buf);
+    let peak = 0;
+    for (const x of buf) peak = Math.max(peak, Math.abs(x));
+    return peak;
+  }
 
   /** Must be called from a user gesture so the context may start. */
   static async create(): Promise<AudioBus> {
@@ -36,12 +47,30 @@ export class AudioBus {
     analyser.minDecibels = -100;
     analyser.maxDecibels = -20;
     input.connect(fx.input);
-    fx.output.connect(analyser);
+    // Output safety: whatever the effects add (make-up gain, EQ boosts, a reverb tail on top of a loud vowel), a fast
+    // limiter catches the peaks and a soft knee rounds off any that get through, so nothing hard-clips at the speakers.
+    const preMeter = ctx.createAnalyser();
+    preMeter.fftSize = 1024;
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -3;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.001;
+    limiter.release.value = 0.08;
+    const half = ctx.createGain();
+    half.gain.value = 0.5;
+    const soft = ctx.createWaveShaper();
+    soft.curve = limiterCurve();
+    fx.output.connect(preMeter);
+    fx.output.connect(limiter);
+    limiter.connect(half);
+    half.connect(soft);
+    soft.connect(analyser);
     analyser.connect(ctx.destination);
     fx.apply(fxModel.state);
     fxModel.onChange(() => fx.apply(fxModel.state));
     if (ctx.state !== 'running') await ctx.resume();
-    return new AudioBus(ctx, input, analyser, fx);
+    return new AudioBus(ctx, input, analyser, fx, preMeter);
   }
 }
 

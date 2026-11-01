@@ -334,6 +334,24 @@ export function mergeNumbers<T extends object>(base: T, saved: unknown, specs: R
   return out as T;
 }
 
+/**
+ * Output safety curve for a waveshaper that is fed the signal at half scale (so its [-1, 1] input covers [-2, 2]):
+ * the signal passes unchanged up to 0.8 and then bends smoothly toward 1, so a peak past full scale rounds off
+ * instead of hard-clipping. Odd-symmetric and monotonic.
+ */
+export function limiterCurve(n = 2049): Float32Array<ArrayBuffer> {
+  const out = new Float32Array(n);
+  const knee = 0.8;
+  const room = 1 - knee;
+  for (let i = 0; i < n; i++) {
+    const x = 2 * ((2 * i) / (n - 1) - 1);
+    const a = Math.abs(x);
+    const y = a <= knee ? a : knee + room * Math.tanh((a - knee) / room);
+    out[i] = Math.sign(x) * y;
+  }
+  return out;
+}
+
 /** Map a 0..1 slider position to a value on a log (frequency) or linear scale, and back. */
 export function sliderToValue(spec: ParamSpec, t: number): number {
   const u = clamp(t, 0, 1);

@@ -193,3 +193,7 @@ body[data-view="perform"] #tuning .fx-knob { --size: 36px; }
 @media (max-width: 1100px) {
   body[data-view="perform"] .tune-grid { grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); }
 }
+
+/* The meter's border goes red for a moment when the signal reached full scale before the output limiter. */
+.meter.clip { border-color: #ff4a3d; box-shadow: 0 0 6px #ff4a3d; }
+.meter.clip #meter-fill { background: #ff4a3d; }
