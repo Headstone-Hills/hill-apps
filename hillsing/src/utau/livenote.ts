@@ -27,6 +27,11 @@ export interface LiveAttack {
   crossfade: number;
   /** Loudness (RMS) of the sustain, so the release can be matched to it. */
   readonly loopRms: number;
+  /**
+   * Seconds into the sustain at which to start playing it so its waveform lines up with the end of the attack
+   * (under a crossfade, two waveforms out of step cancel and the level dips). The sustain loops, so any offset is fine.
+   */
+  readonly loopOffset: number;
   aliases: string[];
 }
 
@@ -147,6 +152,33 @@ export function capPeak(x: Float32Array, limit = 0.95): void {
   }
 }
 
+/**
+ * How far into `loop` to start so its waveform best matches `tail` (normalised cross-correlation over `tail`'s length,
+ * trying offsets up to a little over one pitch period). The loop wraps, so starting later is harmless.
+ */
+export function alignOffset(tail: Float32Array, loop: Float32Array, maxLag: number): number {
+  let best = 0;
+  let bestC = -Infinity;
+  const n = Math.min(tail.length, loop.length);
+  let et = 0;
+  for (let i = 0; i < n; i++) et += tail[i] * tail[i];
+  for (let lag = 0; lag <= maxLag; lag++) {
+    let c = 0;
+    let el = 0;
+    for (let i = 0; i < n; i++) {
+      const y = loop[(lag + i) % loop.length];
+      c += tail[i] * y;
+      el += y * y;
+    }
+    c /= Math.sqrt(et * el) + 1e-12;
+    if (c > bestC) {
+      bestC = c;
+      best = lag;
+    }
+  }
+  return best;
+}
+
 /** The loop's end blended into its start, so repeating it has no seam. */
 export function seamlessLoop(x: Float32Array, seamSamples: number): Float32Array {
   const seam = Math.max(1, Math.min(seamSamples, x.length >> 2));
@@ -227,6 +259,7 @@ export async function buildAttack(
   let made = false;
   let loop: Float32Array | null = null;
   let rms = 0;
+  let offset = 0;
   const makeLoop = (): void => {
     if (made) return;
     made = true;
@@ -247,6 +280,8 @@ export async function buildAttack(
     let e = 0;
     for (let i = 0; i < loop.length; i++) e += loop[i] * loop[i];
     rms = Math.sqrt(e / loop.length);
+    const xsa = Math.min(samples.length >> 1, Math.round(CROSSFADE_SEC * sr));
+    offset = alignOffset(samples.subarray(samples.length - xsa), loop, Math.ceil((1.25 * sr) / f0)) / sr;
   };
   return {
     samples,
@@ -261,6 +296,10 @@ export async function buildAttack(
     get loopRms() {
       makeLoop();
       return rms;
+    },
+    get loopOffset() {
+      makeLoop();
+      return offset;
     },
   };
 }

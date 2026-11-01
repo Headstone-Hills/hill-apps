@@ -9,7 +9,7 @@ import { decodeText, frqPathFor, parseFrq, parseOto, parseWav } from '../src/uta
 import { estimateF0, mixInto, pitchMarks, renderSegment, type PsolaSource } from '../src/utau/psola';
 import { planUnits, xsampaVowel } from '../src/utau/planner';
 import { renderUtau } from '../src/utau/render';
-import { buildAttack, buildRelease, capPeak, seamlessLoop } from '../src/utau/livenote';
+import { alignOffset, buildAttack, buildRelease, capPeak, seamlessLoop } from '../src/utau/livenote';
 import { steadyWindow } from '../src/utau/spectral';
 import { Voicebank, type BankFile } from '../src/utau/voicebank';
 import { openZip } from '../src/utau/zip';
@@ -491,6 +491,25 @@ describe('live notes', () => {
 });
 
 // ---- Optional: a real voicebank on this machine -------------------------------------------------------------
+describe('live sustain alignment', () => {
+  it('finds the offset that puts a loop in step with the attack it follows, so the crossfade does not cancel', () => {
+    const f0 = 220;
+    const loop = tone(f0, 1);
+    const shift = 57; // samples: the attack's tail is the same vowel at a different phase
+    const tail = loop.slice(shift, shift + 660);
+    const lag = alignOffset(tail, loop, Math.ceil((1.25 * SR) / f0));
+    expect(lag).toBe(shift);
+    // Linear crossfade of the aligned pair keeps the level; unaligned (in antiphase) it collapses.
+    const mix = (off: number) => {
+      let e = 0;
+      for (let i = 0; i < 660; i++) { const g = i / 660; const v = tail[i] * (1 - g) + loop[(i + off) % loop.length] * g; e += v * v; }
+      return Math.sqrt(e / 660);
+    };
+    const half = Math.round(SR / f0 / 2);
+    expect(mix(lag)).toBeGreaterThan(mix(shift + half) * 1.3);
+  });
+});
+
 const bankDir = process.env.HILLSING_UTAU_BANK;
 
 function walk(dir: string): string[] {

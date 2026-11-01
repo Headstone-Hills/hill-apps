@@ -114,7 +114,7 @@ export class UtauLiveVoice implements VoiceSink {
       l.buffer = this.buffer(attack.loop, attack.sampleRate);
       l.loop = true;
       l.connect(loopGain);
-      l.start(loopAt);
+      l.start(loopAt, attack.loopOffset);
       sources.push(l);
     }
     // A tap still sings a syllable: the consonant, the start of the vowel and a short stretch of sustained vowel.
