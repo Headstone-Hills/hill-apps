@@ -7,7 +7,7 @@
 
 import type { VoiceSink } from '../engine/performance';
 import type { SyllablePlan } from '../synth/types';
-import { buildAttack, buildRelease } from './livenote';
+import { alignOffset, buildAttack, buildRelease } from './livenote';
 import { xsampaVowel } from './planner';
 import { centsToRatio, genderToFormant, type Tuning } from './tuning';
 import type { Voicebank } from './voicebank';
@@ -21,6 +21,8 @@ interface Playing {
   loopRms: number;
   /** Vibrato oscillator, stopped with the note. */
   lfo?: OscillatorNode;
+  /** The sustain being looped, where it started (context time) and from which offset, to line the release up with it. */
+  sustain?: { data: Float32Array; sampleRate: number; startAt: number; offsetSec: number };
   /** The earliest time the note may start to end: the consonant and the start of the vowel always play out. */
   minReleaseAt: number;
 }
@@ -137,6 +139,8 @@ export class UtauLiveVoice implements VoiceSink {
     }
     // A tap still sings a syllable: the consonant, the start of the vowel and a short stretch of sustained vowel.
     const minReleaseAt = t0 + Math.max(0, attackBuf.duration - attack.crossfade) + (attack.hasLoop ? MIN_SUSTAIN_SEC : 0);
+    let sustain: Playing['sustain'];
+    if (attack.loop) sustain = { data: attack.loop, sampleRate: attack.sampleRate, startAt: t0 + attackBuf.duration - attack.crossfade, offsetSec: attack.loopOffset };
     let lfo: OscillatorNode | undefined;
     if (t.vibratoDepth > 0) {
       // Vibrato: a slow sine added to every source's pitch (in cents), fading in after the note has started.
@@ -150,7 +154,7 @@ export class UtauLiveVoice implements VoiceSink {
       for (const s of sources) depth.connect(s.detune);
       lfo.start(t0);
     }
-    this.playing = { gain: note, sources, plan, f0, loopRms: attack.loopRms, minReleaseAt, lfo };
+    this.playing = { gain: note, sources, plan, f0, loopRms: attack.loopRms, minReleaseAt, lfo, sustain };
     if (!this.gateOpen) void this.release(); // the key came up while the note was being built
   }
 
@@ -176,12 +180,27 @@ export class UtauLiveVoice implements VoiceSink {
       const s = this.ctx.createBufferSource();
       s.buffer = this.buffer(tail.samples, tail.sampleRate);
       s.connect(out);
-      s.start(t);
+      s.start(t, this.releaseStart(p, tail.samples, tail.sampleRate, tail.overlap, t));
       this.tail = { gain: out, sources: [s], plan: p.plan, f0: p.f0, loopRms: p.loopRms, minReleaseAt: t };
       this.fadeOut(p, tail.overlap, t);
     } else {
       this.fadeOut(p, 0.08, t);
     }
+  }
+
+  /**
+   * How far into the ending sample to start so its waveform lines up with the sustain it takes over from at time `t`.
+   * Two crossfading waveforms that are out of step cancel, and the level dips and comes back (heard as a stutter).
+   */
+  private releaseStart(p: Playing, tail: Float32Array, tailRate: number, overlap: number, t: number): number {
+    const su = p.sustain;
+    if (!su || su.sampleRate !== tailRate || t < su.startAt + 0.02) return 0;
+    const len = su.data.length;
+    const at = Math.round(((su.offsetSec + (t - su.startAt)) * su.sampleRate) % len);
+    const n = Math.min(Math.round(Math.min(overlap, 0.03) * tailRate), tail.length >> 1);
+    const win = new Float32Array(n);
+    for (let i = 0; i < n; i++) win[i] = su.data[(at + i) % len];
+    return alignOffset(win, tail, Math.ceil((1.25 * tailRate) / p.f0)) / tailRate;
   }
 
   private fadeOut(p: Playing, seconds: number, at = this.ctx.currentTime): void {
