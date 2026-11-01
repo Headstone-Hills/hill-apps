@@ -22,6 +22,8 @@ import { Spectrogram } from './spectrogram';
 import { Scope } from './scope';
 import { OnScreenPiano } from './keyboard';
 import { ScreenBottomPin } from './pinbar';
+import { MAX_RECORD_SEC, Recorder, type Recording } from '../audio/recorder';
+import { encodeWav } from '../audio/wav';
 import { ALL_SOUNDS_TEXT, SENTENCE_TEXT } from '../text/testtext';
 
 const DEFAULT_LYRICS = 'Twinkle twinkle little star, how I wonder what you are';
@@ -888,10 +890,122 @@ export function startApp(): void {
   });
   bendInput.addEventListener('keydown', (e) => e.stopPropagation()); // typing a number must not play notes
   midiToggle.addEventListener('click', () => {
+    if (midiPanel.hidden) $('rec-panel').hidden = true;
     midiPanel.hidden = !midiPanel.hidden;
     midiToggle.setAttribute('aria-expanded', String(!midiPanel.hidden));
     midiToggle.blur();
   });
+
+  // ---- Recording: start/stop, then save what was played as WAV or MP3 -----------------------------------------
+  const recorder = new Recorder();
+  const recBtn = $<HTMLButtonElement>('rec-btn');
+  const recPanel = $('rec-panel');
+  const recInfo = $('rec-info');
+  const recStatus = $('rec-status');
+  const recPreview = $<HTMLAudioElement>('rec-preview');
+  let lastRec: Recording | null = null;
+  let wavBlob: Blob | null = null;
+  const mp3Cache = new Map<string, Blob>();
+  let recTimer = 0;
+  const clock = (sec: number): string => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+  const stamp = (): string => {
+    const d = new Date();
+    const p2 = (n: number): string => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+  };
+  function download(blob: Blob, name: string): void {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 15000);
+  }
+  function discardRecording(): void {
+    lastRec = null;
+    wavBlob = null;
+    mp3Cache.clear();
+    if (recPreview.src) URL.revokeObjectURL(recPreview.src);
+    recPreview.removeAttribute('src');
+    recPanel.hidden = true;
+  }
+  async function stopRecording(note = ''): Promise<void> {
+    window.clearInterval(recTimer);
+    const rec = recorder.stop();
+    recBtn.classList.remove('recording');
+    recBtn.textContent = '⏺ Record';
+    if (!rec || rec.frames === 0) {
+      audioStatus.textContent = 'Nothing was recorded.';
+      return;
+    }
+    discardRecording();
+    lastRec = rec;
+    const secs = rec.frames / rec.sampleRate;
+    recInfo.textContent = `${clock(secs)} · ${(rec.frames * 4 / 1e6).toFixed(1)} MB as WAV`;
+    recStatus.textContent = `${note}Listen below, then save it as a WAV or an MP3.`;
+    wavBlob = new Blob([encodeWav(rec.left, rec.right, rec.sampleRate) as BlobPart], { type: 'audio/wav' });
+    recPreview.src = URL.createObjectURL(wavBlob);
+    midiPanel.hidden = true;
+    midiToggle.setAttribute('aria-expanded', 'false');
+    recPanel.hidden = false;
+  }
+  recorder.onLimit = () => void stopRecording(`Stopped at the ${MAX_RECORD_SEC / 60}-minute limit. `);
+  recBtn.addEventListener('click', async () => {
+    recBtn.blur();
+    if (recorder.recording) {
+      await stopRecording();
+      return;
+    }
+    if (!engine) {
+      audioStatus.textContent = 'Start audio first, then record.';
+      return;
+    }
+    const bus = await getBus();
+    const sources: AudioNode[] = [bus.analyser];
+    const mic = bus.micNode;
+    if (mic && $<HTMLInputElement>('rec-mic').checked) sources.push(mic);
+    discardRecording();
+    recorder.start(bus.ctx, sources);
+    recBtn.classList.add('recording');
+    const tick = (): void => {
+      recBtn.textContent = `⏹ Stop ${clock(recorder.seconds)}`;
+    };
+    tick();
+    recTimer = window.setInterval(tick, 250);
+  });
+  $('rec-wav').addEventListener('click', () => {
+    if (wavBlob) {
+      download(wavBlob, `hillsing-${stamp()}.wav`);
+      recStatus.textContent = 'Saved the WAV (if nothing downloaded here, use the player\'s menu to download it).';
+    }
+  });
+  $('rec-mp3').addEventListener('click', async () => {
+    if (!lastRec) return;
+    const kbps = $<HTMLSelectElement>('rec-kbps').value;
+    const buttons = ['rec-wav', 'rec-mp3', 'rec-discard'].map((id) => $<HTMLButtonElement>(id));
+    let blob = mp3Cache.get(kbps);
+    if (!blob) {
+      for (const b of buttons) b.disabled = true;
+      try {
+        const { encodeMp3 } = await import('../audio/mp3');
+        const bytes = await encodeMp3(lastRec.left, lastRec.right, lastRec.sampleRate, Number(kbps), (f) => {
+          recStatus.textContent = `Making the MP3… ${Math.round(f * 100)}%`;
+        });
+        blob = new Blob([bytes as BlobPart], { type: 'audio/mpeg' });
+        mp3Cache.set(kbps, blob);
+      } catch (err) {
+        recStatus.textContent = `Could not make the MP3: ${err instanceof Error ? err.message : String(err)}`;
+        return;
+      } finally {
+        for (const b of buttons) b.disabled = false;
+      }
+    }
+    download(blob, `hillsing-${stamp()}.mp3`);
+    recStatus.textContent = `Saved the MP3 (${(blob.size / 1e6).toFixed(1)} MB).`;
+  });
+  $('rec-discard').addEventListener('click', discardRecording);
 
   const midiStatus = $('midi-status');
   connectMidi(handleEvent, (names) => {

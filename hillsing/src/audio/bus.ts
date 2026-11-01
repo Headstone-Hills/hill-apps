@@ -90,6 +90,11 @@ export class AudioBus {
     if (this.mic) this.mic.gain.gain.setTargetAtTime(this.micLevel, this.ctx.currentTime, 0.02);
   }
 
+  /** The microphone's output node while a microphone is mixed in (so a recording can include it), else null. */
+  get micNode(): AudioNode | null {
+    return this.mic ? this.mic.gain : null;
+  }
+
   get currentOutput(): string {
     return this.outputId;
   }

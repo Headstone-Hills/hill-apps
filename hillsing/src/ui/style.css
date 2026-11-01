@@ -316,3 +316,8 @@ button.nudge { outline: 2px solid var(--next); box-shadow: 0 0 10px var(--next);
 .midi-map button.armed { border-color: var(--next); color: var(--next); }
 #midi-toggle[aria-expanded="true"] { border-color: var(--accent); }
 .build-id { font-size: 11px; font-weight: 400; color: var(--muted); letter-spacing: 0; margin-left: 6px; }
+
+/* ---- Recording ---- */
+#rec-btn.recording { background: #c0332b; border-color: #ff4a3d; color: #fff; }
+.rec-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+#rec-status { min-height: 1.3em; }
