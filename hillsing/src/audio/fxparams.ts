@@ -250,6 +250,11 @@ export const FX_PRESETS: ReadonlyArray<{ id: string; name: string; state: Partia
     name: 'Shimmer chorus',
     state: { enabled: { chorus: true, eq: true, reverb: true }, values: { chorus: { rate: 1.6, depth: 4, delay: 14, mix: 0.7 }, eq: { lowGain: -6, lowFreq: 200, midGain: 0, midFreq: 1500, midQ: 1, highGain: 9, highFreq: 7000 }, reverb: { size: 3, preDelay: 20, damping: 12000, mix: 0.35 } } },
   },
+  {
+    id: 'call',
+    name: 'Bright for calls (Discord)',
+    state: { enabled: { eq: true, compressor: true }, values: { eq: { lowGain: -3, lowFreq: 120, midGain: 3, midFreq: 3200, midQ: 1, highGain: 9, highFreq: 5500 }, compressor: { threshold: -20, ratio: 2.5, attack: 12, release: 160, knee: 12, makeup: 2 } } },
+  },
 ];
 
 type Store = Pick<Storage, 'getItem' | 'setItem'>;
