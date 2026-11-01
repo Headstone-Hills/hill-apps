@@ -35,11 +35,20 @@ function registerProtocol() {
   });
 }
 
-/** Only the permissions the app needs; Web MIDI is the one that matters. */
+/**
+ * Only the permissions the app needs: Web MIDI, and "media" for audio only. The media permission is not used to record
+ * anything: Chromium hides the names of audio devices (such as BlackHole) from the output picker unless it is granted.
+ */
 function allowMidi() {
-  const allowed = new Set(['midi', 'midiSysex']);
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => callback(allowed.has(permission)));
-  session.defaultSession.setPermissionCheckHandler((_wc, permission) => allowed.has(permission));
+  const midi = new Set(['midi', 'midiSysex']);
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    if (permission === 'media') return callback((details.mediaTypes || []).every((t) => t === 'audio'));
+    callback(midi.has(permission));
+  });
+  session.defaultSession.setPermissionCheckHandler((_wc, permission, _origin, details) => {
+    if (permission === 'media') return details && details.mediaType !== 'video';
+    return midi.has(permission);
+  });
 }
 
 function createWindow() {

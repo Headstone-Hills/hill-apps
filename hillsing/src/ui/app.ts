@@ -444,6 +444,82 @@ export function startApp(): void {
     apply();
   }
 
+  // ---- Audio output: play to a chosen device (e.g. BlackHole for Discord), optionally also to speakers ----------
+  const OUT_KEY = 'hillsing.output.v1';
+  const MON_KEY = 'hillsing.monitor.v1';
+  async function setupOutputs(bus: Awaited<ReturnType<typeof getBus>>): Promise<void> {
+    const outSel = $<HTMLSelectElement>('out-device');
+    const monSel = $<HTMLSelectElement>('out-monitor');
+    const note = $('out-note');
+    if (!bus.canChooseOutput) {
+      outSel.disabled = monSel.disabled = true;
+      note.textContent = 'This browser cannot choose an output device. The Mac app can.';
+      return;
+    }
+    const fill = (sel: HTMLSelectElement, first: string, devices: Array<{ id: string; label: string }>): void => {
+      sel.textContent = '';
+      sel.append(new Option(first, ''));
+      for (const d of devices) sel.append(new Option(d.label, d.id));
+    };
+    const find = (devices: Array<{ id: string; label: string }>, label: string | null | undefined) => (label ? devices.find((d) => d.label === label) : undefined);
+    const refresh = async (): Promise<void> => {
+      const devices = await bus.outputDevices();
+      fill(outSel, 'System default', devices);
+      fill(monSel, 'Nothing (only the output above)', devices);
+      const savedOut = find(devices, storage?.getItem(OUT_KEY));
+      if (savedOut) {
+        outSel.value = savedOut.id;
+        try {
+          await bus.setOutput(savedOut.id);
+        } catch {
+          /* the device may have been unplugged: fall back to the default */
+          outSel.value = '';
+        }
+      } else outSel.value = bus.currentOutput;
+      const savedMon = find(devices, storage?.getItem(MON_KEY));
+      if (savedMon) {
+        monSel.value = savedMon.id;
+        void bus.setMonitor(savedMon.id).catch(() => (monSel.value = ''));
+      }
+    };
+    const labelOf = (sel: HTMLSelectElement): string => (sel.value ? sel.selectedOptions[0].textContent ?? '' : '');
+    outSel.addEventListener('change', () => {
+      bus.setOutput(outSel.value).then(
+        () => {
+          note.textContent = outSel.value ? `Playing to: ${labelOf(outSel)}. Choose speakers or headphones under "Also hear it on" to hear it too.` : 'Playing to the system default output.';
+          try {
+            storage?.setItem(OUT_KEY, labelOf(outSel));
+          } catch {
+            /* storage unavailable: fine */
+          }
+        },
+        (err: unknown) => {
+          note.textContent = `Could not switch the output: ${err instanceof Error ? err.message : String(err)}`;
+        },
+      );
+      outSel.blur();
+    });
+    monSel.addEventListener('change', () => {
+      bus.setMonitor(monSel.value || null).then(
+        () => {
+          note.textContent = monSel.value ? `Also playing on: ${labelOf(monSel)} (a little later than the main output).` : 'Not playing on a second device.';
+          try {
+            storage?.setItem(MON_KEY, labelOf(monSel));
+          } catch {
+            /* storage unavailable: fine */
+          }
+        },
+        (err: unknown) => {
+          note.textContent = `Could not play on that device: ${err instanceof Error ? err.message : String(err)}`;
+          monSel.value = '';
+        },
+      );
+      monSel.blur();
+    });
+    navigator.mediaDevices?.addEventListener?.('devicechange', () => void refresh());
+    await refresh();
+  }
+
   // ---- Audio start -----------------------------------------------------------------
   $('build-id').textContent = typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : '';
   const startBtn = $<HTMLButtonElement>('start');
@@ -465,6 +541,7 @@ export function startApp(): void {
       const bus = await getBus();
       effectsPanel.setBitcrushAvailable(bus.fx.bitcrushAvailable);
       scope.attach(bus);
+      void setupOutputs(bus);
       engine = await SingerEngine.create(bus);
       utauLive = new UtauLiveVoice(engine.context, engine.audioInput, () => utauSession.bank, () => tuning.values);
       for (const [name, value] of paramValues) engine.setParam(name, value);

@@ -15,7 +15,7 @@
       </nav>
       <div class="status">
         <button id="start" type="button">Start audio</button>
-        <button id="midi-toggle" type="button" aria-expanded="false" aria-controls="midi-panel" title="MIDI: see what your keyboard sends, and map any knob to pitch or modulation">🎛 MIDI</button>
+        <button id="midi-toggle" type="button" aria-expanded="false" aria-controls="midi-panel" title="Choose where HillSing plays (for example into BlackHole for Discord), and see what your MIDI keyboard sends">🎛 Audio/MIDI</button>
         <button id="piano-toggle" type="button" aria-pressed="false" title="Show or hide an on-screen piano you can play by touch">🎹 Piano</button>
         <span id="audio-status">Audio off</span>
         <span id="midi-status">MIDI: not connected</span>
@@ -25,6 +25,12 @@
     </header>
 
     <div id="midi-panel" class="midi-panel" hidden>
+      <div class="midi-row"><b>Audio output</b></div>
+      <table class="midi-map" id="audio-out-table">
+        <tr><td>Play to</td><td><select id="out-device" aria-label="Audio output device"></select></td></tr>
+        <tr><td>Also hear it on</td><td><select id="out-monitor" aria-label="Second output to listen on"></select></td></tr>
+      </table>
+      <p id="out-note" class="hint">Start audio first. To send HillSing into Discord: play to BlackHole 2ch, and choose your speakers or headphones under "Also hear it on".</p>
       <div class="midi-row"><b>MIDI</b> <span id="midi-last" class="hint">Nothing received yet: play a key or move a knob.</span></div>
       <div class="midi-row"><span class="hint">Inputs:</span> <span id="midi-inputs" class="hint">none found yet</span></div>
       <table class="midi-map">

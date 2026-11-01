@@ -27,6 +27,57 @@ export class AudioBus {
     private readonly preMeter: AnalyserNode,
   ) {}
 
+  private outputId = '';
+  private monitor: { dest: MediaStreamAudioDestinationNode; el: HTMLAudioElement } | null = null;
+
+  /** True when the browser can send the sound to a chosen output device (Chromium and Electron can). */
+  get canChooseOutput(): boolean {
+    return typeof (this.ctx as AudioContext & { setSinkId?: unknown }).setSinkId === 'function';
+  }
+
+  /** The audio outputs the browser can see. Names are blank unless the app is allowed to read device labels. */
+  async outputDevices(): Promise<Array<{ id: string; label: string }>> {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    const all = await navigator.mediaDevices.enumerateDevices();
+    return all.filter((d) => d.kind === 'audiooutput').map((d, i) => ({ id: d.deviceId, label: d.label || `Output ${i + 1} (name not available)` }));
+  }
+
+  /** Play everything to this output device ('' = the system default). */
+  async setOutput(id: string): Promise<void> {
+    const ctx = this.ctx as AudioContext & { setSinkId?: (id: string) => Promise<void> };
+    if (!ctx.setSinkId) throw new Error('This browser cannot choose an output device');
+    await ctx.setSinkId(id);
+    this.outputId = id;
+  }
+
+  get currentOutput(): string {
+    return this.outputId;
+  }
+
+  /**
+   * Also play the sound on a second device (to hear yourself while the main output goes to a virtual cable). It rides
+   * on an audio element, so it arrives a little later than the main output. Pass null to stop.
+   */
+  async setMonitor(id: string | null): Promise<void> {
+    if (this.monitor) {
+      this.analyser.disconnect(this.monitor.dest);
+      this.monitor.el.pause();
+      this.monitor.el.srcObject = null;
+      this.monitor.el.remove();
+      this.monitor = null;
+    }
+    if (id === null) return;
+    const dest = this.ctx.createMediaStreamDestination();
+    this.analyser.connect(dest);
+    const el = document.createElement('audio') as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+    el.srcObject = dest.stream;
+    el.style.display = 'none';
+    document.body.append(el);
+    if (el.setSinkId) await el.setSinkId(id);
+    await el.play();
+    this.monitor = { dest, el };
+  }
+
   /** Fill `into` (up to 2048 samples) with the newest output samples as they were before the limiter, so clipping shows. */
   waveformTail(into: Float32Array<ArrayBuffer>): void {
     this.preMeter.getFloatTimeDomainData(into);
