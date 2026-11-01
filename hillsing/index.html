@@ -32,6 +32,13 @@
             <label for="voice-main"><b>Voice</b></label>
             <select id="voice-main" aria-label="Voice: a generated formant voice or a sample-based UTAU voicebank"></select>
             <div id="voice-main-desc" class="hint"></div>
+            <div class="voice-load">
+              <button id="voice-load-zip" type="button" title="Pick a zipped UTAU voicebank (the way to load one on a phone). It is read in place, never uploaded">📂 Load voicebank (.zip)</button>
+              <button id="voice-load-folder" type="button" hidden title="Pick a UTAU voicebank folder (the one with oto.ini)">📁 Folder</button>
+              <input id="voice-zip" class="vh" type="file" accept=".zip,application/zip,application/x-zip-compressed,application/octet-stream" tabindex="-1" aria-label="Choose a zipped UTAU voicebank" />
+              <input id="voice-folder" class="vh" type="file" webkitdirectory tabindex="-1" aria-label="Choose a UTAU voicebank folder" />
+            </div>
+            <div id="voice-load-status" class="hint" aria-live="polite"></div>
           </div>
         </div>
         <div class="nav test-text">
@@ -108,7 +115,7 @@
         <h2>UTAU voicebank <span id="utau-name" class="hint"></span></h2>
         <div class="nav">
           <label class="inline">Voicebank folder <input id="utau-folder" type="file" webkitdirectory aria-label="Choose a UTAU voicebank folder" /></label>
-          <label class="inline" title="Zip the voicebank folder once and keep the zip on your phone or computer; it is read in place, never uploaded">or a .zip <input id="utau-zip" type="file" accept=".zip,application/zip,application/x-zip-compressed" aria-label="Choose a zipped UTAU voicebank" /></label>
+          <label class="inline" title="Zip the voicebank folder once and keep the zip on your phone or computer; it is read in place, never uploaded">or a .zip <input id="utau-zip" type="file" accept=".zip,application/zip,application/x-zip-compressed,application/octet-stream" aria-label="Choose a zipped UTAU voicebank" /></label>
         </div>
         <div id="utau-status" class="hint">Pick a UTAU voicebank folder (the one with oto.ini), or a .zip of it (the way to load one on a phone). The files are read in place; nothing is uploaded or copied. Voicebanks are never included with HillSing.</div>
         <div class="nav">

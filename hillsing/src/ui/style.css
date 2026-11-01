@@ -293,3 +293,12 @@ body.piano-on { padding-bottom: var(--piano-h, 200px); }
 }
 .syl.playing { background: var(--next); color: #1a1405; border-color: var(--next); }
 .syl.playing .ph { color: #4a3a0a; }
+
+/* Voicebank loading next to the voice menu */
+.voice-load { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.voice-load button { padding: 4px 8px; font-size: 12px; }
+.vh { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; pointer-events: none; }
+#voice-load-status { font-size: 11px; line-height: 1.3; }
+@media (max-width: 760px) {
+  .voice-load button { padding: 8px 12px; font-size: 14px; min-height: 40px; }
+}

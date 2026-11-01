@@ -377,3 +377,5 @@ The **Test text** buttons next to the lyrics box load a text that uses every sou
 The Scope can be folded away with the ▾ button in its heading (the choice is remembered). A recording keeps running while it is folded, and the heading shows a red ● REC.
 
 **Locking and highlighting:** **Caps Lock** locks on the current syllable (the same as the Hold button) until you switch it off; if you turn it on while a syllable is sounding, that syllable is the one locked. While a key is held, the syllable being sung stays highlighted (solid gold) and the highlight moves to the next one only when the key comes up. The arrow keys always step by syllable; Alt/Option+arrow jumps a whole word.
+
+**Loading a voicebank from any tab:** under the Voice menu there is a **📂 Load voicebank (.zip)** button (and **📁 Folder** on desktop browsers), so a voicebank can be loaded from the Perform tab and from a phone, with its progress and any error shown right beneath. Choosing "Load a UTAU voicebank…" in the menu opens the same picker (a folder on desktop, a .zip on touch screens).

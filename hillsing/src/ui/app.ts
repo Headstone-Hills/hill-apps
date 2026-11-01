@@ -744,13 +744,18 @@ export function startApp(): void {
     mainVoice.append(formant, sample);
     syncMainVoice();
   }
+  // A folder picker is for desktop browsers; phones and tablets load a .zip.
+  const canPickFolder = !window.matchMedia('(pointer: coarse)').matches && 'webkitdirectory' in document.createElement('input');
+  $<HTMLButtonElement>('voice-load-folder').hidden = !canPickFolder;
+  $('voice-load-zip').addEventListener('click', () => $<HTMLInputElement>('voice-zip').click());
+  $('voice-load-folder').addEventListener('click', () => $<HTMLInputElement>('voice-folder').click());
   mainVoice.addEventListener('change', () => {
     const choice = mainVoice.value;
     if (choice === 'utau') {
       if (utauSession.bank) utauSession.setUse(true);
       else {
-        syncMainVoice(); // keep the current voice until a folder is actually loaded
-        $<HTMLInputElement>('utau-folder').click();
+        syncMainVoice(); // keep the current voice until a voicebank is actually loaded
+        (canPickFolder ? $<HTMLInputElement>('voice-folder') : $<HTMLInputElement>('voice-zip')).click();
       }
     } else {
       utauSession.setUse(false);

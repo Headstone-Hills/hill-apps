@@ -25,12 +25,18 @@ export class UtauPanel {
     pitchName: this.q('utau-pitch-name'),
     length: this.q<HTMLInputElement>('utau-len'),
     play: this.q<HTMLButtonElement>('utau-play'),
+    // The same pickers next to the voice menu, so a voicebank can be loaded from the Perform tab (and from a phone).
+    voiceZip: document.getElementById('voice-zip') as HTMLInputElement | null,
+    voiceFolder: document.getElementById('voice-folder') as HTMLInputElement | null,
+    voiceStatus: document.getElementById('voice-load-status'),
   };
 
   constructor(private readonly session: UtauSession) {
     const { el } = this;
-    el.folder.addEventListener('change', () => void this.loadFolder());
-    el.zip.addEventListener('change', () => void this.loadZip());
+    el.folder.addEventListener('change', () => void this.loadFolder(el.folder));
+    el.zip.addEventListener('change', () => void this.loadZip(el.zip));
+    el.voiceFolder?.addEventListener('change', () => void this.loadFolder(el.voiceFolder!));
+    el.voiceZip?.addEventListener('change', () => void this.loadZip(el.voiceZip!));
     el.pitch.addEventListener('input', () => this.showPitch());
     el.play.addEventListener('click', () => void this.play());
     el.alias.addEventListener('keydown', (e) => {
@@ -50,6 +56,10 @@ export class UtauPanel {
   private say(text: string, error = false): void {
     this.el.status.textContent = text;
     this.el.status.classList.toggle('error', error);
+    if (this.el.voiceStatus) {
+      this.el.voiceStatus.textContent = text;
+      this.el.voiceStatus.classList.toggle('error', error);
+    }
   }
 
   private showPitch(): void {
@@ -57,8 +67,8 @@ export class UtauPanel {
     this.el.pitchName.textContent = Number.isFinite(n) ? `${noteName(n)} · ${hzOf(n).toFixed(1)} Hz` : '';
   }
 
-  private async loadFolder(): Promise<void> {
-    const list = this.el.folder.files;
+  private async loadFolder(input: HTMLInputElement): Promise<void> {
+    const list = input.files;
     if (!list || list.length === 0) return;
     const files: BankFile[] = [...list].map((f) => ({
       path: f.webkitRelativePath || f.name,
@@ -67,10 +77,11 @@ export class UtauPanel {
     await this.loadFiles(async () => files, (files[0].path.split('/')[0] || 'voicebank').normalize('NFC'));
   }
 
-  private async loadZip(): Promise<void> {
-    const f = this.el.zip.files?.[0];
+  private async loadZip(input: HTMLInputElement): Promise<void> {
+    const f = input.files?.[0];
     if (!f) return;
     await this.loadFiles(() => openZip(f), f.name.replace(/\.zip$/i, '').normalize('NFC'));
+    input.value = ''; // so picking the same file again still loads it
   }
 
   private async loadFiles(open: () => Promise<BankFile[]>, name: string): Promise<void> {
