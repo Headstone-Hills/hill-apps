@@ -9,7 +9,8 @@ import { decodeText, frqPathFor, parseFrq, parseOto, parseWav } from '../src/uta
 import { estimateF0, mixInto, pitchMarks, renderSegment, type PsolaSource } from '../src/utau/psola';
 import { planUnits, xsampaVowel } from '../src/utau/planner';
 import { renderUtau } from '../src/utau/render';
-import { buildAttack, buildRelease, seamlessLoop } from '../src/utau/livenote';
+import { buildAttack, buildRelease, capPeak, seamlessLoop } from '../src/utau/livenote';
+import { steadyWindow } from '../src/utau/spectral';
 import { Voicebank, type BankFile } from '../src/utau/voicebank';
 import { openZip } from '../src/utau/zip';
 import { deflateRawSync } from 'node:zlib';
@@ -350,7 +351,7 @@ describe('live notes', () => {
     for (const target of [160, 220, 300]) {
       const a = (await buildAttack(bank, { onset: [], nucleus: 'AA1', coda: [] }, target, null))!;
       expect(a.aliases).toEqual(['- A']);
-      expect(a.samples.length).toBeGreaterThan(0.25 * SR);
+      expect(a.samples.length).toBeGreaterThan(0.15 * SR); // consonants play 1.5x faster live, so the attack is short
       expect(a.loop).not.toBeNull();
       expect(a.loop!.length / SR).toBeGreaterThan(0.1);
       // the loop repeats at the target pitch...
@@ -419,6 +420,52 @@ describe('live notes', () => {
     expect((natural.samples.length - fast.samples.length) / SR).toBeGreaterThan(0.008);
     expect(Math.abs(estimateF0(fast.loop!.subarray(0, 9000), SR) / 220 - 1)).toBeLessThan(0.04);
     expect(fast.hasLoop).toBe(true);
+  });
+
+  it('finds the steady part of a vowel that glides first, so a diphthong is held on its first element', () => {
+    // harmonics shaped by a "formant" that moves from 500 to 1500 Hz over 180 ms, then stays put for 300 ms
+    const f0 = 200, n = Math.round(0.48 * SR), x = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const t = i / SR, formant = t < 0.18 ? 500 + (1000 * t) / 0.18 : 1500;
+      let v = 0;
+      for (let h = 1; h * f0 < 4000; h++) v += Math.sin((2 * Math.PI * h * f0 * i) / SR) * Math.exp(-(((h * f0 - formant) / 350) ** 2));
+      x[i] = 0.2 * v;
+    }
+    const w = steadyWindow(x, 0, n, SR);
+    expect(w.start / SR).toBeGreaterThan(0.12); // not inside the glide
+    expect(w.drift).toBeLessThanOrEqual(3.5);
+    expect((w.end - w.start) / SR).toBeGreaterThanOrEqual(0.12);
+    // a plain steady vowel is held from near its start
+    const flat = steadyWindow(tone(200, 0.5), 0, Math.round(0.5 * SR), SR);
+    expect(flat.start / SR).toBeLessThan(0.05);
+  });
+
+  it('keeps lowered pitches from turning into bursts with silence between them (no gating, no inflated peaks)', () => {
+    const src = { samples: tone(280, 0.8), sampleRate: SR, frq: frqFor(280, Math.round(0.8 * SR)) };
+    const out = renderSegment(src, { start: 0, end: src.samples.length, fixed: 0, length: Math.round(0.6 * SR), f0: 131, matchLevel: true });
+    const period = Math.round(SR / 131), win = Math.round(0.0005 * SR);
+    let deepest = 0, count = 0;
+    for (let s = period * 8; s + period < out.length - period * 4 && count < 40; s += period, count++) {
+      let hi = 0, lo = Infinity;
+      for (let a = s; a + win <= s + period; a += win) {
+        let e = 0;
+        for (let i = a; i < a + win; i++) e += out[i] * out[i];
+        const r = Math.sqrt(e / win);
+        hi = Math.max(hi, r);
+        lo = Math.min(lo, r);
+      }
+      deepest = Math.max(deepest, 20 * Math.log10((hi + 1e-9) / (lo + 1e-9)));
+    }
+    expect(deepest).toBeLessThan(30); // two-period grains left an 80 dB gap every cycle
+  });
+
+  it('caps buffer peaks at full scale without ever turning anything up', () => {
+    const loud = Float32Array.from({ length: 100 }, (_, i) => Math.sin(i / 5) * 1.7);
+    capPeak(loud);
+    expect(Math.max(...loud.map(Math.abs))).toBeCloseTo(0.95, 5);
+    const quiet = Float32Array.from({ length: 100 }, (_, i) => Math.sin(i / 5) * 0.3);
+    capPeak(quiet);
+    expect(Math.max(...quiet.map(Math.abs))).toBeCloseTo(0.3, 5);
   });
 
   it('smooths a loop seam', () => {

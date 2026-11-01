@@ -8,6 +8,7 @@
 // sample ("E -"). Everything is pitch-shifted to the key's pitch with the same TD-PSOLA sampler as melodies.
 
 import { mixAt, renderSegment, type PsolaSource } from './psola';
+import { steadyWindow } from './spectral';
 import { planUnits, type Unit } from './planner';
 import type { SyllablePlan } from '../synth/types';
 import type { Voicebank } from './voicebank';
@@ -60,6 +61,7 @@ const MIN_LOOP_SEC = 0.1;
 /** The sustain wanders through the steady vowel and back once per SWEEP_SEC, for SWEEP_CYCLES cycles, so nothing repeats at a rate the ear can pick out. */
 const SWEEP_SEC = 2.4;
 const SWEEP_CYCLES = 3;
+const SWEEP_FRACTION = 0.5;
 
 interface Prepared {
   unit: Unit;
@@ -135,6 +137,16 @@ function chain(list: ReadonlyArray<Prepared>): number[] {
   return starts;
 }
 
+/** Scale a buffer down so its largest sample is at most `limit` (never up). Keeps low notes from running past full scale. */
+export function capPeak(x: Float32Array, limit = 0.95): void {
+  let pk = 0;
+  for (let i = 0; i < x.length; i++) pk = Math.max(pk, Math.abs(x[i]));
+  if (pk > limit) {
+    const k = limit / pk;
+    for (let i = 0; i < x.length; i++) x[i] *= k;
+  }
+}
+
 /** The loop's end blended into its start, so repeating it has no seam. */
 export function seamlessLoop(x: Float32Array, seamSamples: number): Float32Array {
   const seam = Math.max(1, Math.min(seamSamples, x.length >> 2));
@@ -154,7 +166,7 @@ export async function buildAttack(
   plan: SyllablePlan,
   f0: number,
   prevVowel: string | null,
-  opts: { consonantSpeed?: number } = {},
+  opts: { consonantSpeed?: number; /** Fraction of the steady stretch the sustain sweeps across (centred). */ sweepFraction?: number } = {},
 ): Promise<LiveAttack | null> {
   const units = planUnits((a) => bank.has(a), plan, { prevVowel, releaseAtEnd: false, melisma: false }).filter((u) => u.role !== 'coda' && u.role !== 'end');
   const list = await prepare(bank, units, -1, opts.consonantSpeed ?? LIVE_CONSONANT_SPEED);
@@ -166,11 +178,19 @@ export async function buildAttack(
   const xs = Math.round(CROSSFADE_SEC * v.src.sampleRate);
   const vowelStart = v.start + v.fixed;
   const vowelLen = v.end - vowelStart;
-  let l0 = vowelStart + Math.round(vowelLen * 0.3);
-  let l1 = vowelStart + Math.round(vowelLen * 0.85);
-  if ((l1 - l0) / v.src.sampleRate < MIN_LOOP_SEC) {
-    l0 = vowelStart;
-    l1 = v.end;
+  // Hold the steadiest stretch of the vowel (a diphthong settles on its first element), not a fixed slice of it.
+  let l0 = vowelStart;
+  let l1 = v.end;
+  if (vowelLen > 0) {
+    const w = steadyWindow(v.src.samples, vowelStart, v.end, v.src.sampleRate);
+    // Sweep only the middle half of the steady stretch: the vowel's colour is closest to its centre there, and the
+    // attack plays up to the start of it.
+    const len = w.end - w.start;
+    const minLen = Math.round(MIN_LOOP_SEC * v.src.sampleRate);
+    const mid = w.start + len / 2;
+    const half = Math.max((len * (opts.sweepFraction ?? SWEEP_FRACTION)) / 2, minLen / 2);
+    l0 = Math.max(vowelStart, Math.round(mid - half));
+    l1 = Math.min(v.end, Math.round(mid + half));
   }
   const hasLoop = (l1 - l0) / v.src.sampleRate >= MIN_LOOP_SEC / 2 && vowelLen > 0;
 
@@ -202,6 +222,7 @@ export async function buildAttack(
   const samples = out.subarray(trim, end);
   const fadeIn = Math.min(samples.length >> 1, Math.round(ATTACK_FADE_IN_SEC * sr));
   for (let k = 0; k < fadeIn; k++) samples[k] *= k / fadeIn;
+  capPeak(samples);
 
   let made = false;
   let loop: Float32Array | null = null;
@@ -222,6 +243,7 @@ export async function buildAttack(
       return l0 + (ph <= 1 ? ph : 2 - ph) * span;
     };
     loop = seamlessLoop(renderSegment(v.src, { start: l0, end: l1, fixed: 0, length, f0, matchLevel: true, map }), Math.round(LOOP_SEAM_SEC * vsr));
+    capPeak(loop);
     let e = 0;
     for (let i = 0; i < loop.length; i++) e += loop[i] * loop[i];
     rms = Math.sqrt(e / loop.length);
