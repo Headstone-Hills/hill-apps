@@ -132,3 +132,38 @@ button:disabled { opacity: 0.45; cursor: default; }
 
 #nav-hold.active { background: var(--next); border-color: var(--next); color: #1a1405; }
 .syllables .syl.next.held { outline: 2px solid var(--next); }
+
+/* ---- Tabs ---- */
+.tabs { display: flex; gap: 4px; }
+.tab { padding: 6px 16px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; font: inherit; }
+.tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #0b1620; font-weight: 600; }
+.tab:focus-visible { outline: 2px solid var(--next); outline-offset: 2px; }
+
+/* ---- Perform view: voice, lyrics, syllables and effects on one screen; everything else hidden ---- */
+body[data-view="perform"] main { max-width: none; padding: 10px 14px 20px; gap: 10px; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); align-items: start; }
+body[data-view="perform"] main > section:not(.perf) { display: none; }
+body[data-view="perform"] .long { display: none; }
+body[data-view="perform"] section { padding: 10px 12px; }
+body[data-view="perform"] h2 { margin-bottom: 6px; }
+body[data-view="perform"] #sec-lyrics { grid-column: 1; }
+body[data-view="perform"] #sec-syllables { grid-column: 2; }
+body[data-view="perform"] #fx { grid-column: 1 / -1; }
+body[data-view="perform"] #lyrics { height: 5.2em; min-height: 0; }
+body[data-view="perform"] .syllables { max-height: 15em; overflow: auto; font-size: 17px; }
+body[data-view="perform"] .syl { padding: 3px 7px; }
+body[data-view="perform"] #fx .nav { margin: 0 0 6px; }
+body[data-view="perform"] .fx-grid { display: block; column-count: 4; column-gap: 8px; margin-top: 6px; }
+body[data-view="perform"] .fx-card { padding: 8px 10px; gap: 5px; margin-bottom: 8px; break-inside: avoid; }
+body[data-view="perform"] .fx-head .hint { display: none; }
+body[data-view="perform"] .fx-params { gap: 2px; }
+body[data-view="perform"] .fx-param { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); align-items: center; gap: 8px; font-size: 12px; }
+body[data-view="perform"] .fx-param-top { gap: 4px; }
+body[data-view="perform"] .fx-param-top output { color: var(--text); }
+@media (max-width: 1100px) {
+  body[data-view="perform"] .fx-grid { column-count: 2; }
+}
+@media (max-width: 760px) {
+  body[data-view="perform"] main { grid-template-columns: minmax(0, 1fr); }
+  body[data-view="perform"] #sec-lyrics, body[data-view="perform"] #sec-syllables { grid-column: 1; }
+  body[data-view="perform"] .fx-grid { column-count: 1; }
+}

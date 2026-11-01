@@ -349,3 +349,7 @@ overrides; (5) record live performances into the editor as notes + syllables; (6
 for Apple Silicon Mac, **done** (`electron/main.cjs`; `npm run app:build` writes
 `release/HillSing-darwin-arm64/HillSing.app`; Electron rather than Tauri, since Chromium keeps Web MIDI
 behaviour identical); (7) WAV export through the same engine in an `OfflineAudioContext`.
+
+## Perform tab
+
+The **Perform** tab in the header puts the voice picker, the lyrics box, the syllable parser (with Hold word) and all seven effects on one screen, and hides the MIDI file, UTAU and lab panels. Everything is shared with **Studio**, so switching tabs changes nothing but the layout. The choice is remembered, and `#perform` / `#studio` in the address open a tab directly.

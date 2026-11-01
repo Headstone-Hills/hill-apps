@@ -398,6 +398,53 @@ export function startApp(): void {
   };
   showOctave();
 
+  // ---- Views: Studio (everything) and Perform (voice, lyrics, syllables and effects on one screen) ----
+  type View = 'studio' | 'perform';
+  const VIEW_KEY = 'hillsing.view.v1';
+  function setView(view: View, remember = true): void {
+    document.body.dataset.view = view;
+    for (const v of ['studio', 'perform'] as const) {
+      const tab = $(`tab-${v}`);
+      tab.setAttribute('aria-selected', String(v === view));
+      tab.tabIndex = v === view ? 0 : -1;
+    }
+    if (remember) {
+      try {
+        storage?.setItem(VIEW_KEY, view);
+      } catch {
+        /* fine */
+      }
+      if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
+    }
+    // Canvases that were hidden have no size: let them redraw now that they are shown.
+    requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+    updatePointerView();
+  }
+  $('tab-studio').addEventListener('click', () => setView('studio'));
+  $('tab-perform').addEventListener('click', () => setView('perform'));
+  for (const id of ['tab-studio', 'tab-perform']) {
+    $(id).addEventListener('keydown', (e) => {
+      if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+        e.preventDefault();
+        const next = id === 'tab-studio' ? 'perform' : 'studio';
+        setView(next);
+        $(`tab-${next}`).focus();
+      }
+    });
+  }
+  window.addEventListener('hashchange', () => {
+    const h = location.hash.slice(1);
+    if (h === 'studio' || h === 'perform') setView(h, false);
+  });
+  const hashView = location.hash.slice(1);
+  let savedView: string | null = null;
+  try {
+    savedView = storage?.getItem(VIEW_KEY) ?? null;
+  } catch {
+    /* fine */
+  }
+  setView(hashView === 'studio' || hashView === 'perform' ? hashView : savedView === 'perform' ? 'perform' : 'studio', false);
+
   // ---- Voice selection ---------------------------------------------------------------
   const voiceSelect = $<HTMLSelectElement>('voice');
   for (const v of VOICES) {

@@ -9,6 +9,10 @@
   <body>
     <header>
       <h1>HillSing</h1>
+      <nav class="tabs" role="tablist" aria-label="View">
+        <button id="tab-studio" class="tab" type="button" role="tab" aria-selected="true" aria-controls="main" title="Everything: melodies, MIDI files, voicebanks, the Voice lab">Studio</button>
+        <button id="tab-perform" class="tab" type="button" role="tab" aria-selected="false" aria-controls="main" title="One screen for playing live: voice, lyrics, syllables and effects">Perform</button>
+      </nav>
       <div class="status">
         <button id="start" type="button">Start audio</button>
         <span id="audio-status">Audio off</span>
@@ -18,8 +22,8 @@
       </div>
     </header>
 
-    <main>
-      <section>
+    <main id="main">
+      <section id="sec-lyrics" class="perf">
         <h2>Lyrics</h2>
         <div class="lyrics-row">
           <textarea id="lyrics" rows="4" spellcheck="false" aria-label="Lyrics text"></textarea>
@@ -32,7 +36,7 @@
         <div id="dict-status" class="hint">Loading dictionary…</div>
       </section>
 
-      <section>
+      <section id="sec-syllables" class="perf">
         <h2>Syllables <span id="position" class="hint"></span></h2>
         <div class="nav">
           <button id="nav-reset" type="button" title="Home">⏮ Start</button>
@@ -44,7 +48,7 @@
           <label class="inline"><input id="wrap" type="checkbox" /> Loop at end</label>
         </div>
         <div id="syllables" class="syllables" aria-live="polite"></div>
-        <div class="hint">Each new note sings the highlighted syllable. Click a syllable to jump to it. Put <code>~</code> after a word to hold its vowel across another note (melisma), e.g. <code>love ~ ~</code>.</div>
+        <div class="hint long">Each new note sings the highlighted syllable. Click a syllable to jump to it. Put <code>~</code> after a word to hold its vowel across another note (melisma), e.g. <code>love ~ ~</code>.</div>
       </section>
 
       <section id="midi-file">
@@ -110,8 +114,8 @@
         </div>
       </section>
 
-      <section id="fx">
-        <h2>Effects <span class="hint">apply to every voice, in this order: bitcrush, distortion, EQ, compressor, chorus, delay, reverb</span></h2>
+      <section id="fx" class="perf">
+        <h2>Effects <span class="hint long">apply to every voice, in this order: bitcrush, distortion, EQ, compressor, chorus, delay, reverb</span></h2>
         <div class="nav">
           <label class="inline">Preset <select id="fx-preset" aria-label="Effect presets"></select></label>
           <button id="fx-reset" type="button" title="Turn every effect off and restore its defaults">Reset effects</button>
