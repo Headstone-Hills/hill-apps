@@ -304,3 +304,14 @@ body.piano-on { padding-bottom: var(--piano-h, 200px); }
 }
 button.nudge { outline: 2px solid var(--next); box-shadow: 0 0 10px var(--next); }
 .piano-bar.follow { position: absolute; bottom: auto; }
+
+/* ---- MIDI panel ---- */
+.midi-panel { position: absolute; right: 12px; top: 56px; z-index: 60; width: min(420px, calc(100vw - 24px)); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+.midi-panel[hidden] { display: none; }
+.midi-row { margin-bottom: 6px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.midi-map { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+.midi-map td { padding: 3px 4px; font-size: 13px; vertical-align: middle; }
+.midi-map button { font-size: 12px; padding: 2px 8px; }
+.midi-map button.armed { border-color: var(--next); color: var(--next); }
+#midi-toggle[aria-expanded="true"] { border-color: var(--accent); }

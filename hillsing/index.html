@@ -15,6 +15,7 @@
       </nav>
       <div class="status">
         <button id="start" type="button">Start audio</button>
+        <button id="midi-toggle" type="button" aria-expanded="false" aria-controls="midi-panel" title="MIDI: see what your keyboard sends, and map any knob to pitch or modulation">🎛 MIDI</button>
         <button id="piano-toggle" type="button" aria-pressed="false" title="Show or hide an on-screen piano you can play by touch">🎹 Piano</button>
         <span id="audio-status">Audio off</span>
         <span id="midi-status">MIDI: not connected</span>
@@ -22,6 +23,24 @@
         <div class="meter" title="Output level"><div id="meter-fill"></div></div>
       </div>
     </header>
+
+    <div id="midi-panel" class="midi-panel" hidden>
+      <div class="midi-row"><b>MIDI</b> <span id="midi-last" class="hint">Nothing received yet: play a key or move a knob.</span></div>
+      <table class="midi-map">
+        <tr>
+          <td>Pitch</td>
+          <td id="ctl-pitch-state" class="hint"></td>
+          <td><button id="ctl-pitch-learn" type="button">Learn</button> <button id="ctl-pitch-clear" type="button">Use pitch wheel</button></td>
+        </tr>
+        <tr>
+          <td>Modulation</td>
+          <td id="ctl-mod-state" class="hint"></td>
+          <td><button id="ctl-mod-learn" type="button">Learn</button> <button id="ctl-mod-clear" type="button">Use mod wheel</button></td>
+        </tr>
+      </table>
+      <label class="inline">Bend range <input id="bend-range" type="number" min="1" max="24" step="0.5" value="2" style="width: 4.5em" /> semitones</label>
+      <p class="hint">The pitch wheel (or any knob that sends pitch bend) works as is. If your pitch or mod knob sends a controller number instead, press Learn and move it.</p>
+    </div>
 
     <main id="main">
       <section id="sec-lyrics" class="perf">

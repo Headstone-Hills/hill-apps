@@ -1,6 +1,7 @@
 import { Performance, type VoiceSink } from '../engine/performance';
 import { NAV_ACTIONS, NavBindings, type NavAction } from '../midi/bindings';
-import { BendRangeTracker, connectMidi, type MidiEvent } from '../midi/midi';
+import { BendRangeTracker, connectMidi, parseMidiMessage, type MidiEvent } from '../midi/midi';
+import { ControlMap, describeMidi } from '../midi/controls';
 import { SingerEngine } from '../synth/engine';
 import type { VoiceParamName } from '../synth/klatt';
 import { loadDict, makeLookup, type PhonemeLookup } from '../text/cmudict';
@@ -491,6 +492,27 @@ export function startApp(): void {
       });
       (window as unknown as { __hillsing?: unknown }).__hillsing = {
         peakLevel: () => engine?.peakLevel() ?? 0,
+        // For automated checks: feed a raw MIDI message as if it came from a keyboard, and estimate the output's pitch (Hz).
+        midi: (bytes: number[]): void => {
+          const ev = parseMidiMessage(bytes);
+          if (ev) handleEvent(ev);
+        },
+        pitchHz: (): number => {
+          const buf = new Float32Array(bus.waveformTailLength);
+          bus.waveformTail(buf);
+          const sr = bus.ctx.sampleRate;
+          let best = 0;
+          let bestLag = 0;
+          for (let lag = Math.floor(sr / 900); lag < Math.min(Math.floor(sr / 70), buf.length >> 1); lag++) {
+            let c = 0;
+            for (let i = 0; i + lag < buf.length; i++) c += buf[i] * buf[i + lag];
+            if (c > best) {
+              best = c;
+              bestLag = lag;
+            }
+          }
+          return bestLag ? sr / bestLag : 0;
+        },
         // For automated checks: the effect settings, and the output's average level in a frequency band (dB).
         fx: fxModel,
         bandDb: (lo: number, hi: number): number => {
@@ -601,6 +623,18 @@ export function startApp(): void {
   // ---- Input: MIDI + computer keyboard ---------------------------------------------
   const bendRange = new BendRangeTracker();
   function handleEvent(ev: MidiEvent): void {
+    showMidi(ev);
+    // A knob mapped to pitch or modulation (or being learned for one) is ours; so is a binding for lyric navigation.
+    const control = controls.handle(ev);
+    if (control) {
+      if (control.target === 'pitch') performance.pitchBend(control.value);
+      else {
+        engine?.setParam('vibratoDepth', control.value);
+        utauLive?.setModulation(control.value);
+      }
+      return;
+    }
+    if (ev.type === 'cc' && controls.armedTarget) return; // waiting for a knob: do not let the press do anything else
     if (bindings.handle(ev, (a) => navActions[a]())) return;
     switch (ev.type) {
       case 'noteOn':
@@ -640,6 +674,72 @@ export function startApp(): void {
       }
     }
   }
+
+  // ---- MIDI panel: a monitor of what the keyboard sends, and knobs mapped to pitch or modulation ----------------
+  const BEND_KEY = 'hillsing.bendRange.v1';
+  const controls = new ControlMap(storage);
+  const midiPanel = $('midi-panel');
+  const midiToggle = $<HTMLButtonElement>('midi-toggle');
+  const midiLast = $('midi-last');
+  const bendInput = $<HTMLInputElement>('bend-range');
+  let midiShown = 0;
+  let midiText = '';
+  function showMidi(ev: MidiEvent): void {
+    midiShown++;
+    midiText = `#${midiShown}: ${describeMidi(ev)}`;
+    if (midiPending) return;
+    midiPending = true;
+    window.requestAnimationFrame(() => {
+      midiPending = false;
+      midiLast.textContent = midiText;
+    });
+  }
+  let midiPending = false;
+  function renderControls(): void {
+    for (const t of ['pitch', 'mod'] as const) {
+      const c = controls.controllerFor(t);
+      $(`ctl-${t}-state`).textContent = controls.armedTarget === t
+        ? 'move the knob now…'
+        : c !== undefined ? `knob CC ${c}` : t === 'pitch' ? 'pitch wheel (standard pitch bend)' : 'mod wheel (CC 1)';
+      const learn = $<HTMLButtonElement>(`ctl-${t}-learn`);
+      learn.textContent = controls.armedTarget === t ? 'Cancel' : 'Learn';
+      learn.classList.toggle('armed', controls.armedTarget === t);
+      $<HTMLButtonElement>(`ctl-${t}-clear`).disabled = c === undefined;
+    }
+  }
+  for (const t of ['pitch', 'mod'] as const) {
+    $(`ctl-${t}-learn`).addEventListener('click', () => {
+      controls.learn(controls.armedTarget === t ? null : t);
+      $(`ctl-${t}-learn`).blur();
+    });
+    $(`ctl-${t}-clear`).addEventListener('click', () => {
+      controls.clear(t);
+      $(`ctl-${t}-clear`).blur();
+    });
+  }
+  controls.onChange = renderControls;
+  renderControls();
+  const savedBend = Number(storage?.getItem(BEND_KEY));
+  if (Number.isFinite(savedBend) && savedBend >= 1 && savedBend <= 24) {
+    performance.bendRange = savedBend;
+    bendInput.value = String(savedBend);
+  }
+  bendInput.addEventListener('input', () => {
+    const v = Number(bendInput.value);
+    if (!(v >= 1 && v <= 24)) return;
+    performance.bendRange = v;
+    try {
+      storage?.setItem(BEND_KEY, String(v));
+    } catch {
+      /* storage unavailable: fine */
+    }
+  });
+  bendInput.addEventListener('keydown', (e) => e.stopPropagation()); // typing a number must not play notes
+  midiToggle.addEventListener('click', () => {
+    midiPanel.hidden = !midiPanel.hidden;
+    midiToggle.setAttribute('aria-expanded', String(!midiPanel.hidden));
+    midiToggle.blur();
+  });
 
   const midiStatus = $('midi-status');
   connectMidi(handleEvent, (names) => {
