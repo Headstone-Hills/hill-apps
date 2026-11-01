@@ -11,6 +11,7 @@ import { mixAt, renderSegment, type PsolaSource } from './psola';
 import { planUnits, type Unit, xsampaVowel } from './planner';
 import type { Voicebank } from './voicebank';
 import type { LyricSyllable } from '../text/lyrics';
+import { centsToRatio, genderToFormant, vibratoFactor, type Tuning } from './tuning';
 
 export interface SungNoteLike {
   /** Seconds. */
@@ -52,13 +53,19 @@ interface Placed {
   gain: number;
   /** Natural length after the beat, seconds (how long this unit wants to last if nothing follows). */
   natural: number;
+  /** Speed-up of the consonant part, and the start of the note this unit belongs to (for vibrato). */
+  speed: number;
+  noteStart: number;
 }
 
 export async function renderUtau(
   bank: Voicebank,
   notes: ReadonlyArray<SungNoteLike>,
   syllables: ReadonlyArray<LyricSyllable>,
+  tuning?: Tuning,
 ): Promise<UtauRender> {
+  const tune = tuning ? centsToRatio(tuning.tune) : 1;
+  const shaping = tuning ? { formant: genderToFormant(tuning.gender), fixedGain: tuning.consonant, fixedSoftness: tuning.tone } : {};
   const missing = new Set<string>();
   const log: string[] = [];
   const placed: Placed[] = [];
@@ -95,7 +102,7 @@ export async function renderUtau(
       perNote.push([]);
       continue;
     }
-    const f0 = hzOf(n.note);
+    const f0 = hzOf(n.note) * tune;
     const gain = 0.4 + 0.6 * n.velocity;
     const list: Placed[] = [];
     for (const u of units) {
@@ -107,12 +114,18 @@ export async function renderUtau(
       }
       sr = src.sampleRate;
       const region = bank.region(e, src);
-      const preutter = Math.max(0, e.preutter / 1000);
+      let preutter = Math.max(0, e.preutter / 1000);
       const overlap = Math.max(0.005, e.overlap / 1000);
       const natural = Math.max(MIN_UNIT_SEC, (region.end - region.start) / src.sampleRate - preutter);
       // A join is the previous vowel closing into this syllable, so it keeps the previous note's pitch.
-      const unitF0 = u.role === 'join' && prev ? hzOf(prev.note) : f0;
-      list.push({ unit: u, src, region, preutter, overlap, beat: 0, f0: unitF0, gain, natural });
+      const unitF0 = u.role === 'join' && prev ? hzOf(prev.note) * tune : f0;
+      // A faster consonant brings the beat (the preutterance) in with it. Joins carry the previous vowel: left alone.
+      const speed = tuning && u.role !== 'join' ? Math.max(1, tuning.velocity) : 1;
+      if (speed > 1) {
+        const fixedSec = region.fixed / src.sampleRate;
+        preutter = preutter <= fixedSec ? preutter / speed : fixedSec / speed + (preutter - fixedSec);
+      }
+      list.push({ unit: u, src, region, preutter, overlap, beat: 0, f0: unitF0, gain, natural, speed, noteStart: n.start });
     }
     // Schedule: the vowel unit on the note's start; onset units end where it begins; coda units finish inside the note.
     const vi = list.findIndex((p) => p.unit.role === 'vowel');
@@ -178,6 +191,11 @@ export async function renderUtau(
       f0: p.f0,
       gain: p.gain,
       matchLevel: true,
+      fixedSpeed: p.speed,
+      ...shaping,
+      pitchMod: tuning && tuning.vibratoDepth > 0
+        ? (k: number): number => vibratoFactor(tuning.vibratoDepth, tuning.vibratoRate, startT + k / sr - lead - p.noteStart)
+        : undefined,
     });
     // Fade the very end of the phrase's last unit out so it does not click.
     if (!nextP) {

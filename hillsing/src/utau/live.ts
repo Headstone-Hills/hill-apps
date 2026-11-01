@@ -9,6 +9,7 @@ import type { VoiceSink } from '../engine/performance';
 import type { SyllablePlan } from '../synth/types';
 import { buildAttack, buildRelease } from './livenote';
 import { xsampaVowel } from './planner';
+import { centsToRatio, genderToFormant, type Tuning } from './tuning';
 import type { Voicebank } from './voicebank';
 
 interface Playing {
@@ -18,11 +19,17 @@ interface Playing {
   f0: number;
   /** Loudness of the sustain, for matching the release to it. */
   loopRms: number;
+  /** Vibrato oscillator, stopped with the note. */
+  lfo?: OscillatorNode;
   /** The earliest time the note may start to end: the consonant and the start of the vowel always play out. */
   minReleaseAt: number;
 }
 
 const START_DELAY_SEC = 0.0015;
+/** The bank's samples are loud: at 0.7 a held vowel peaked at 0.97, too close to clipping. */
+const BASE_LEVEL = 0.4;
+/** Live notes play consonants this much faster than recorded so the vowel arrives sooner; the tuning's speed scales it. */
+const LIVE_BASE_SPEED = 1.5;
 /** Shortest sustained vowel after the attack, so even a quick tap is heard as a vowel. */
 const MIN_SUSTAIN_SEC = 0.1;
 
@@ -40,10 +47,16 @@ export class UtauLiveVoice implements VoiceSink {
     private readonly ctx: AudioContext,
     out: AudioNode,
     private readonly bank: () => Voicebank | null,
+    private readonly tuning: () => Tuning,
   ) {
     this.master = ctx.createGain();
-    this.master.gain.value = 0.4; // the bank's samples are loud: at 0.7 a held vowel peaked at 0.97, too close to clipping
+    this.master.gain.value = BASE_LEVEL * this.tuning().volume;
     this.master.connect(out);
+  }
+
+  /** The tuning's volume changed: apply it to what is playing now too. */
+  refreshVolume(): void {
+    this.master.gain.setTargetAtTime(BASE_LEVEL * this.tuning().volume, this.ctx.currentTime, 0.02);
   }
 
   noteOn(plan: SyllablePlan, f0: number, velocity: number, legato: boolean): void {
@@ -58,8 +71,10 @@ export class UtauLiveVoice implements VoiceSink {
   setF0(f0: number): void {
     const p = this.playing;
     if (!p) return;
-    const cents = 1200 * Math.log2(f0 / p.f0);
-    for (const s of p.sources) s.detune.setTargetAtTime(cents, this.ctx.currentTime, 0.01);
+    const t = this.tuning();
+    const cents = 1200 * Math.log2((f0 * centsToRatio(t.tune)) / p.f0);
+    const tc = Math.max(0.003, t.glide / 3000); // a time constant: the slide is about 95 % done after `glide` ms
+    for (const s of p.sources) s.detune.setTargetAtTime(cents, this.ctx.currentTime, tc);
   }
 
   /** Silence everything now (voice switched, panic). */
@@ -77,7 +92,10 @@ export class UtauLiveVoice implements VoiceSink {
     this.gateOpen = true;
     const prev = this.playing;
     const prevVowel = legato && prev && prev.plan.coda.length === 0 ? xsampaVowel(prev.plan.nucleus) : null;
-    const attack = await buildAttack(bank, plan, f0, prevVowel);
+    const t = this.tuning();
+    f0 *= centsToRatio(t.tune);
+    const shaping = { formant: genderToFormant(t.gender), fixedGain: t.consonant, fixedSoftness: t.tone };
+    const attack = await buildAttack(bank, plan, f0, prevVowel, { consonantSpeed: Math.max(1, LIVE_BASE_SPEED * t.velocity), shaping });
     if (!attack || mine !== this.token) return; // nothing to sing, or a newer key press took over
     if (this.ctx.state !== 'running') await this.ctx.resume();
     if (mine !== this.token) return;
@@ -119,7 +137,20 @@ export class UtauLiveVoice implements VoiceSink {
     }
     // A tap still sings a syllable: the consonant, the start of the vowel and a short stretch of sustained vowel.
     const minReleaseAt = t0 + Math.max(0, attackBuf.duration - attack.crossfade) + (attack.hasLoop ? MIN_SUSTAIN_SEC : 0);
-    this.playing = { gain: note, sources, plan, f0, loopRms: attack.loopRms, minReleaseAt };
+    let lfo: OscillatorNode | undefined;
+    if (t.vibratoDepth > 0) {
+      // Vibrato: a slow sine added to every source's pitch (in cents), fading in after the note has started.
+      lfo = this.ctx.createOscillator();
+      lfo.frequency.value = t.vibratoRate;
+      const depth = this.ctx.createGain();
+      depth.gain.setValueAtTime(0, t0);
+      depth.gain.setValueAtTime(0, t0 + 0.15);
+      depth.gain.linearRampToValueAtTime(t.vibratoDepth, t0 + 0.45);
+      lfo.connect(depth);
+      for (const s of sources) depth.connect(s.detune);
+      lfo.start(t0);
+    }
+    this.playing = { gain: note, sources, plan, f0, loopRms: attack.loopRms, minReleaseAt, lfo };
     if (!this.gateOpen) void this.release(); // the key came up while the note was being built
   }
 
@@ -128,7 +159,8 @@ export class UtauLiveVoice implements VoiceSink {
     const bank = this.bank();
     if (!p || !bank) return;
     const mine = this.token;
-    const tail = await buildRelease(bank, p.plan, p.f0, p.loopRms);
+    const tu = this.tuning();
+    const tail = await buildRelease(bank, p.plan, p.f0, p.loopRms, { formant: genderToFormant(tu.gender), fixedGain: tu.consonant, fixedSoftness: tu.tone });
     if (mine !== this.token || this.playing !== p) return; // a new note (or stop) already took over
     // Never end before the attack has played out: a quick tap still sings the consonant and the start of the vowel.
     const t = Math.max(this.ctx.currentTime + START_DELAY_SEC, p.minReleaseAt);
@@ -162,6 +194,11 @@ export class UtauLiveVoice implements VoiceSink {
       } catch {
         /* already stopped */
       }
+    }
+    try {
+      p.lfo?.stop(at + seconds + 0.02);
+    } catch {
+      /* already stopped */
     }
   }
 

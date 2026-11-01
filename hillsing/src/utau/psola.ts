@@ -33,6 +33,14 @@ export interface SegmentRequest {
   map?: (outSample: number) => number;
   /** Play the fixed (consonant) part this many times faster (>= 1): UTAU's consonant velocity. */
   fixedSpeed?: number;
+  /** Scale the voiced grains' spectrum by this ratio (1 = as recorded; above 1 moves formants up, a brighter, more youthful colour) without changing pitch. */
+  formant?: number;
+  /** Gain on the fixed (consonant) part only. */
+  fixedGain?: number;
+  /** Low-pass the fixed (consonant) part at this frequency in Hz (16000 or more = off): rounds off harsh bursts and hiss. */
+  fixedSoftness?: number;
+  /** Pitch multiplier over output time (samples), e.g. vibrato. */
+  pitchMod?: (outSample: number) => number;
   /** Widen grains up to this multiple (never beyond the pitch ratio) so lowered pitches keep overlapping grains. */
   grainScale?: number;
 }
@@ -155,17 +163,28 @@ export function renderSegment(src: PsolaSource, req: SegmentRequest): Float32Arr
     return lo;
   };
 
-  const addGrain = (centre: number, half: number, at: number, scale: number): void => {
-    // Hann-windowed grain of 2*half samples centred on `centre`, written centred on `at`.
+  const addGrain = (centre: number, half: number, at: number, scale: number, stride = 1): void => {
+    // Hann-windowed grain of 2*half samples centred on `centre`, written centred on `at`. A stride other than 1 reads
+    // the source faster or slower (linear interpolation), which moves the formants but not the pitch.
     const len = Math.max(2, Math.round(2 * half));
     for (let k = 0; k < len; k++) {
-      const si = Math.round(centre - half) + k;
       const oi = Math.round(at - half) + k;
-      if (si < 0 || si >= x.length || oi < 0 || oi >= n) continue;
+      if (oi < 0 || oi >= n) continue;
       const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * (k + 0.5)) / len);
-      out[oi] += x[si] * w * scale;
+      if (stride === 1) {
+        const si = Math.round(centre - half) + k;
+        if (si < 0 || si >= x.length) continue;
+        out[oi] += x[si] * w * scale;
+      } else {
+        const sp = centre + (k + 0.5 - len / 2) * stride;
+        const i0 = Math.floor(sp);
+        if (i0 < 0 || i0 + 1 >= x.length) continue;
+        const fr = sp - i0;
+        out[oi] += (x[i0] * (1 - fr) + x[i0 + 1] * fr) * w * scale;
+      }
     }
   };
+  const stride = Math.min(1.6, Math.max(0.6, req.formant ?? 1));
 
   let t = 0;
   while (t < n) {
@@ -176,9 +195,9 @@ export function renderSegment(src: PsolaSource, req: SegmentRequest): Float32Arr
       const centre = marks[mi];
       const ta = mi + 1 < marks.length ? marks[mi + 1] - centre : centre - (marks[mi - 1] ?? centre - sr / hz);
       const analysisPeriod = Math.min(Math.max(ta, sr / 1000), sr / 40);
-      const synthPeriod = sr / req.f0;
+      const synthPeriod = sr / (req.f0 * (req.pitchMod ? req.pitchMod(t) : 1));
       const widen = Math.max(1, Math.min(req.grainScale ?? DEFAULT_GRAIN_SCALE, synthPeriod / analysisPeriod));
-      addGrain(centre, analysisPeriod * widen, t, (synthPeriod / (analysisPeriod * widen)) * gain);
+      addGrain(centre, analysisPeriod * widen, t, (synthPeriod / (analysisPeriod * widen)) * gain, stride);
       t += synthPeriod;
     } else {
       // Unvoiced / silent: natural-rate grains with 50 % overlap (a Hann window at hop N/2 sums to 1).
@@ -198,6 +217,26 @@ export function renderSegment(src: PsolaSource, req: SegmentRequest): Float32Arr
     if (want > 1e-6 && got > 1e-6) {
       const k = Math.min(2, Math.max(0.5, want / got));
       for (let i = 0; i < n; i++) out[i] *= k;
+    }
+  }
+  // Consonant shaping comes last so it does not change the loudness the vowel was matched to.
+  if (fixedOut > 0 && ((req.fixedGain ?? 1) !== 1 || (req.fixedSoftness ?? 16000) < 16000)) {
+    const g = req.fixedGain ?? 1;
+    const fc = req.fixedSoftness ?? 16000;
+    const a = 1 - Math.exp((-2 * Math.PI * Math.min(fc, sr * 0.45)) / sr);
+    const blend = Math.min(fixedOut, Math.round(0.003 * sr)); // hand back to the untouched vowel over 3 ms: no step at the seam
+    let y1 = 0;
+    let y2 = 0;
+    for (let i = 0; i < fixedOut; i++) {
+      const raw = out[i];
+      let v = raw;
+      if (fc < 16000) {
+        y1 += a * (raw - y1);
+        y2 += a * (y1 - y2);
+        v = y2;
+      }
+      const m = Math.min(1, (fixedOut - i) / blend);
+      out[i] = (v * m + raw * (1 - m)) * (1 + (g - 1) * m);
     }
   }
   return out;

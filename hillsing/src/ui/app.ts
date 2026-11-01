@@ -11,6 +11,8 @@ import { VoiceLab } from './lab';
 import { MidiFilePanel } from './midifile';
 import { fxModel, getBus } from '../audio/bus';
 import { UtauLiveVoice } from '../utau/live';
+import { TuningModel } from '../utau/tuning';
+import { TuningPanel } from './tuning';
 import { UtauSession } from '../utau/session';
 import { EffectsPanel } from './effects';
 import { UtauPanel } from './utau';
@@ -48,6 +50,7 @@ export function startApp(): void {
 
   // Live keys go to the sample-based voice when a UTAU voicebank is chosen, else to the formant synth.
   const utauSession = new UtauSession();
+  const tuning = new TuningModel(storage);
   let utauLive: UtauLiveVoice | null = null;
   const sink: VoiceSink = {
     noteOn: (plan, f0, vel, legato) => (utauSession.active ? utauLive?.noteOn(plan, f0, vel, legato) : engine?.noteOn(plan, f0, vel, legato)),
@@ -283,7 +286,7 @@ export function startApp(): void {
       const bus = await getBus();
       effectsPanel.setBitcrushAvailable(bus.fx.bitcrushAvailable);
       engine = await SingerEngine.create(bus);
-      utauLive = new UtauLiveVoice(engine.context, engine.audioInput, () => utauSession.bank);
+      utauLive = new UtauLiveVoice(engine.context, engine.audioInput, () => utauSession.bank, () => tuning.values);
       for (const [name, value] of paramValues) engine.setParam(name, value);
       engine.setVoice(voiceId);
       // The engine has one sequence slot: route its position/end events to whoever owns it.
@@ -332,6 +335,7 @@ export function startApp(): void {
 
   filePanel = new MidiFilePanel({
     utau: utauSession,
+    tuning,
     syllables: () => pointer.current.syllables,
     consonantScale: () => paramValues.get('consonantScale') ?? 0.7,
     ensureEngine: async () => {
@@ -353,6 +357,16 @@ export function startApp(): void {
   });
 
   new UtauPanel(utauSession);
+  new TuningPanel($('tune-grid'), $<HTMLButtonElement>('tune-reset'), tuning);
+  const tuneNote = $('tune-note');
+  const showTuneNote = (): void => {
+    tuneNote.textContent = utauSession.active ? '' : 'These tune the sample-based voice: pick a voicebank in the Voice menu to hear them.';
+  };
+  utauSession.onChange(showTuneNote);
+  showTuneNote();
+  tuning.onChange((id) => {
+    if (id === null || id === 'volume') utauLive?.refreshVolume();
+  });
 
   const spectrogram = new Spectrogram($<HTMLCanvasElement>('spectrogram'));
   lab = new VoiceLab({

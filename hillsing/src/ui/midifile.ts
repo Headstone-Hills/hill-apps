@@ -9,6 +9,7 @@ import { renderUtau, type UtauRender } from '../utau/render';
 import type { UtauSession } from '../utau/session';
 import { PianoRoll, type LaneCell } from './pianoroll';
 import { UtauPlayer } from './utauplayer';
+import type { TuningModel } from '../utau/tuning';
 
 export interface PanelContext {
   syllables(): LyricSyllable[];
@@ -23,6 +24,7 @@ export interface PanelContext {
   lookup(): PhonemeLookup;
   /** The loaded UTAU voicebank, if any. */
   utau: UtauSession;
+  tuning: TuningModel;
 }
 
 interface Snapshot {
@@ -115,6 +117,9 @@ export class MidiFilePanel {
         this.refresh();
       },
     );
+    this.ctx.tuning.onChange(() => {
+      this.utauDirty = true; // the next Play renders again with the new tuning
+    });
     let wasActive = this.ctx.utau.active;
     this.ctx.utau.onChange(() => {
       this.utauDirty = true; // a different voicebank, or a switch between the voicebank and the formant voices
@@ -211,7 +216,7 @@ export class MidiFilePanel {
     this.rendering = true;
     this.say('Rendering with the voicebank…', false);
     try {
-      const r = await renderUtau(bank, this.seq.notes, this.ctx.syllables());
+      const r = await renderUtau(bank, this.seq.notes, this.ctx.syllables(), this.ctx.tuning.values);
       this.utauRender = r;
       this.utauPlayer.setAudio(r.samples, r.sampleRate);
       this.utauPlayer.loop = this.el.loop.checked;
@@ -237,6 +242,7 @@ export class MidiFilePanel {
       return;
     }
     if (!(await this.ensureUtauRender())) return;
+    this.utauPlayer.level = this.ctx.tuning.values.volume;
     await this.utauPlayer.play(Math.max(0, this.scorePos) + (this.utauRender?.leadSec ?? 0));
     this.playing = true;
     this.refresh();

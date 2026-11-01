@@ -181,3 +181,15 @@ body[data-view="perform"] .fx-knob { --size: 38px; }
 @media (min-width: 1500px) {
   body[data-view="perform"] .fx-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); }
 }
+
+/* ---- Sample voice tuning: a row of the same knobs as the effects ---- */
+#tuning .nav { margin: 6px 0; }
+.tune-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 10px 6px; padding: 10px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+#tuning .fx-knob { --size: 42px; }
+body[data-view="perform"] #tuning { grid-column: 1 / -1; padding-bottom: 8px; }
+body[data-view="perform"] #tuning .nav { margin: 0 0 4px; }
+body[data-view="perform"] .tune-grid { grid-template-columns: repeat(9, minmax(0, 1fr)); padding: 6px 4px; gap: 4px; }
+body[data-view="perform"] #tuning .fx-knob { --size: 36px; }
+@media (max-width: 1100px) {
+  body[data-view="perform"] .tune-grid { grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); }
+}

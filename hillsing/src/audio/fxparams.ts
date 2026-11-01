@@ -180,6 +180,76 @@ export const FX_PRESETS: ReadonlyArray<{ id: string; name: string; state: Partia
     name: 'Robot choir',
     state: { enabled: { bitcrush: true, delay: true, reverb: true }, values: { bitcrush: { bits: 5, rate: 6, mix: 0.6 }, delay: { time: 120, feedback: 0.55, tone: 5000, mix: 0.4 }, reverb: { size: 2.6, preDelay: 12, damping: 8000, mix: 0.3 } } },
   },
+  {
+    id: 'vocal',
+    name: 'Polished vocal',
+    state: { enabled: { compressor: true, eq: true, reverb: true }, values: { compressor: { threshold: -26, ratio: 3.5, attack: 12, release: 180, knee: 14, makeup: 4 }, eq: { lowGain: -3, lowFreq: 120, midGain: 2, midFreq: 3000, midQ: 0.9, highGain: 4, highFreq: 9000 }, reverb: { size: 1.4, preDelay: 18, damping: 9000, mix: 0.16 } } },
+  },
+  {
+    id: 'warm',
+    name: 'Warm and close',
+    state: { enabled: { eq: true, compressor: true, distortion: true }, values: { eq: { lowGain: 4, lowFreq: 200, midGain: -2, midFreq: 900, midQ: 0.8, highGain: -4, highFreq: 5000 }, compressor: { threshold: -22, ratio: 3, attack: 15, release: 220, knee: 16, makeup: 3 }, distortion: { drive: 4, tone: 3500, level: -3, mix: 0.25 } } },
+  },
+  {
+    id: 'air',
+    name: 'Bright and airy',
+    state: { enabled: { eq: true, chorus: true, reverb: true }, values: { eq: { lowGain: -5, lowFreq: 150, midGain: 1, midFreq: 2500, midQ: 1, highGain: 8, highFreq: 8000 }, chorus: { rate: 0.4, depth: 3, delay: 16, mix: 0.3 }, reverb: { size: 2.4, preDelay: 25, damping: 14000, mix: 0.3 } } },
+  },
+  {
+    id: 'cathedral',
+    name: 'Cathedral',
+    state: { enabled: { reverb: true, eq: true }, values: { reverb: { size: 6, preDelay: 60, damping: 3500, mix: 0.6 }, eq: { lowGain: -4, lowFreq: 160, midGain: 0, midFreq: 1200, midQ: 1, highGain: -3, highFreq: 6000 } } },
+  },
+  {
+    id: 'slapback',
+    name: 'Slapback echo',
+    state: { enabled: { delay: true, compressor: true }, values: { delay: { time: 110, feedback: 0.12, tone: 5000, mix: 0.35 }, compressor: { threshold: -24, ratio: 3, attack: 10, release: 150, makeup: 2 } } },
+  },
+  {
+    id: 'dub',
+    name: 'Dub echo',
+    state: { enabled: { delay: true, reverb: true, eq: true }, values: { delay: { time: 560, feedback: 0.65, tone: 2400, mix: 0.45 }, reverb: { size: 2.8, preDelay: 30, damping: 3500, mix: 0.3 }, eq: { lowGain: 5, lowFreq: 120, midGain: -3, midFreq: 800, midQ: 1, highGain: -6, highFreq: 4000 } } },
+  },
+  {
+    id: 'dream',
+    name: 'Dreamy',
+    state: { enabled: { chorus: true, delay: true, reverb: true }, values: { chorus: { rate: 0.25, depth: 7, delay: 24, mix: 0.6 }, delay: { time: 480, feedback: 0.5, tone: 3000, mix: 0.3 }, reverb: { size: 5, preDelay: 40, damping: 5500, mix: 0.5 } } },
+  },
+  {
+    id: 'underwater',
+    name: 'Underwater',
+    state: { enabled: { eq: true, chorus: true, reverb: true }, values: { eq: { lowGain: 6, lowFreq: 180, midGain: -4, midFreq: 1000, midQ: 0.7, highGain: -15, highFreq: 1800 }, chorus: { rate: 0.35, depth: 10, delay: 28, mix: 0.7 }, reverb: { size: 2, preDelay: 10, damping: 1800, mix: 0.35 } } },
+  },
+  {
+    id: 'telephone',
+    name: 'Telephone',
+    state: { enabled: { eq: true, distortion: true, compressor: true }, values: { eq: { lowGain: -15, lowFreq: 400, midGain: 9, midFreq: 1800, midQ: 2, highGain: -15, highFreq: 3400 }, distortion: { drive: 8, tone: 3000, level: -6, mix: 0.4 }, compressor: { threshold: -28, ratio: 10, attack: 3, release: 100, makeup: 8 } } },
+  },
+  {
+    id: 'megaphone',
+    name: 'Megaphone',
+    state: { enabled: { eq: true, distortion: true, compressor: true }, values: { eq: { lowGain: -12, lowFreq: 350, midGain: 8, midFreq: 2200, midQ: 1.2, highGain: -6, highFreq: 5000 }, distortion: { drive: 22, tone: 4200, level: -10, mix: 0.75 }, compressor: { threshold: -30, ratio: 12, attack: 2, release: 90, makeup: 9 } } },
+  },
+  {
+    id: 'console',
+    name: '8-bit console',
+    state: { enabled: { bitcrush: true, eq: true }, values: { bitcrush: { bits: 4, rate: 9, mix: 1 }, eq: { lowGain: -4, lowFreq: 200, midGain: 3, midFreq: 2000, midQ: 1, highGain: -8, highFreq: 6000 } } },
+  },
+  {
+    id: 'broken',
+    name: 'Broken speaker',
+    state: { enabled: { bitcrush: true, distortion: true, eq: true }, values: { bitcrush: { bits: 7, rate: 5, mix: 0.5 }, distortion: { drive: 30, tone: 2600, level: -12, mix: 0.85 }, eq: { lowGain: -10, lowFreq: 300, midGain: 6, midFreq: 1400, midQ: 2.5, highGain: -12, highFreq: 3000 } } },
+  },
+  {
+    id: 'stadium',
+    name: 'Stadium',
+    state: { enabled: { delay: true, reverb: true, compressor: true }, values: { delay: { time: 700, feedback: 0.35, tone: 3500, mix: 0.25 }, reverb: { size: 4.5, preDelay: 70, damping: 4500, mix: 0.45 }, compressor: { threshold: -24, ratio: 5, attack: 8, release: 160, makeup: 5 } } },
+  },
+  {
+    id: 'shimmer',
+    name: 'Shimmer chorus',
+    state: { enabled: { chorus: true, eq: true, reverb: true }, values: { chorus: { rate: 1.6, depth: 4, delay: 14, mix: 0.7 }, eq: { lowGain: -6, lowFreq: 200, midGain: 0, midFreq: 1500, midQ: 1, highGain: 9, highFreq: 7000 }, reverb: { size: 3, preDelay: 20, damping: 12000, mix: 0.35 } } },
+  },
 ];
 
 type Store = Pick<Storage, 'getItem' | 'setItem'>;
@@ -250,6 +320,18 @@ export function softClipCurve(n = 4096): Float32Array<ArrayBuffer> {
     out[i] = Math.tanh(k * x) / norm;
   }
   return out;
+}
+
+/** `base` with each named number taken from `saved` (clamped to its spec), ignoring anything else. */
+export function mergeNumbers<T extends object>(base: T, saved: unknown, specs: ReadonlyArray<ParamSpec>): T {
+  const out = { ...base } as Record<string, number>;
+  if (saved && typeof saved === 'object') {
+    for (const sp of specs) {
+      const v = (saved as Record<string, unknown>)[sp.id];
+      if (typeof v === 'number' && Number.isFinite(v)) out[sp.id] = clamp(v, sp.min, sp.max);
+    }
+  }
+  return out as T;
 }
 
 /** Map a 0..1 slider position to a value on a log (frequency) or linear scale, and back. */

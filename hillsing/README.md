@@ -357,3 +357,7 @@ The **Perform** tab in the header puts the voice picker, the lyrics box, the syl
 ## Melisma (hold Shift)
 
 While you hold **Shift** (or press and hold the **〰 Melisma** button, which is the way to do it on a phone), notes you play while a word is sounding glide to the new pitch on the vowel being sung, with no new syllable and no new onset. Release it and the next note sings the next syllable. This is the live version of writing `~` after a word.
+
+## Sample voice tuning
+
+The **Sample voice tuning** panel (in both Studio and Perform) holds the knobs a UTAU editor gives you, for live keys and for melodies sung by the voicebank: consonant speed (velocity), consonant level, consonant tone (a low-pass that rounds off harsh K/T/S bursts), gender (formant colour, pitch unchanged), vibrato depth and rate, glide (portamento between legato keys, live only), fine tune and volume. Changes are saved, and the next Play of a melody renders with them. Per-note tuning in the piano roll is not built yet.

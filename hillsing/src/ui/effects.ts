@@ -1,16 +1,13 @@
 // The Effects section: a panel per effect (on/off switch + knobs), a preset menu and a reset button. It only edits
 // the FxModel; the audio rack follows the model (see audio/bus.ts), so the panel works before audio has started.
 
-import { EFFECTS, FX_PRESETS, formatParam, sliderToValue, valueToSlider, type EffectId, type FxModel } from '../audio/fxparams';
-
-const SLIDER_STEPS = 1000;
+import { EFFECTS, FX_PRESETS, formatParam, type EffectId, type FxModel } from '../audio/fxparams';
+import { createKnob, type Knob } from './knob';
 
 interface Row {
   id: EffectId;
   param: string;
-  input: HTMLInputElement;
-  out: HTMLOutputElement;
-  show: () => void;
+  knob: Knob;
 }
 
 export class EffectsPanel {
@@ -102,88 +99,16 @@ export class EffectsPanel {
     const params = document.createElement('div');
     params.className = 'fx-params';
     for (const q of spec.params) {
-      const cell = document.createElement('div');
-      cell.className = 'fx-param';
-      const input = document.createElement('input');
-      input.type = 'range';
-      input.id = `fx-${id}-${q.id}`;
-      input.hidden = true;
-      input.min = '0';
-      input.max = String(SLIDER_STEPS);
-      input.step = '1';
-      const out = document.createElement('output');
-      const knob = document.createElement('div');
-      knob.className = 'fx-knob';
-      knob.tabIndex = 0;
-      knob.setAttribute('role', 'slider');
-      knob.setAttribute('aria-label', `${spec.name} ${q.label}`);
-      knob.setAttribute('aria-valuemin', '0');
-      knob.setAttribute('aria-valuemax', String(SLIDER_STEPS));
-      knob.title = 'Drag up or down, scroll, or use the arrow keys. Double-click to reset.';
-
-      const show = () => {
-        const t = Number(input.value) / SLIDER_STEPS;
-        knob.style.setProperty('--t', String(t));
-        knob.setAttribute('aria-valuenow', input.value);
-        const text = formatParam(q, sliderToValue(q, t));
-        knob.setAttribute('aria-valuetext', text);
-        out.textContent = text;
-      };
-      const setT = (t: number) => {
-        input.value = String(Math.round(Math.min(1, Math.max(0, t)) * SLIDER_STEPS));
-        show();
-        this.model.setParam(id, q.id, sliderToValue(q, Number(input.value) / SLIDER_STEPS));
-      };
-      // Dragging: up turns it up. Hold Shift for fine control. Moving the knob never moves keyboard focus away
-      // from the computer-key piano for long: it is released on pointer-up like the old sliders were.
-      knob.addEventListener('pointerdown', (ev) => {
-        ev.preventDefault();
-        knob.setPointerCapture(ev.pointerId);
-        let y = ev.clientY;
-        const move = (m: PointerEvent) => {
-          const dy = y - m.clientY;
-          y = m.clientY;
-          setT(Number(input.value) / SLIDER_STEPS + dy / (m.shiftKey ? 600 : 140));
-        };
-        const up = () => {
-          knob.removeEventListener('pointermove', move);
-          knob.removeEventListener('pointerup', up);
-          knob.removeEventListener('pointercancel', up);
-          knob.blur();
-        };
-        knob.addEventListener('pointermove', move);
-        knob.addEventListener('pointerup', up);
-        knob.addEventListener('pointercancel', up);
+      const knob = createKnob({
+        id: `fx-${id}-${q.id}`,
+        ariaLabel: `${spec.name} ${q.label}`,
+        label: q.label,
+        spec: q,
+        format: (v) => formatParam(q, v),
+        onValue: (v) => this.model.setParam(id, q.id, v),
       });
-      knob.addEventListener('wheel', (ev) => {
-        ev.preventDefault();
-        setT(Number(input.value) / SLIDER_STEPS - Math.sign(ev.deltaY) * (ev.shiftKey ? 0.005 : 0.03));
-      }, { passive: false });
-      knob.addEventListener('dblclick', () => setT(valueToSlider(q, q.value)));
-      knob.addEventListener('keydown', (ev) => {
-        const t = Number(input.value) / SLIDER_STEPS;
-        const step = ev.shiftKey ? 0.005 : 0.02;
-        const to: Record<string, number> = {
-          ArrowUp: t + step, ArrowRight: t + step, ArrowDown: t - step, ArrowLeft: t - step,
-          PageUp: t + 0.1, PageDown: t - 0.1, Home: 0, End: 1,
-        };
-        if (ev.key in to) {
-          ev.preventDefault();
-          setT(to[ev.key]);
-        }
-      });
-      // Anything that sets the hidden slider (scripts, tests) moves the knob too.
-      input.addEventListener('input', () => {
-        show();
-        this.model.setParam(id, q.id, sliderToValue(q, Number(input.value) / SLIDER_STEPS));
-      });
-
-      const name = document.createElement('span');
-      name.className = 'fx-label';
-      name.textContent = q.label;
-      cell.append(knob, name, out, input);
-      params.append(cell);
-      this.rows.push({ id, param: q.id, input, out, show });
+      params.append(knob.cell);
+      this.rows.push({ id, param: q.id, knob });
     }
 
     const foot = document.createElement('button');
@@ -215,10 +140,8 @@ export class EffectsPanel {
       this.cards.get(e.id)?.classList.toggle('on', on);
     }
     for (const r of this.rows) {
-      const spec = EFFECTS.find((e) => e.id === r.id)!.params.find((q) => q.id === r.param)!;
       const v = this.model.state.values[r.id][r.param];
-      r.input.value = String(Math.round(valueToSlider(spec, v) * SLIDER_STEPS));
-      r.show();
+      r.knob.show(v);
     }
   }
 }

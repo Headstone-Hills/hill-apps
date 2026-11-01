@@ -9,6 +9,7 @@ import { decodeText, frqPathFor, parseFrq, parseOto, parseWav } from '../src/uta
 import { estimateF0, mixInto, pitchMarks, renderSegment, type PsolaSource } from '../src/utau/psola';
 import { planUnits, xsampaVowel } from '../src/utau/planner';
 import { renderUtau } from '../src/utau/render';
+import { centsToRatio, defaultTuning, formatTuning, genderToFormant, TuningModel, TUNING_PARAMS, vibratoFactor } from '../src/utau/tuning';
 import { alignOffset, buildAttack, buildRelease, capPeak, seamlessLoop } from '../src/utau/livenote';
 import { steadyWindow } from '../src/utau/spectral';
 import { Voicebank, type BankFile } from '../src/utau/voicebank';
@@ -510,6 +511,78 @@ describe('pitch marks', () => {
     for (let i = 1; i < marks.length; i++) expect(x[marks[i]]).toBeGreaterThan(0); // always the positive peaks
     const gaps = marks.slice(1).map((m, i) => m - marks[i]);
     for (const g of gaps) expect(Math.abs(g - per)).toBeLessThan(per * 0.2);
+  });
+});
+
+describe('sample voice tuning', () => {
+  const source = (f0: number, seconds = 0.6, burst = 0): PsolaSource => {
+    const samples = tone(f0, seconds, burst);
+    return { samples, sampleRate: SR, frq: { ...frqFor(f0, samples.length, burst), amp: [] } as any };
+  };
+  const centroid = (x: Float32Array): number => {
+    // brightness: mean absolute first difference over mean absolute level
+    let d = 0, a = 0;
+    for (let i = 1; i < x.length; i++) { d += Math.abs(x[i] - x[i - 1]); a += Math.abs(x[i]); }
+    return d / a;
+  };
+
+  it('has sane defaults inside every range, and clamps, saves and resets values', () => {
+    const d = defaultTuning();
+    for (const p of TUNING_PARAMS) { expect(d[p.id]).toBeGreaterThanOrEqual(p.min); expect(d[p.id]).toBeLessThanOrEqual(p.max); }
+    const mem = new Map<string, string>();
+    const store = { getItem: (k: string) => mem.get(k) ?? null, setItem: (k: string, v: string) => void mem.set(k, v) };
+    const m = new TuningModel(store);
+    const seen: Array<string | null> = [];
+    m.onChange((id) => seen.push(id));
+    m.set('gender', 5);
+    m.set('vibratoDepth', 30);
+    expect(m.values.gender).toBe(1);
+    expect(new TuningModel(store).values.vibratoDepth).toBe(30);
+    m.reset();
+    expect(m.values).toEqual(defaultTuning());
+    expect(seen).toEqual(['gender', 'vibratoDepth', null]);
+    expect(formatTuning('tone', 16000)).toBe('off');
+    expect(formatTuning('gender', 0.35)).toBe('+35');
+  });
+
+  it('vibrato starts after a short delay and then waves by the requested depth', () => {
+    expect(vibratoFactor(40, 5.5, 0.05)).toBe(1);
+    expect(vibratoFactor(0, 5.5, 1)).toBe(1);
+    let hi = 1, lo = 1;
+    for (let t = 0.6; t < 1.4; t += 0.002) { const f = vibratoFactor(40, 5.5, t); hi = Math.max(hi, f); lo = Math.min(lo, f); }
+    expect(hi).toBeCloseTo(centsToRatio(40), 2);
+    expect(lo).toBeCloseTo(centsToRatio(-40), 2);
+  });
+
+  it('gender moves the colour (brightness) without moving the pitch', () => {
+    const src = source(200);
+    const base = renderSegment(src, { start: 0, end: src.samples.length, fixed: 0, length: 20000, f0: 200 });
+    const up = renderSegment(src, { start: 0, end: src.samples.length, fixed: 0, length: 20000, f0: 200, formant: genderToFormant(1) });
+    const down = renderSegment(src, { start: 0, end: src.samples.length, fixed: 0, length: 20000, f0: 200, formant: genderToFormant(-1) });
+    for (const o of [base, up, down]) expect(Math.abs(estimateF0(o.subarray(4000, 16000), SR) / 200 - 1)).toBeLessThan(0.03);
+    expect(centroid(up.subarray(4000, 16000))).toBeGreaterThan(centroid(base.subarray(4000, 16000)) * 1.02);
+    expect(centroid(down.subarray(4000, 16000))).toBeLessThan(centroid(base.subarray(4000, 16000)) * 0.98);
+  });
+
+  it('consonant level and tone shape only the consonant part', () => {
+    const src = source(220, 0.6, 4000);
+    const req = { start: 0, end: src.samples.length, fixed: 4000, length: 24000, f0: 220 };
+    const base = renderSegment(src, req);
+    const loud = renderSegment(src, { ...req, fixedGain: 2 });
+    const soft = renderSegment(src, { ...req, fixedSoftness: 2500 });
+    expect(rms(loud, 0, 3000) / rms(base, 0, 3000)).toBeGreaterThan(1.8);
+    expect(centroid(soft.subarray(0, 3000))).toBeLessThan(centroid(base.subarray(0, 3000)) * 0.6);
+    expect(Array.from(loud.subarray(8000, 12000))).toEqual(Array.from(base.subarray(8000, 12000))); // the vowel is untouched
+  });
+
+  it('a pitch modulation makes the rendered pitch follow it', () => {
+    const src = source(200, 1);
+    const length = 40000;
+    const out = renderSegment(src, { start: 0, end: src.samples.length, fixed: 0, length, f0: 200, pitchMod: (k) => (k < length / 2 ? 1 : 2) });
+    const a = estimateF0(out.subarray(4000, 16000), SR);
+    const b = estimateF0(out.subarray(24000, 36000), SR);
+    expect(b / a).toBeGreaterThan(1.85);
+    expect(b / a).toBeLessThan(2.15);
   });
 });
 

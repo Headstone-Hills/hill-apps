@@ -13,6 +13,8 @@ export class UtauPlayer {
   private raf = 0;
   private active = false;
   loop = false;
+  /** Volume from the tuning panel, applied when playback starts. */
+  level = 1;
 
   constructor(
     /** Called about every frame while playing, with the position in buffer seconds. */
@@ -48,7 +50,7 @@ export class UtauPlayer {
     this.halt();
     const src = ctx.createBufferSource();
     const gain = ctx.createGain();
-    gain.gain.value = 0.7;
+    gain.gain.value = 0.7 * this.level;
     src.buffer = buf;
     src.loop = this.loop;
     src.connect(gain).connect(bus.input);

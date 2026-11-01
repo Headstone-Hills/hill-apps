@@ -13,6 +13,13 @@ import { planUnits, type Unit } from './planner';
 import type { SyllablePlan } from '../synth/types';
 import type { Voicebank } from './voicebank';
 
+/** The tuning knobs that reach the sampler: formant colour and consonant level and tone. */
+export interface Shaping {
+  formant?: number;
+  fixedGain?: number;
+  fixedSoftness?: number;
+}
+
 export interface LiveAttack {
   samples: Float32Array;
   /**
@@ -53,9 +60,9 @@ export const LIVE_CONSONANT_SPEED = 1.5;
 const MAX_LEAD_SILENCE_SEC = 0.006;
 const KEEP_LEAD_SEC = 0.003;
 /** The first milliseconds ramp in so a sample cut mid-sound does not click. */
-const ATTACK_FADE_IN_SEC = 0.0015;
+const ATTACK_FADE_IN_SEC = 0.003;
 /** The very end of a final consonant fades in a few ms only: its burst sits right at the end of the sample. */
-const CODA_END_FADE_SEC = 0.006;
+const CODA_END_FADE_SEC = 0.01;
 const VOWEL_END_FADE_SEC = 0.03;
 /** The bank's vowel-to-silence samples fade out in about 120 ms; stretched by this much (pitch unchanged) a word dies away more gently. */
 const END_FADE_STRETCH = 1.7;
@@ -198,7 +205,7 @@ export async function buildAttack(
   plan: SyllablePlan,
   f0: number,
   prevVowel: string | null,
-  opts: { consonantSpeed?: number; /** Fraction of the steady stretch the sustain sweeps across (centred). */ sweepFraction?: number } = {},
+  opts: { consonantSpeed?: number; /** Fraction of the steady stretch the sustain sweeps across (centred). */ sweepFraction?: number; shaping?: Shaping } = {},
 ): Promise<LiveAttack | null> {
   const units = planUnits((a) => bank.has(a), plan, { prevVowel, releaseAtEnd: false, melisma: false }).filter((u) => u.role !== 'coda' && u.role !== 'end');
   const list = await prepare(bank, units, -1, opts.consonantSpeed ?? LIVE_CONSONANT_SPEED);
@@ -235,11 +242,11 @@ export async function buildAttack(
     const p = list[i];
     let seg: Float32Array;
     if (i === vi) {
-      seg = renderSegment(p.src, { start: p.start, end: vEnd, fixed: p.fixed, length: vowelOut, f0, matchLevel: true, fixedSpeed: p.speed });
+      seg = renderSegment(p.src, { start: p.start, end: vEnd, fixed: p.fixed, length: vowelOut, f0, matchLevel: true, fixedSpeed: p.speed, ...opts.shaping });
     } else {
       const handOver = starts[i + 1] + list[i + 1].overlap;
       const length = Math.max(Math.round((handOver - starts[i]) * sr), Math.round(MIN_UNIT_SEC * sr));
-      seg = renderSegment(p.src, { start: p.start, end: p.end, fixed: p.fixed, length, f0, matchLevel: true, fixedSpeed: p.speed });
+      seg = renderSegment(p.src, { start: p.start, end: p.end, fixed: p.fixed, length, f0, matchLevel: true, fixedSpeed: p.speed, ...opts.shaping });
     }
     mixAt(out, seg, Math.round(starts[i] * sr), i === 0 ? 0 : Math.round(p.overlap * sr));
   }
@@ -275,7 +282,7 @@ export async function buildAttack(
       const ph = (t % (2 * half)) / half; // 0..2
       return l0 + (ph <= 1 ? ph : 2 - ph) * span;
     };
-    loop = seamlessLoop(renderSegment(v.src, { start: l0, end: l1, fixed: 0, length, f0, matchLevel: true, map }), Math.round(LOOP_SEAM_SEC * vsr));
+    loop = seamlessLoop(renderSegment(v.src, { start: l0, end: l1, fixed: 0, length, f0, matchLevel: true, map, formant: opts.shaping?.formant }), Math.round(LOOP_SEAM_SEC * vsr));
     capPeak(loop);
     let e = 0;
     for (let i = 0; i < loop.length; i++) e += loop[i] * loop[i];
@@ -305,7 +312,7 @@ export async function buildAttack(
 }
 
 /** The sound after the key is released: the syllable's final consonants, or the vowel dying away. */
-export async function buildRelease(bank: Voicebank, plan: SyllablePlan, f0: number, targetRms = 0): Promise<LiveRelease | null> {
+export async function buildRelease(bank: Voicebank, plan: SyllablePlan, f0: number, targetRms = 0, shaping: Shaping = {}): Promise<LiveRelease | null> {
   const units = planUnits((a) => bank.has(a), plan, { prevVowel: null, releaseAtEnd: true, melisma: false }).filter((u) => u.role === 'coda' || u.role === 'end');
   if (units.length === 0) return null;
   const list = await prepare(bank, units, units[0].role === 'end' ? 0.03 : 0.1);
@@ -324,7 +331,7 @@ export async function buildRelease(bank: Voicebank, plan: SyllablePlan, f0: numb
     const naturalEnd = starts[i] + p.preutter + p.natural;
     const handOver = i < last ? starts[i + 1] + list[i + 1].overlap : naturalEnd;
     const length = Math.max(Math.round((Math.min(handOver, naturalEnd + 0.3) - starts[i]) * sr), Math.round(MIN_UNIT_SEC * sr));
-    const seg = renderSegment(p.src, { start: p.start, end: p.end, fixed: p.fixed, length, f0, matchLevel: true });
+    const seg = renderSegment(p.src, { start: p.start, end: p.end, fixed: p.fixed, length, f0, matchLevel: true, ...shaping });
     if (i === last) {
       const f = Math.min(seg.length >> 1, Math.round((p.unit.role === 'end' ? VOWEL_END_FADE_SEC : CODA_END_FADE_SEC) * sr));
       for (let k = 0; k < f; k++) seg[seg.length - 1 - k] *= k / f;
