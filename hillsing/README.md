@@ -298,6 +298,16 @@ when the bank loads (about 0.3 s for the English Teto bank, roughly 190 MB of me
 waits. The Voice lab and its sliders stay on the formant synth, and the vowel is not on the beat live: it follows its
 consonant, as when a singer starts a word.
 
+How the live sound is kept clean (each point was measured on the English Teto bank): to keep the delay after a key
+press at 5-20 ms, silence at the start of a sample (the closure before a "t" or "k") is trimmed, consonants play 1.5x
+faster live (UTAU's consonant velocity), and the sustain is built after the attack has started. The held vowel is a
+seven-second sweep across the *middle half of the sample's steadiest stretch* (found from its spectrum, so a diphthong
+like "ow" is held on its first element instead of sliding back and forth every 1.2 s); grains are widened up to 1.5x
+when the pitch is lowered (two-period grains stop overlapping below about half the recorded pitch, and each cycle
+becomes a burst with silence after it: 82 dB gating and peaks 1.7x the recording at 131 Hz); and buffers are capped at
+0.95. Releases start just before the ending sample's own fade and are level-matched to the sustain, and a tap always
+plays the consonant, the vowel start and 100 ms of sustained vowel.
+
 **How English becomes samples.** Each dictionary syllable (ARPAbet) is mapped to X-SAMPA and to a chain of
 aliases (`src/utau/planner.ts`), e.g. *hello* = `- h@`, then `@ l` + `- loU`, ending `oU -`: a start from silence,
 the vowel closing into the next consonant, a fresh start, a release. Every choice falls back to an alias that
