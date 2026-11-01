@@ -24,7 +24,8 @@ const noteToHz = (note: number, bendSemitones: number): number =>
  *   *legato*: it consumes the next syllable but glides into it without a new onset.
  * - Each fresh note consumes one syllable from the pointer; at end of text, fresh notes
  *   are silent (until the pointer is moved, or wraps if enabled). With `hold` on, notes
- *   re-sing the current syllable instead and the pointer stays where it is.
+ *   re-sing the current syllable instead and the pointer stays where it is. With `melisma` on, a note pressed
+ *   while a word is sounding just glides to the new pitch on its vowel.
  * - Releasing the top key while others are held glides back to the previous held pitch
  *   without consuming a syllable.
  */
@@ -37,6 +38,11 @@ export class Performance {
   bendRange = 2; // semitones
   /** While true, fresh notes sing the current syllable again and the lyric pointer does not move. */
   hold = false;
+  /**
+   * While true, a note pressed while a word is sounding glides to the new pitch on the vowel already being sung
+   * (melisma): no new syllable, no new onset. With nothing sounding it plays normally.
+   */
+  melisma = false;
 
   constructor(
     private sink: VoiceSink,
@@ -58,6 +64,10 @@ export class Performance {
     this.lastNote = note;
     const f0 = this.frequency(note);
     const legato = this.gateOpen;
+    if (legato && this.melisma) {
+      this.sink.setF0(f0);
+      return;
+    }
     const index = this.pointer.index;
     const syl = this.hold ? this.pointer.peek() : this.pointer.advance();
     if (!syl) {

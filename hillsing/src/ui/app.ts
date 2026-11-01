@@ -176,6 +176,27 @@ export function startApp(): void {
     navActions.hold();
     holdBtn.blur(); // so computer keys play again
   });
+  // Melisma: while Shift (or the on-screen button) is held, notes glide on the vowel being sung.
+  const melismaBtn = $<HTMLButtonElement>('nav-melisma');
+  let shiftDown = false;
+  let melismaPressed = false;
+  function updateMelisma(): void {
+    const on = shiftDown || melismaPressed;
+    performance.melisma = on;
+    melismaBtn.classList.toggle('active', on);
+  }
+  melismaBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); // keep focus where it is so computer keys keep playing
+    melismaBtn.setPointerCapture(e.pointerId);
+    melismaPressed = true;
+    updateMelisma();
+  });
+  const releaseMelisma = () => {
+    melismaPressed = false;
+    updateMelisma();
+  };
+  melismaBtn.addEventListener('pointerup', releaseMelisma);
+  melismaBtn.addEventListener('pointercancel', releaseMelisma);
   const wrap = $<HTMLInputElement>('wrap');
   wrap.addEventListener('change', () => (pointer.wrap = wrap.checked));
 
@@ -534,6 +555,8 @@ export function startApp(): void {
     (t instanceof HTMLInputElement && t.type !== 'checkbox');
 
   window.addEventListener('keydown', (e) => {
+    shiftDown = e.shiftKey;
+    updateMelisma();
     if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.code in KEY_OFFSETS) {
       if (e.repeat || pressed.has(e.code)) return;
@@ -569,12 +592,17 @@ export function startApp(): void {
     }
   });
   window.addEventListener('keyup', (e) => {
+    shiftDown = e.shiftKey;
+    updateMelisma();
     const note = pressed.get(e.code);
     if (note === undefined) return;
     pressed.delete(e.code);
     handleEvent({ type: 'noteOff', note });
   });
   window.addEventListener('blur', () => {
+    shiftDown = false;
+    melismaPressed = false;
+    updateMelisma();
     pressed.clear();
     performance.allNotesOff();
   });

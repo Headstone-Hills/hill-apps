@@ -120,7 +120,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 .voice-pick select { width: 100%; }
 
 
-#nav-hold.active { background: var(--next); border-color: var(--next); color: #1a1405; }
+#nav-hold.active, #nav-melisma.active { background: var(--next); border-color: var(--next); color: #1a1405; }
 .syllables .syl.next.held { outline: 2px solid var(--next); }
 
 /* ---- Tabs ---- */

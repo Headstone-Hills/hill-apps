@@ -353,3 +353,7 @@ behaviour identical); (7) WAV export through the same engine in an `OfflineAudio
 ## Perform tab
 
 The **Perform** tab in the header puts the voice picker, the lyrics box, the syllable parser (with Hold word) and all seven effects on one screen, and hides the MIDI file, UTAU and lab panels. Everything is shared with **Studio**, so switching tabs changes nothing but the layout. The choice is remembered, and `#perform` / `#studio` in the address open a tab directly.
+
+## Melisma (hold Shift)
+
+While you hold **Shift** (or press and hold the **〰 Melisma** button, which is the way to do it on a phone), notes you play while a word is sounding glide to the new pitch on the vowel being sung, with no new syllable and no new onset. Release it and the next note sings the next syllable. This is the live version of writing `~` after a word.

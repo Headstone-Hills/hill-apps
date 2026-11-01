@@ -35,6 +35,30 @@ describe('Performance (mono legato)', () => {
     expect(shown).toEqual([0, 1]);
   });
 
+  it('melisma glides further notes on the vowel being sung, without consuming syllables', () => {
+    const { calls, perf, pointer, shown } = setup('hello big world');
+    perf.noteOn(60, 1);
+    perf.melisma = true;
+    perf.noteOn(64, 1);
+    perf.noteOn(67, 1);
+    expect(calls.map((c) => c.t)).toEqual(['on', 'f0', 'f0']);
+    expect(calls[2].f0).toBeCloseTo(hz(67), 6);
+    expect(pointer.index).toBe(1);
+    expect(shown).toEqual([0]);
+    perf.melisma = false;
+    perf.noteOn(69, 1); // back to normal: the next syllable, legato
+    expect(calls[3]).toMatchObject({ t: 'on', legato: true });
+    expect(pointer.index).toBe(2);
+  });
+
+  it('melisma does nothing special when no word is sounding', () => {
+    const { calls, perf, pointer } = setup('hello big world');
+    perf.melisma = true;
+    perf.noteOn(60, 1);
+    expect(calls[0]).toMatchObject({ t: 'on', legato: false });
+    expect(pointer.index).toBe(1);
+  });
+
   it('hold keeps singing the current syllable without moving the pointer, and releasing it resumes', () => {
     const { calls, perf, pointer, shown } = setup('hello big world');
     perf.noteOn(60, 1);
