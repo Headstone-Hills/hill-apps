@@ -67,6 +67,13 @@ const VOWEL_END_FADE_SEC = 0.03;
 /** The bank's vowel-to-silence samples fade out in about 120 ms; stretched by this much (pitch unchanged) a word dies away more gently. */
 const END_FADE_STRETCH = 1.7;
 const MIN_UNIT_SEC = 0.04;
+/** How long before a final consonant its sample starts (a live release should reach the consonant quickly). */
+const CODA_LEAD_IN_SEC = 0.012;
+/** Crossfade from the held vowel into a final consonant's sample; short, so the consonant is not faded in. */
+const CODA_CROSSFADE_SEC = 0.02;
+/** The silence before a stop's burst (the closure) is cut down to this when releasing a live note. */
+const CLOSURE_KEEP_SEC = 0.012;
+const CLOSURE_MIN_SEC = 0.025;
 const CROSSFADE_SEC = 0.015;
 const LOOP_SEAM_SEC = 0.03;
 const MIN_LOOP_SEC = 0.1;
@@ -311,11 +318,56 @@ export async function buildAttack(
   };
 }
 
+/**
+ * Cut the silence between a vowel and the burst of the stop that follows it ("I t" has a closure of 50 ms or more)
+ * down to a few milliseconds, so a live release reaches its consonant sooner. Silence that runs to the end of the
+ * sample is the tail, not a closure, and is left alone.
+ */
+export function trimClosure(x: Float32Array, sampleRate: number): Float32Array {
+  const frame = Math.max(1, Math.round(0.001 * sampleRate));
+  const env: number[] = [];
+  for (let s = 0; s + frame <= x.length; s += frame) {
+    let e = 0;
+    for (let i = s; i < s + frame; i++) e += x[i] * x[i];
+    env.push(Math.sqrt(e / frame));
+  }
+  const lead = env.slice(0, 20).sort((a, b) => a - b)[10] ?? 0;
+  const quiet = lead * 0.03;
+  let seen = false;
+  for (let f = 0; f < env.length; f++) {
+    if (env[f] > quiet * 3) seen = true;
+    if (!seen || env[f] >= quiet) continue;
+    let g = f;
+    while (g < env.length && env[g] < quiet) g++;
+    const len = (g - f) * 0.001;
+    if (g >= env.length - 2) return x; // silent to the end: a tail
+    if (len < CLOSURE_MIN_SEC) {
+      f = g;
+      continue;
+    }
+    // Remove the middle of the gap, keeping a little silence on each side, with a short crossfade over the join.
+    const keepA = f + Math.round((CLOSURE_KEEP_SEC * 1000) / 2);
+    const keepB = g - Math.round((CLOSURE_KEEP_SEC * 1000) / 2);
+    const cutFrom = keepA * frame;
+    const cutTo = keepB * frame;
+    const out = new Float32Array(x.length - (cutTo - cutFrom));
+    out.set(x.subarray(0, cutFrom));
+    out.set(x.subarray(cutTo), cutFrom);
+    const fade = Math.min(Math.round(0.002 * sampleRate), cutFrom, out.length - cutFrom);
+    for (let i = 0; i < fade; i++) {
+      const w = i / fade;
+      out[cutFrom - fade + i] = x[cutFrom - fade + i] * (1 - w) + x[cutTo - fade + i] * w;
+    }
+    return out;
+  }
+  return x;
+}
+
 /** The sound after the key is released: the syllable's final consonants, or the vowel dying away. */
 export async function buildRelease(bank: Voicebank, plan: SyllablePlan, f0: number, targetRms = 0, shaping: Shaping = {}): Promise<LiveRelease | null> {
   const units = planUnits((a) => bank.has(a), plan, { prevVowel: null, releaseAtEnd: true, melisma: false }).filter((u) => u.role === 'coda' || u.role === 'end');
   if (units.length === 0) return null;
-  const list = await prepare(bank, units, units[0].role === 'end' ? 0.03 : 0.1);
+  const list = await prepare(bank, units, units[0].role === 'end' ? 0.03 : CODA_LEAD_IN_SEC);
   if (list.length === 0) return null;
   for (const p of list) {
     if (p.unit.role !== 'end') continue;
@@ -338,18 +390,19 @@ export async function buildRelease(bank: Voicebank, plan: SyllablePlan, f0: numb
     }
     mixAt(out, seg, Math.round(starts[i] * sr), i === 0 ? 0 : Math.round(p.overlap * sr));
   });
-  const overlap = Math.max(0.06, list[0].overlap);
+  const overlap = units[0].role === 'end' ? Math.max(0.06, list[0].overlap) : CODA_CROSSFADE_SEC;
+  const sound = units[0].role === 'end' ? out : trimClosure(out, sr);
   // Match the release's opening (the vowel it continues) to the loudness of the sustain it follows, so the
   // handover has no jump in volume: each recording sits at its own level.
   if (targetRms > 0) {
-    const n = Math.min(out.length, Math.round(Math.max(0.08, overlap) * sr));
+    const n = Math.min(sound.length, Math.round(Math.max(0.08, overlap) * sr));
     let e = 0;
-    for (let i = 0; i < n; i++) e += out[i] * out[i];
+    for (let i = 0; i < n; i++) e += sound[i] * sound[i];
     const got = Math.sqrt(e / Math.max(1, n));
     if (got > 1e-6) {
       const k = Math.min(2.5, Math.max(0.4, targetRms / got));
-      for (let i = 0; i < out.length; i++) out[i] *= k;
+      for (let i = 0; i < sound.length; i++) sound[i] *= k;
     }
   }
-  return { samples: out, sampleRate: sr, overlap, aliases: list.map((p) => p.unit.alias) };
+  return { samples: sound, sampleRate: sr, overlap, aliases: list.map((p) => p.unit.alias) };
 }

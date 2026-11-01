@@ -10,7 +10,7 @@ import { estimateF0, mixInto, pitchMarks, renderSegment, type PsolaSource } from
 import { planUnits, xsampaVowel } from '../src/utau/planner';
 import { renderUtau } from '../src/utau/render';
 import { centsToRatio, defaultTuning, formatTuning, genderToFormant, TuningModel, TUNING_PARAMS, vibratoFactor } from '../src/utau/tuning';
-import { alignOffset, buildAttack, buildRelease, capPeak, seamlessLoop } from '../src/utau/livenote';
+import { trimClosure, alignOffset, buildAttack, buildRelease, capPeak, seamlessLoop } from '../src/utau/livenote';
 import { steadyWindow } from '../src/utau/spectral';
 import { Voicebank, type BankFile } from '../src/utau/voicebank';
 import { openZip } from '../src/utau/zip';
@@ -388,7 +388,7 @@ describe('live notes', () => {
     const peak = Math.max(...a.samples.map(Math.abs));
     expect(Math.abs(a.samples[0])).toBeLessThan(0.02 * peak);
     expect(a.loopRms).toBeGreaterThan(0.01);
-    const opening = (r: { samples: Float32Array; overlap: number }) => rms(r.samples, 0, Math.round(Math.max(0.08, r.overlap) * SR));
+    const opening = (r: { samples: Float32Array; overlap: number }) => rms(r.samples, 0, Math.min(r.samples.length, Math.round(Math.max(0.08, r.overlap) * SR)));
     const raw = (await buildRelease(bank, { onset: [], nucleus: 'AA1', coda: ['D'] }, 220))!;
     const matched = (await buildRelease(bank, { onset: [], nucleus: 'AA1', coda: ['D'] }, 220, a.loopRms))!;
     const dbOff = Math.abs(20 * Math.log10(opening(matched) / a.loopRms));
@@ -481,7 +481,8 @@ describe('live notes', () => {
     const withCoda = (await buildRelease(bank, { onset: [], nucleus: 'AA1', coda: ['D'] }, 220))!;
     expect(withCoda.aliases).toEqual(['A d']);
     expect(withCoda.samples.length).toBeGreaterThan(0.05 * SR);
-    expect(withCoda.overlap).toBeGreaterThanOrEqual(0.06);
+    expect(withCoda.overlap).toBeLessThan(0.04); // a short crossfade: the final consonant is not faded in
+    expect(withCoda.overlap).toBeGreaterThan(0);
     const noCoda = (await buildRelease(bank, { onset: [], nucleus: 'AA1', coda: [] }, 220))!;
     expect(noCoda.aliases).toEqual(['A -']);
     // a vowel ending is stretched so the word dies away gently: longer than the recorded part it came from
@@ -618,6 +619,31 @@ describe('sample voice tuning', () => {
     const b = estimateF0(out.subarray(24000, 36000), SR);
     expect(b / a).toBeGreaterThan(1.85);
     expect(b / a).toBeLessThan(2.15);
+  });
+});
+
+describe('closure trimming (the lag before a final stop in a live release)', () => {
+  const build = (silenceMs: number, tailMs = 0): Float32Array => {
+    const ms = (m: number): number => Math.round((m / 1000) * SR);
+    const x = new Float32Array(ms(60) + ms(silenceMs) + ms(20) + ms(tailMs));
+    for (let i = 0; i < ms(60); i++) x[i] = 0.3 * Math.sin((2 * Math.PI * 220 * i) / SR); // vowel
+    let seed = 5;
+    for (let i = 0; i < ms(20); i++) { seed = (seed * 1664525 + 1013904223) >>> 0; x[ms(60) + ms(silenceMs) + i] = ((seed / 4294967296) * 2 - 1) * 0.2; } // burst
+    return x;
+  };
+  it('cuts a long closure down to a few milliseconds and keeps the burst intact', () => {
+    const x = build(80);
+    const y = trimClosure(x, SR);
+    const cut = (x.length - y.length) / SR;
+    expect(cut).toBeGreaterThan(0.05);
+    expect(cut).toBeLessThan(0.08);
+    expect(rms(y, y.length - Math.round(0.02 * SR), y.length)).toBeCloseTo(rms(x, x.length - Math.round(0.02 * SR), x.length), 3);
+  });
+  it('leaves short gaps, and silence at the end of the sample, alone', () => {
+    const short = build(15);
+    expect(trimClosure(short, SR).length).toBe(short.length);
+    const withTail = build(0, 200); // burst with a long silent tail after it, no closure
+    expect(trimClosure(withTail, SR).length).toBe(withTail.length);
   });
 });
 
