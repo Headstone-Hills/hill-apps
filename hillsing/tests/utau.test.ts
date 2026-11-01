@@ -11,6 +11,8 @@ import { planUnits, xsampaVowel } from '../src/utau/planner';
 import { renderUtau } from '../src/utau/render';
 import { buildAttack, buildRelease, seamlessLoop } from '../src/utau/livenote';
 import { Voicebank, type BankFile } from '../src/utau/voicebank';
+import { openZip } from '../src/utau/zip';
+import { deflateRawSync } from 'node:zlib';
 import { buildLyrics } from '../src/text/lyrics';
 import { realLookup } from './helpers';
 
@@ -280,6 +282,61 @@ describe('alias planner', () => {
   });
 });
 
+/** A minimal zip writer for tests: stored or deflated entries, names as raw bytes with optional UTF-8 flag. */
+function makeZip(entries: Array<{ name: Uint8Array; data: Uint8Array; deflate?: boolean; utf8?: boolean }>, extra: { junk?: boolean } = {}): Uint8Array {
+  const parts: Uint8Array[] = [];
+  const cen: Uint8Array[] = [];
+  let offset = 0;
+  const u16 = (n: number) => new Uint8Array([n & 255, (n >> 8) & 255]);
+  const u32 = (n: number) => new Uint8Array([n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >>> 24) & 255]);
+  const cat = (...a: Uint8Array[]) => { const o = new Uint8Array(a.reduce((t, x) => t + x.length, 0)); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
+  for (const e of entries) {
+    const comp = e.deflate ? new Uint8Array(deflateRawSync(e.data)) : e.data;
+    const flags = e.utf8 ? 0x800 : 0;
+    const method = e.deflate ? 8 : 0;
+    const local = cat(u32(0x04034b50), u16(20), u16(flags), u16(method), u16(0), u16(0), u32(0), u32(comp.length), u32(e.data.length), u16(e.name.length), u16(0), e.name, comp);
+    cen.push(cat(u32(0x02014b50), u16(20), u16(20), u16(flags), u16(method), u16(0), u16(0), u32(0), u32(comp.length), u32(e.data.length), u16(e.name.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset), e.name));
+    parts.push(local);
+    offset += local.length;
+  }
+  const cd = cat(...cen);
+  void extra;
+  return cat(...parts, cd, u32(0x06054b50), u16(0), u16(0), u16(entries.length), u16(entries.length), u32(cd.length), u32(offset), u16(0));
+}
+
+describe('zip voicebanks', () => {
+  const enc = new TextEncoder();
+  it('lists and reads stored and deflated entries, skipping folders and macOS junk', async () => {
+    const x = tone(200, 0.4, 1000);
+    const wav = wavBytes(x);
+    const zip = makeZip([
+      { name: enc.encode('Bank/'), data: new Uint8Array(0) },
+      { name: enc.encode('Bank/oto.ini'), data: enc.encode('t.wav=- a,0,40,-300,0,0\n'), deflate: true, utf8: true },
+      { name: enc.encode('Bank/t.wav'), data: wav, deflate: true, utf8: true },
+      { name: enc.encode('Bank/t_wav.frq'), data: frqBytes(frqFor(200, x.length, 1000).f0) },
+      { name: enc.encode('__MACOSX/Bank/._t.wav'), data: enc.encode('junk') },
+    ]);
+    const files = await openZip(new Blob([zip as BlobPart]));
+    expect(files.map((f) => f.path)).toEqual(['Bank/oto.ini', 'Bank/t.wav', 'Bank/t_wav.frq']);
+    expect(Buffer.from(await files[1].read()).equals(Buffer.from(wav))).toBe(true); // deflated entry round-trips
+    const bank = await Voicebank.load(files, 'Bank');
+    expect(bank.has('- a')).toBe(true);
+    expect(await bank.renderAlias('- a', 220)).not.toBeNull();
+  });
+
+  it('decodes Shift-JIS folder names written without the UTF-8 flag', async () => {
+    const sjis = new Uint8Array([0x82, 0xa0, 0x2f, 0x6f, 0x74, 0x6f, 0x2e, 0x69, 0x6e, 0x69]); // "あ/oto.ini"
+    const zip = makeZip([{ name: sjis, data: enc.encode('x.wav=a,0,1,-1,0,0\n') }]);
+    const files = await openZip(new Blob([zip as BlobPart]));
+    expect(files[0].path).toBe('あ/oto.ini');
+  });
+
+  it('gives clear errors for things that are not usable zips', async () => {
+    await expect(openZip(new Blob([new Uint8Array(100)]))).rejects.toThrow(/zip/i);
+    await expect(openZip(new Blob([makeZip([]) as BlobPart]))).rejects.toThrow(/no files/);
+  });
+});
+
 describe('live notes', () => {
   const file = (path: string, bytes: Uint8Array): BankFile => ({ path, read: async () => bytes });
   async function liveBank() {
@@ -439,5 +496,19 @@ describe.skipIf(!bankDir)('real voicebank (HILLSING_UTAU_BANK)', () => {
       const a = (await buildAttack(bank, { onset: syl.onset, nucleus: syl.nucleus, coda: syl.coda }, 262, null))!;
       if (a.loop) expect(a.loop.length / SR, `${syl.label} sustain length`).toBeGreaterThan(4);
     }
+  });
+});
+
+const bankZip = process.env.HILLSING_UTAU_ZIP;
+describe.skipIf(!bankZip)('real voicebank zip (HILLSING_UTAU_ZIP)', () => {
+  it('loads straight from the zip and sings', async () => {
+    const files = await openZip(new Blob([new Uint8Array(readFileSync(bankZip!))]));
+    const bank = await Voicebank.load(files, 'zip');
+    console.log(`zip: ${files.length} files, ${bank.entries.length} entries, ${bank.aliases().length} aliases`);
+    expect(bank.entries.length).toBeGreaterThan(2000);
+    const out = (await bank.renderAlias('- h@', 262, 600))!;
+    expect(out.samples.length).toBeGreaterThan(10000);
+    const f = estimateF0(out.samples.subarray(Math.round(0.3 * out.sampleRate), Math.round(0.55 * out.sampleRate)), out.sampleRate);
+    expect(Math.abs(f / 262 - 1)).toBeLessThan(0.05);
   });
 });

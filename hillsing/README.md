@@ -306,6 +306,13 @@ Checked against the English "Kasane Teto" bank (X-SAMPA phonemes, VCV + CV alias
 2,681 entries, no missing WAVs, and a rendered sample's measured pitch is within 0.5% of the request from
 180 to 330 Hz.
 
+**Zip voicebanks (phones).** The UTAU panel also takes a **.zip** of the bank folder (`src/utau/zip.ts`): the archive's
+index is parsed and each file is sliced out and inflated only when used, so nothing is extracted or uploaded. Folder
+names written in Shift-JIS are decoded. On touch devices samples are decoded when first used rather than all at once.
+Zip64 and password-protected archives are rejected with a message. Check a real zip with
+`HILLSING_UTAU_ZIP=/path/bank.zip npx vitest run tests/utau.test.ts`. A published artifact copy of the app carries no
+voicebank: load your own zip from the phone.
+
 ## Roadmap
 
 Agreed scope, in order: (1) **v0.1 live singing**, done; (2) **MIDI file import and playback**

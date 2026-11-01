@@ -3,6 +3,7 @@
 
 import type { UtauSession } from '../utau/session';
 import { Voicebank, type BankFile } from '../utau/voicebank';
+import { openZip } from '../utau/zip';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const noteName = (n: number): string => `${NOTE_NAMES[((n % 12) + 12) % 12]}${Math.floor(n / 12) - 1}`;
@@ -15,6 +16,7 @@ export class UtauPanel {
 
   private readonly el = {
     folder: this.q<HTMLInputElement>('utau-folder'),
+    zip: this.q<HTMLInputElement>('utau-zip'),
     name: this.q('utau-name'),
     status: this.q('utau-status'),
     alias: this.q<HTMLInputElement>('utau-alias'),
@@ -28,6 +30,7 @@ export class UtauPanel {
   constructor(private readonly session: UtauSession) {
     const { el } = this;
     el.folder.addEventListener('change', () => void this.loadFolder());
+    el.zip.addEventListener('change', () => void this.loadZip());
     el.pitch.addEventListener('input', () => this.showPitch());
     el.play.addEventListener('click', () => void this.play());
     el.alias.addEventListener('keydown', (e) => {
@@ -57,15 +60,24 @@ export class UtauPanel {
   private async loadFolder(): Promise<void> {
     const list = this.el.folder.files;
     if (!list || list.length === 0) return;
-    this.say('Reading voicebank…');
-    this.el.play.disabled = true;
     const files: BankFile[] = [...list].map((f) => ({
       path: f.webkitRelativePath || f.name,
       read: async () => new Uint8Array(await f.arrayBuffer()),
     }));
-    const root = (files[0].path.split('/')[0] || 'voicebank').normalize('NFC');
+    await this.loadFiles(async () => files, (files[0].path.split('/')[0] || 'voicebank').normalize('NFC'));
+  }
+
+  private async loadZip(): Promise<void> {
+    const f = this.el.zip.files?.[0];
+    if (!f) return;
+    await this.loadFiles(() => openZip(f), f.name.replace(/\.zip$/i, '').normalize('NFC'));
+  }
+
+  private async loadFiles(open: () => Promise<BankFile[]>, name: string): Promise<void> {
+    this.say('Reading voicebank…');
+    this.el.play.disabled = true;
     try {
-      this.bank = await Voicebank.load(files, root);
+      this.bank = await Voicebank.load(await open(), name);
     } catch (err) {
       this.bank = null;
       this.session.set(null);
@@ -85,6 +97,11 @@ export class UtauPanel {
     if (!this.el.alias.value || !b.has(this.el.alias.value)) this.el.alias.value = b.aliases().find((a) => a.length <= 3) ?? b.aliases()[0];
     this.el.play.disabled = false;
     const summary = `${b.entries.length} entries, ${b.aliases().length} aliases from ${b.otoFiles.length} oto.ini.`;
+    // Phones and tablets: decode samples when first used instead of all at once (the whole bank is ~190 MB decoded).
+    if (window.matchMedia?.('(pointer: coarse)').matches) {
+      this.say(`${summary} Samples are loaded as they are used on this device. Pick an alias and a pitch, then play.`);
+      return;
+    }
     this.say(`${summary} Preparing samples for live playing…`);
     // Decode every sample now so the first key press does not wait for a file.
     void b
