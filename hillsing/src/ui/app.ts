@@ -80,11 +80,18 @@ export function startApp(): void {
         `Voice: ${utauSession.active ? `sample-based (${utauSession.bank?.name ?? 'UTAU'})` : getVoice(voiceId).name} · lyrics: ${lyricsBox.value.replace(/\s+/g, ' ').slice(0, 60)}`,
         `Tuning: ${TUNING_PARAMS.map((p) => `${p.id} ${formatTuning(p.id, t[p.id])}`).join(', ')}`,
         `Effects on: ${on.length ? on.join(' | ') : 'none'}`,
+        ...(flags.length ? [`Flagged as artifact: ${flags.slice(-12).map((f) => `${f.label} [${f.phones}]`).join(', ')}`] : []),
       ];
     },
   });
+  // The syllable that is sounding (or sounded last), so the Q key can flag it as having an artifact.
+  let playing: { index: number; note: number; at: number } | null = null;
+  let lastNoteOn = 60;
   const performance = new Performance(sink, pointer, {
-    onSyllable: (i) => scope.mark(pointer.current.syllables[i]?.label ?? ''),
+    onSyllable: (i) => {
+      playing = { index: i, note: lastNoteOn, at: window.performance.now() };
+      scope.mark(pointer.current.syllables[i]?.label ?? '');
+    },
   });
   const bindings = new NavBindings(storage);
   let filePanel: MidiFilePanel | null = null;
@@ -99,6 +106,88 @@ export function startApp(): void {
   let chips: HTMLElement[] = [];
 
   lyricsBox.value = storage?.getItem(LYRICS_KEY) ?? DEFAULT_LYRICS;
+
+  // ---- Flags: press Q while a syllable plays to mark it as having a strange sound artifact ---------------------
+  interface Flag {
+    index: number;
+    label: string;
+    phones: string;
+    note: number;
+    text: string;
+    at: number;
+    voice: string;
+  }
+  const FLAGS_KEY = 'hillsing.flags.v1';
+  let flags: Flag[] = [];
+  try {
+    const raw = storage?.getItem(FLAGS_KEY);
+    if (raw) flags = (JSON.parse(raw) as Flag[]).filter((f) => typeof f.index === 'number' && typeof f.label === 'string');
+  } catch {
+    /* unreadable saved flags: start empty */
+  }
+  const flagsCopy = $<HTMLButtonElement>('flags-copy');
+  const flagsClear = $<HTMLButtonElement>('flags-clear');
+  const noteName = (n: number): string => `${['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][n % 12]}${Math.floor(n / 12) - 1}`;
+  function saveFlags(): void {
+    try {
+      storage?.setItem(FLAGS_KEY, JSON.stringify(flags.slice(-500)));
+    } catch {
+      /* storage unavailable: fine */
+    }
+  }
+  function refreshFlagChips(): void {
+    chips.forEach((chip, i) => chip.classList.toggle('flagged', flags.some((f) => f.index === i && f.text === lyricsBox.value)));
+    flagsCopy.textContent = `⚑ ${flags.length}`;
+    flagsClear.disabled = flags.length === 0;
+  }
+  function flagText(): string {
+    const lines = [`Flagged as having a sound artifact in HillSing (${flags.length}):`, ...scope.metaLines().filter((l) => !l.startsWith('Flagged as artifact')), ''];
+    flags.forEach((f, i) => {
+      lines.push(`${i + 1}. "${f.label}" [${f.phones}] syllable ${f.index + 1}, note ${f.note} (${noteName(f.note)}), voice ${f.voice}, ${new Date(f.at).toLocaleTimeString()}`);
+    });
+    return lines.join('\n');
+  }
+  function flagArtifact(): void {
+    const p = playing;
+    if (!p || (!performance.isGated && window.performance.now() - p.at > 2500)) {
+      scope.say('Nothing was playing: press Q while a syllable sounds (or just after it).');
+      return;
+    }
+    const syl = pointer.current.syllables[p.index];
+    if (!syl) return;
+    const phones = [...syl.onset, syl.nucleus.replace(/\d$/, ''), ...syl.coda].join(' ');
+    const voice = utauSession.active ? `sample-based (${utauSession.bank?.name ?? 'UTAU'})` : getVoice(voiceId).name;
+    flags.push({ index: p.index, label: syl.label, phones, note: p.note, text: lyricsBox.value, at: Date.now(), voice });
+    saveFlags();
+    scope.mark(`${syl.label} [${phones}]`, true);
+    scope.say(`⚠ Flagged "${syl.label}" [${phones}] at note ${noteName(p.note)}. ${flags.length} flagged so far; ⚑ copies the list.`);
+    refreshFlagChips();
+  }
+  flagsCopy.addEventListener('click', () => {
+    flagsCopy.blur();
+    const text = flagText();
+    const done = (): void => scope.say(`Copied ${flags.length} flagged syllable${flags.length === 1 ? '' : 's'}: paste them into a message.`);
+    void navigator.clipboard?.writeText(text).then(done, () => {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.append(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        done();
+      } catch {
+        scope.say('Could not copy the list.');
+      }
+      ta.remove();
+    });
+  });
+  flagsClear.addEventListener('click', () => {
+    flagsClear.blur();
+    flags = [];
+    saveFlags();
+    refreshFlagChips();
+    scope.say('Flags cleared.');
+  });
 
   function rebuildLyrics(keepPosition: boolean): void {
     const lyrics = buildLyrics(lyricsBox.value, lookup);
@@ -134,6 +223,7 @@ export function startApp(): void {
     end.title = 'End of text';
     sylBox.append(end);
     updatePointerView();
+    refreshFlagChips();
     filePanel?.lyricsChanged();
   }
 
@@ -444,6 +534,7 @@ export function startApp(): void {
           audioStatus.textContent = 'Click "Start audio" first (browsers require a click).';
           return;
         }
+        lastNoteOn = ev.note;
         performance.noteOn(ev.note, ev.velocity);
         break;
       case 'noteOff':
@@ -624,6 +715,9 @@ export function startApp(): void {
       const note = BASE_NOTE + 12 * octave + KEY_OFFSETS[e.code];
       pressed.set(e.code, note);
       handleEvent({ type: 'noteOn', note, velocity: 0.8 });
+      e.preventDefault();
+    } else if (e.code === 'KeyQ') {
+      if (!e.repeat) flagArtifact();
       e.preventDefault();
     } else if (e.code === 'KeyZ') {
       octave = Math.max(-2, octave - 1);

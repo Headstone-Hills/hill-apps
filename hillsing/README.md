@@ -369,3 +369,5 @@ The **Scope** shows the last few seconds of everything you hear: a waveform (rea
 **Record** keeps everything the scope sees (up to three minutes). Stop it and the whole recording is saved as one tall PNG, in rows of about eleven seconds, with the syllable marks, a time axis and a count of clipped columns. After a recording, **PNG** and **Copy** export it; **Clear** goes back to the live window.
 
 The **Test text** buttons next to the lyrics box load a text that uses every sound of English once (**All sounds**) or an ordinary sentence (**Sentence**).
+
+**Flagging artifacts:** press **Q** while a syllable is playing (or within a couple of seconds after it) to flag it as having a strange sound artifact. The syllable's chip gets a red outline, a red ⚠ line goes on the scope (and into a recording's PNG), and it is added to a saved list. **⚑ n** copies the list as text (syllable, its sounds, note, voice, time); **✕** clears it.

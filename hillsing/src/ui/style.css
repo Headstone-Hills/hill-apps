@@ -245,3 +245,13 @@ body[data-view="perform"] #sec-syllables .nav { margin: 0 0 4px; }
 body[data-view="perform"] .test-text { margin: 0; }
 body[data-view="perform"] #sec-lyrics .lyrics-row { gap: 8px; }
 body[data-view="perform"] .nav label.inline { font-size: 12px; }
+
+.scope-status { display: flex; align-items: center; gap: 6px; }
+.scope-status .scope-readout { flex: 1; min-width: 0; margin: 2px 0 4px; }
+.scope-status button { padding: 1px 7px; font-size: 12px; }
+.syl.flagged { outline: 2px solid #ff4a3d; outline-offset: -2px; }
+.syl.flagged::after { content: '⚠'; position: absolute; top: -6px; right: -4px; font-size: 11px; color: #ff4a3d; }
+.syl { position: relative; }
+body[data-view="perform"] #scope-wave { height: 44px; }
+body[data-view="perform"] #scope-spec { height: 70px; }
+body[data-view="perform"] section { padding: 8px 12px; }

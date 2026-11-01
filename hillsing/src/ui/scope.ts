@@ -17,6 +17,8 @@ for (let v = 0; v < 256; v++) LUT.set(colour(v), v * 3);
 interface Mark {
   slot: number;
   label: string;
+  /** Flagged by the user as a sound with an artifact. */
+  flag?: boolean;
 }
 
 export class Scope {
@@ -121,12 +123,22 @@ export class Scope {
   }
 
   /** Note something that just started (a syllable, a release) so it is labelled on the time axis. */
-  mark(label: string): void {
+  mark(label: string, flag = false): void {
     if (!this.bus) return;
-    this.rec.mark(label);
+    this.rec.mark(label, flag);
     if (this.frozen) return;
-    this.marks.push({ slot: this.slot, label });
+    this.marks.push({ slot: this.slot, label, flag });
     if (this.marks.length > 200) this.marks.splice(0, this.marks.length - 200);
+  }
+
+  /** The settings lines printed on exports (also used by the flag list). */
+  metaLines(): string[] {
+    return this.meta();
+  }
+
+  /** Show a message in the readout line (not while recording, which owns it). */
+  say(text: string): void {
+    if (!this.rec.on) this.readout.textContent = text;
   }
 
   private setFrozen(on: boolean, why = ''): void {
@@ -296,9 +308,9 @@ export class Scope {
     const live = this.marks.filter((m) => this.slot - m.slot < this.cols);
     for (const m of live) {
       const x = this.cols - 1 - (this.slot - m.slot);
-      g.fillStyle = 'rgba(240,180,41,0.9)';
-      g.fillRect(x, 0, 1, h);
-      g.fillText(m.label, x + 3, 2);
+      g.fillStyle = m.flag ? '#ff4a3d' : 'rgba(240,180,41,0.9)';
+      g.fillRect(x, 0, m.flag ? 2 : 1, h);
+      g.fillText(m.flag ? `⚠ ${m.label}` : m.label, x + 3, m.flag ? 14 : 2);
     }
     this.drawHover(g, h);
     // ---- spectrogram ----
@@ -338,8 +350,8 @@ export class Scope {
     s.putImageData(img, 0, 0);
     for (const m of live) {
       const x = this.cols - 1 - (this.slot - m.slot);
-      s.fillStyle = 'rgba(240,180,41,0.8)';
-      s.fillRect(x, 0, 1, sh);
+      s.fillStyle = m.flag ? '#ff4a3d' : 'rgba(240,180,41,0.8)';
+      s.fillRect(x, 0, m.flag ? 2 : 1, sh);
     }
     this.drawHover(s, sh);
   }
@@ -355,7 +367,7 @@ export class Scope {
     const raw = [
       `HillSing scope · ${new Date().toLocaleString()} · window ${this.windowSec} s · ${this.frozen ? 'frozen' : 'live'}${this.bus ? ` · ${this.bus.ctx.sampleRate} Hz` : ''}`,
       ...this.meta(),
-      'Waveform is before the output limiter (red = full scale). Spectrogram is 0-8 kHz after it. Gold lines mark syllables (↑ = key released).',
+      'Waveform is before the output limiter (red = full scale). Spectrogram is 0-8 kHz after it. Gold lines mark syllables (↑ = key released), red lines (⚠) the ones you flagged.',
     ];
     // Wrap long lines to the picture's width so nothing is cut off.
     const measure = document.createElement('canvas').getContext('2d')!;

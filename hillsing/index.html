@@ -121,7 +121,7 @@
       </section>
 
       <section id="scope" class="perf">
-        <h2>Scope <span class="hint long">waveform (before the limiter: red = full scale) and spectrogram of everything you hear, with the syllables marked</span></h2>
+        <h2>Scope <span class="hint long">press <kbd>Q</kbd> while a syllable plays to flag it as having an artifact · waveform (before the limiter: red = full scale) and spectrogram of everything you hear, with the syllables marked</span></h2>
         <div class="nav">
           <button id="scope-freeze" type="button" aria-pressed="false" title="Stop the display so you can hover over it and read it">⏸ Freeze</button>
           <label class="inline" title="Stop automatically the moment the signal reaches full scale"><input id="scope-clipfreeze" type="checkbox" /> Freeze on clip</label>
@@ -131,7 +131,11 @@
           <button id="scope-clear" type="button" hidden title="Forget the recording: Save and Copy go back to the live window">✕ Clear</button>
           <label class="inline">Window <select id="scope-window"><option value="2">2 s</option><option value="4" selected>4 s</option><option value="8">8 s</option></select></label>
         </div>
-        <div id="scope-readout" class="hint scope-readout" aria-live="polite">Start audio and play: the sound is drawn here as it happens.</div>
+        <div class="scope-status">
+          <div id="scope-readout" class="hint scope-readout" aria-live="polite">Start audio and play: the sound is drawn here as it happens.</div>
+          <button id="flags-copy" type="button" title="Copy the list of syllables you flagged with Q as text">⚑ 0</button>
+          <button id="flags-clear" type="button" title="Forget all flagged syllables">✕</button>
+        </div>
         <div class="scope-wrap">
           <canvas id="scope-wave" aria-label="Waveform of the output"></canvas>
           <div class="spec-wrap">

@@ -20,6 +20,7 @@ for (let v = 0; v < 256; v++) LUT.set(colour(v), v * 3);
 interface Mark {
   slot: number;
   label: string;
+  flag?: boolean;
 }
 
 export class ScopeRecorder {
@@ -67,8 +68,8 @@ export class ScopeRecorder {
     this.marks = [];
   }
 
-  mark(label: string): void {
-    if (this.on) this.marks.push({ slot: this.minV.length, label });
+  mark(label: string, flag = false): void {
+    if (this.on) this.marks.push({ slot: this.minV.length, label, flag });
   }
 
   /** Add the columns that have gone by since the last call. Returns true when the length limit was reached. */
@@ -113,7 +114,7 @@ export class ScopeRecorder {
     const raw = [
       `HillSing scope recording · ${this.startedAt.toLocaleString()} · ${this.seconds.toFixed(1)} s · ${this.sampleRate} Hz · ${this.clips} clipped column${this.clips === 1 ? '' : 's'}`,
       ...meta,
-      'Waveform is before the output limiter (red = full scale). Spectrogram is 0-8 kHz after it. Gold lines mark syllables (↑ = key released). Each row is 11.2 s.',
+      'Waveform is before the output limiter (red = full scale). Spectrogram is 0-8 kHz after it. Gold lines mark syllables (↑ = key released), red lines (⚠) the ones you flagged. Each row is 11.2 s.',
     ];
     const measure = document.createElement('canvas').getContext('2d')!;
     measure.font = '11px system-ui, sans-serif';
@@ -212,9 +213,9 @@ export class ScopeRecorder {
       for (const m of this.marks) {
         if (m.slot < i0 || m.slot >= i1) continue;
         const x = pad + (m.slot - i0);
-        g.fillStyle = 'rgba(240,180,41,0.85)';
-        g.fillRect(x, wy, 1, WAVE_H + SPEC_H);
-        g.fillText(m.label, x + 3, wy + WAVE_H - 12);
+        g.fillStyle = m.flag ? '#ff4a3d' : 'rgba(240,180,41,0.85)';
+        g.fillRect(x, wy, m.flag ? 2 : 1, WAVE_H + SPEC_H);
+        g.fillText(m.flag ? `⚠ ${m.label}` : m.label, x + 3, m.flag ? wy + 2 : wy + WAVE_H - 12);
       }
     }
     return out;
