@@ -20,6 +20,7 @@ import { UtauPanel } from './utau';
 import { Spectrogram } from './spectrogram';
 import { Scope } from './scope';
 import { OnScreenPiano } from './keyboard';
+import { ScreenBottomPin } from './pinbar';
 import { ALL_SOUNDS_TEXT, SENTENCE_TEXT } from '../text/testtext';
 
 const DEFAULT_LYRICS = 'Twinkle twinkle little star, how I wonder what you are';
@@ -784,20 +785,6 @@ export function startApp(): void {
   // ---- On-screen piano: for phones and tablets, or anywhere with no keyboard; shown by default on touch screens ----
   const PIANO_KEY = 'hillsing.piano.v1';
   const pianoBar = $('piano');
-  // Inside a frame (the artifact viewer) the page is as tall as its content, so "fixed to the bottom" would put the piano
-  // below everything. There it sits in the page instead, right under the syllables.
-  const framed = (() => {
-    try {
-      return window.self !== window.top;
-    } catch {
-      return true;
-    }
-  })();
-  if (framed) {
-    pianoBar.classList.add('in-page');
-    document.body.classList.add('piano-inline');
-    $('sec-syllables').after(pianoBar);
-  }
   const pianoToggle = $<HTMLButtonElement>('piano-toggle');
   const piano = new OnScreenPiano(
     $('piano-keys'),
@@ -841,6 +828,26 @@ export function startApp(): void {
     setPiano(pianoBar.hidden === true);
     pianoToggle.blur();
   });
+  // Inside a frame that is as tall as the whole page (a viewer may embed it that way) "fixed to the bottom" would pin the
+  // piano below everything, so there it follows the bottom of what is on screen instead. A frame that scrolls on its own
+  // keeps ordinary fixed positioning.
+  const framed = (() => {
+    try {
+      return window.self !== window.top;
+    } catch {
+      return true;
+    }
+  })();
+  if (framed) {
+    const pin = new ScreenBottomPin(pianoBar);
+    const check = (): void => {
+      const grownToContent = window.innerHeight >= document.documentElement.scrollHeight - 200 && !pianoBar.hidden; // the frame is about as tall as its content
+      pin.setActive(grownToContent && document.documentElement.scrollHeight > 1.5 * pianoBar.offsetHeight);
+    };
+    window.setInterval(check, 800);
+    window.addEventListener('resize', check);
+    check();
+  }
   // Keep the page's bottom clear of the piano, whatever size it ends up.
   new ResizeObserver(() => document.body.style.setProperty('--piano-h', `${pianoBar.offsetHeight + 8}px`)).observe(pianoBar);
   const savedPiano = storage?.getItem(PIANO_KEY);
