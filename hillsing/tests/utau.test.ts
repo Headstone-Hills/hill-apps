@@ -491,6 +491,28 @@ describe('live notes', () => {
 });
 
 // ---- Optional: a real voicebank on this machine -------------------------------------------------------------
+describe('pitch marks', () => {
+  it('snap to the same kind of peak every period, even when the opposite peak is slightly larger in some periods', () => {
+    const f0 = 200;
+    const per = SR / f0;
+    const n = Math.round(0.2 * SR);
+    const x = new Float32Array(n);
+    // A waveform with a positive peak and a slightly smaller negative peak per period; every third period the negative one wins.
+    for (let k = 0; k * per + per < n; k++) {
+      const at = Math.round(k * per + per * 0.25);
+      const neg = Math.round(k * per + per * 0.4);
+      x[at] = k % 3 === 0 ? 0.8 : 1;
+      x[neg] = k % 3 === 0 ? -1 : -0.8;
+    }
+    const src: PsolaSource = { samples: x, sampleRate: SR, frq: { interval: 256, f0: new Array(Math.ceil(n / 256)).fill(f0), amp: [] } as any };
+    const marks = pitchMarks(src, 0, n - Math.round(2 * per)); // stop before the waveform runs out
+    expect(marks.length).toBeGreaterThan(30);
+    for (let i = 1; i < marks.length; i++) expect(x[marks[i]]).toBeGreaterThan(0); // always the positive peaks
+    const gaps = marks.slice(1).map((m, i) => m - marks[i]);
+    for (const g of gaps) expect(Math.abs(g - per)).toBeLessThan(per * 0.2);
+  });
+});
+
 describe('live sustain alignment', () => {
   it('finds the offset that puts a loop in step with the attack it follows, so the crossfade does not cancel', () => {
     const f0 = 220;

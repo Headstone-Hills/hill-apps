@@ -58,6 +58,10 @@ function f0At(src: PsolaSource, pos: number): number {
 /** Pitch marks (sample positions of waveform peaks, one per period) over [start, end). Unvoiced gaps get none. */
 export function pitchMarks(src: PsolaSource, start: number, end: number): number[] {
   const x = src.samples;
+  // Snap every mark to the same kind of peak. Snapping to the largest |x| lets the choice flip between a positive and
+  // a negative peak from one period to the next (vowels often have both of similar size): grains then sit half a cycle
+  // apart, and where they overlap they partly cancel, which is heard as a ripple and a wobble in the pitch.
+  const polarity = dominantPolarity(src, start, end);
   const marks: number[] = [];
   let pos = start;
   while (pos < end) {
@@ -67,13 +71,13 @@ export function pitchMarks(src: PsolaSource, start: number, end: number): number
       continue;
     }
     const period = src.sampleRate / hz;
-    // Snap to the strongest peak within a quarter period either side.
+    // Snap to the strongest peak (of the dominant polarity) within a quarter period either side.
     const lo = Math.max(0, Math.floor(pos - period / 4));
     const hi = Math.min(x.length - 1, Math.ceil(pos + period / 4));
     let best = Math.round(pos);
-    let bestV = -1;
+    let bestV = -Infinity;
     for (let i = lo; i <= hi; i++) {
-      const a = Math.abs(x[i]);
+      const a = polarity * x[i];
       if (a > bestV) {
         bestV = a;
         best = i;
@@ -88,6 +92,32 @@ export function pitchMarks(src: PsolaSource, start: number, end: number): number
     }
   }
   return marks;
+}
+
+/** +1 when the voiced part of [start, end) peaks higher above zero than below it, else -1. */
+function dominantPolarity(src: PsolaSource, start: number, end: number): 1 | -1 {
+  const x = src.samples;
+  let up = 0;
+  let down = 0;
+  let pos = start;
+  while (pos < end) {
+    const hz = f0At(src, pos);
+    if (hz <= 0) {
+      pos += 64;
+      continue;
+    }
+    const period = Math.max(8, Math.round(src.sampleRate / hz));
+    let mx = 0;
+    let mn = 0;
+    for (let i = Math.max(0, Math.round(pos)); i < Math.min(x.length, Math.round(pos) + period); i++) {
+      if (x[i] > mx) mx = x[i];
+      if (x[i] < mn) mn = x[i];
+    }
+    up += mx;
+    down -= mn;
+    pos += period;
+  }
+  return up >= down ? 1 : -1;
 }
 
 /**
