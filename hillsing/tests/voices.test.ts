@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { KlattVoice } from '../src/synth/klatt';
-import { CLASSIC, getVoice, VOICES, type VoiceProfile } from '../src/synth/voices';
+import { CLASSIC, getVoice, VOICES, voiceYear, voicesByEra, type VoiceProfile } from '../src/synth/voices';
 import { FS, bandCentroid, bandEnergy, harmonicToNoiseDb, peakFreq, plan, rms, spectrum } from './helpers';
 
 const hz = (note: number) => 440 * Math.pow(2, (note - 69) / 12);
@@ -123,6 +123,39 @@ describe('voice profiles', () => {
     };
     expect(f0s('robot')).toBeLessThan(0.35);
     expect(f0s('robot')).toBeLessThanOrEqual(f0s('child'));
+  });
+});
+
+describe('voice eras', () => {
+  it('spans the 1960s to the 2010s, with several voices in each decade', () => {
+    const decades = new Map<number, number>();
+    for (const v of VOICES) {
+      const y = voiceYear(v);
+      if (y !== null) decades.set(Math.floor(y / 10) * 10, (decades.get(Math.floor(y / 10) * 10) ?? 0) + 1);
+    }
+    for (const d of [1960, 1970, 1980, 1990, 2000, 2010]) expect(decades.get(d) ?? 0, `${d}s`).toBeGreaterThanOrEqual(d === 1960 ? 2 : 3);
+    expect(Math.min(...[...decades.keys()])).toBe(1960);
+    expect(Math.max(...[...decades.keys()])).toBe(2010);
+  });
+
+  it('reads the year from model names, including "(Windows 2000, 1999)" and "80s"', () => {
+    expect(voiceYear(getVoice('classic'))).toBe(1984);
+    expect(voiceYear(getVoice('mssam'))).toBe(1999);
+    expect(voiceYear(getVoice('alex'))).toBe(2007);
+    expect(voiceYear(getVoice('robot'))).toBe(1980);
+    expect(voiceYear(getVoice('gtts'))).toBe(2010);
+    expect(voiceYear(getVoice('teto'))).toBeNull();
+  });
+
+  it('groups every voice exactly once, oldest decade first, each group in date order, characters last', () => {
+    const groups = voicesByEra();
+    expect(groups.map((g) => g.label)).toEqual(['1960s', '1970s', '1980s', '1990s', '2000s', '2010s', 'Characters']);
+    expect(groups[groups.length - 1].voices.map((v) => v.id)).toEqual(['teto']);
+    expect(groups.flatMap((g) => g.voices.map((v) => v.id)).sort()).toEqual(VOICES.map((v) => v.id).sort());
+    for (const g of groups.slice(0, -1)) {
+      const years = g.voices.map((v) => voiceYear(v)!);
+      expect(years).toEqual([...years].sort((a, b) => a - b));
+    }
   });
 });
 

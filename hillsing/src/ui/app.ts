@@ -7,7 +7,7 @@ import type { VoiceParamName } from '../synth/klatt';
 import { loadDict, makeLookup, type PhonemeLookup } from '../text/cmudict';
 import { buildLyrics } from '../text/lyrics';
 import { LyricPointer } from '../text/pointer';
-import { getVoice, VOICES } from '../synth/voices';
+import { getVoice, voicesByEra } from '../synth/voices';
 import { VoiceLab } from './lab';
 import { MidiFilePanel } from './midifile';
 import { fxModel, getBus } from '../audio/bus';
@@ -1071,11 +1071,16 @@ export function startApp(): void {
 
   // ---- Voice selection ---------------------------------------------------------------
   const voiceSelect = $<HTMLSelectElement>('voice');
-  for (const v of VOICES) {
-    const o = document.createElement('option');
-    o.value = v.id;
-    o.textContent = `${v.name} — ${v.model}`;
-    voiceSelect.append(o);
+  for (const era of voicesByEra()) {
+    const group = document.createElement('optgroup');
+    group.label = era.label;
+    for (const v of era.voices) {
+      const o = document.createElement('option');
+      o.value = v.id;
+      o.textContent = `${v.name} — ${v.model}`;
+      group.append(o);
+    }
+    voiceSelect.append(group);
   }
   function applyVoice(id: string): void {
     const v = getVoice(id);
@@ -1110,13 +1115,17 @@ export function startApp(): void {
   }
   function fillMainVoice(): void {
     mainVoice.textContent = '';
-    const formant = document.createElement('optgroup');
-    formant.label = 'Formant synth (generated voices)';
-    for (const v of VOICES) {
-      const o = document.createElement('option');
-      o.value = v.id;
-      o.textContent = `${v.name} — ${v.model}`;
-      formant.append(o);
+    const formant: HTMLOptGroupElement[] = [];
+    for (const era of voicesByEra()) {
+      const group = document.createElement('optgroup');
+      group.label = `Formant synth · ${era.label}`;
+      for (const v of era.voices) {
+        const o = document.createElement('option');
+        o.value = v.id;
+        o.textContent = `${v.name} — ${v.model}`;
+        group.append(o);
+      }
+      formant.push(group);
     }
     const sample = document.createElement('optgroup');
     sample.label = 'Sample-based (UTAU voicebank)';
@@ -1124,7 +1133,7 @@ export function startApp(): void {
     u.value = 'utau';
     u.textContent = utauSession.bank ? utauSession.bank.name : 'Load a UTAU voicebank…';
     sample.append(u);
-    mainVoice.append(formant, sample);
+    mainVoice.append(...formant, sample);
     syncMainVoice();
   }
   // A folder picker is for desktop browsers; phones and tablets load a .zip.

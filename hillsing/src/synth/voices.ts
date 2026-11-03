@@ -274,6 +274,89 @@ const PERIOD: VoiceProfile[] = [
     { centerNote: 48, bandwidthScale: 0.7, tiltBase: 0.55, openPhase: 0.35, closeMs: 0.2, consonantLevel: 1.2, drift: 0.1 }, 0.97),
 ];
 
+// Voices from the 1960s to the 2010s that are not DECtalk descendants: research systems, hobbyist boards, chip and PC
+// voices of the 1990s, and the commercial text-to-speech of the 2000s and 2010s (up to the neural voices). Same approach
+// as the voices above: a parameter set patterned on the *character* of each (era, pitch range, how smooth or buzzy it
+// sounds, how steady), not a reconstruction. The later ones were mostly built from recordings of a real speaker, which a
+// formant engine cannot play, so these capture their general timbre (clean, smooth, warm) and nothing more. Model names
+// and years are written from memory and are approximate.
+const ERAS: VoiceProfile[] = [
+  // 1960s - 1970s: research and hobbyist formant synthesis
+  variant(CLASSIC_BASE, 'holmes', 'Holmes', 'J. N. Holmes parallel-formant synthesizer (1964)',
+    'Early British research synthesizer: smooth, steady and slightly thin, with gentle consonants.',
+    { centerNote: 48, bandwidthScale: 1.05, tiltBase: 0.35, tiltVelocity: 0.15, openPhase: 0.42, closeMs: 0.5, drift: 0.1, consonantLevel: 0.85 }, 0.97),
+  variant(CLASSIC_BASE, 'umeda', 'Umeda', 'Umeda ETL English text-to-speech (1968)',
+    'The first complete English text-to-speech: flat, mechanical and cautious.',
+    { centerNote: 47, bandwidthScale: 0.95, tiltBase: 0.3, tiltVelocity: 0.1, closeMs: 0.4, drift: 0, consonantLevel: 0.7 }, 0.99),
+  variant(CLASSIC_BASE, 'computalker', 'Computalker', 'Computalker CT-1 S-100 board (1976)',
+    'Hobbyist computer speech: buzzy but smoother than the toy chips, with a steady, mid-bright tone.',
+    { centerNote: 46, bandwidthScale: 0.75, tiltBase: 0.55, openPhase: 0.33, closeMs: 0.25, drift: 0.3, consonantLevel: 1.1 }, 0.97),
+  // 1980s
+  variant(CLASSIC_BASE, 'ti99', 'TI-99', 'Texas Instruments TI-99/4A Speech Synthesizer (1981)',
+    'Thin, nasal home-computer speech: narrow formants and a bright, steady buzz.',
+    { centerNote: 50, bandwidthScale: 0.7, tiltBase: 0.6, openPhase: 0.32, closeMs: 0.15, drift: 0, consonantLevel: 1.15 }, 0.98),
+  // 1990s: PC speech
+  variant(CLASSIC_BASE, 'sbaitso', 'Dr. Sbaitso', 'Creative Labs Dr. Sbaitso (1991)',
+    'Sound Blaster era: flat, slightly lo-fi male with hard edges.',
+    { centerNote: 48, bandwidthScale: 0.8, tiltBase: 0.5, closeMs: 0.2, drift: 0.1, consonantLevel: 1.2 }, 0.98),
+  variant(CLASSIC_BASE, 'festival', 'Festival', 'Festival diphone voice (1996)',
+    'Open-source research voice: smooth, even and a little nasal, with steady pitch.',
+    { centerNote: 52, bandwidthScale: 1.16, tiltBase: 0.35, closeMs: 0.3, breath: 0.01, drift: 0.5 }, 1.07),
+  variant(CLASSIC_BASE, 'mssam', 'MS Sam', 'Microsoft Sam (Windows 2000, 1999)',
+    'The famous default Windows voice: buzzy, nasal and flat.',
+    { centerNote: 47, bandwidthScale: 0.8, tiltBase: 0.5, openPhase: 0.38, closeMs: 0.2, drift: 0.15, consonantLevel: 1.2 }, 0.97),
+  variant(FEMALE_BASE, 'msmary', 'MS Mary', 'Microsoft Mary (Windows, 1998)',
+    'Synthetic Windows female: smooth but buzzy, with a prim, even delivery.',
+    { centerNote: 59, bandwidthScale: 0.85, tiltBase: 0.5, closeMs: 0.25, drift: 0.3, consonantLevel: 1.1 }, 1),
+  variant(CLASSIC_BASE, 'msmike', 'MS Mike', 'Microsoft Mike (Windows, 1998)',
+    'Plain, clear Windows male: a bit nasal, mildly buzzy, a little higher than Sam.',
+    { centerNote: 50, bandwidthScale: 1, tiltBase: 0.5, closeMs: 0.28, drift: 0.3, consonantLevel: 1.1 }, 1.03),
+  variant(CHILD_BASE, 'peedy', 'Peedy', 'Microsoft Agent Peedy (1998)',
+    'The on-screen parrot assistant: high, squawky and bright.',
+    { centerNote: 58, bandwidthScale: 0.8, tiltBase: 0.55, closeMs: 0.2, drift: 0.6, consonantLevel: 1.15 }, 0.9),
+  // 2000s: commercial concatenative voices, and eSpeak
+  variant(CLASSIC_BASE, 'espeak', 'eSpeak', 'eSpeak formant synthesizer (2005)',
+    'Compact open-source formant speech: clear, robotic and very steady.',
+    { centerNote: 48, bandwidthScale: 0.7, tiltBase: 0.55, openPhase: 0.35, closeMs: 0.2, drift: 0, consonantLevel: 1.15 }, 0.99),
+  variant(CLASSIC_BASE, 'attmike', 'Natural Mike', 'AT&T Natural Voices "Mike" (2001)',
+    'Early "natural" male: smooth and clean with little buzz, easy on the ear.',
+    { centerNote: 47, bandwidthScale: 1.12, tiltBase: 0.38, tiltVelocity: 0.45, breath: 0.02, drift: 0.9, closeMs: 0.35, consonantLevel: 0.95 }, 1),
+  variant(FEMALE_BASE, 'crystal', 'Crystal', 'AT&T Natural Voices "Crystal" (2001)',
+    'Smooth, even "natural" female: round and slightly darker, with a soft pulse and a light breath.',
+    { centerNote: 58, bandwidthScale: 1.2, tiltBase: 0.36, openPhase: 0.52, breath: 0.08, drift: 0.6, closeMs: 0.5, sizeScale: 1.1, consonantLevel: 0.85 }, 0.99),
+  variant(CLASSIC_BASE, 'cepstral', 'Cepstral David', 'Cepstral David (2003)',
+    'Warm, rounded male: wide formants and a gentle, steady tone.',
+    { centerNote: 47, bandwidthScale: 1.1, tiltBase: 0.36, breath: 0.03, drift: 1.1, closeMs: 0.5, consonantLevel: 0.95 }, 1),
+  variant(FEMALE_BASE, 'anna', 'Anna', 'Microsoft Anna (Windows Vista, 2006)',
+    'Clean, bright Vista-era female: even, thin and a little crisp.',
+    { centerNote: 62, bandwidthScale: 1, tiltBase: 0.44, breath: 0.04, drift: 0.5, closeMs: 0.32 }, 1.02),
+  variant(CLASSIC_BASE, 'alex', 'Alex', 'Apple Alex (Mac OS X, 2007)',
+    'Natural-sounding male with a warm, breathy tone and a relaxed drift.',
+    { centerNote: 49, bandwidthScale: 1.25, tiltBase: 0.27, openPhase: 0.5, breath: 0.12, drift: 1.2, closeMs: 0.55 }, 1.03),
+  variant(FEMALE_BASE, 'kate', 'Kate', 'NeoSpeech VoiceText Kate (2008)',
+    'Very bright, crisp female: sharp consonants over a light, clear voice.',
+    { centerNote: 64, bandwidthScale: 0.95, tiltBase: 0.55, breath: 0.03, closeMs: 0.22, consonantLevel: 1.2 }, 1.03),
+  // 2010s: the last voices before neural speech
+  variant(FEMALE_BASE, 'samantha', 'Samantha', 'Apple Samantha / Siri (2011)',
+    'Clear, friendly assistant female: smooth with an even, polished tone.',
+    { centerNote: 60, bandwidthScale: 1.05, tiltBase: 0.4, breath: 0.05, drift: 0.9, closeMs: 0.35 }, 1.01),
+  variant(CLASSIC_BASE, 'msdavid', 'MS David', 'Microsoft David (Windows 8, 2012)',
+    'Clean, neutral male: smooth, unfussy and slightly bright.',
+    { centerNote: 49, bandwidthScale: 1.1, tiltBase: 0.44, breath: 0.02, drift: 0.7, closeMs: 0.3, upperFormantScale: 1.03 }, 1.02),
+  variant(FEMALE_BASE, 'zira', 'MS Zira', 'Microsoft Zira (Windows 8, 2012)',
+    'Warm, composed lower female: a gentle pulse and a soft airiness.',
+    { centerNote: 57, bandwidthScale: 1.15, tiltBase: 0.32, breath: 0.09, drift: 1, closeMs: 0.5, sizeScale: 1.12 }, 0.98),
+  variant(CLASSIC_BASE, 'brian', 'Brian', 'IVONA Brian (2012)',
+    'Rich, deep British-style male: dark, round and slightly breathy.',
+    { centerNote: 43, bandwidthScale: 1.25, tiltBase: 0.28, breath: 0.07, drift: 1, closeMs: 0.6, sizeScale: 0.9, upperFormantScale: 0.92 }, 0.9),
+  variant(FEMALE_BASE, 'pico', 'Pico', 'SVOX Pico (Android, 2011)',
+    'Compact phone voice: small, light and a little bright.',
+    { centerNote: 62, bandwidthScale: 1, tiltBase: 0.5, closeMs: 0.25, drift: 0.6, consonantLevel: 1.1, sizeScale: 1.2 }, 1.03),
+  variant(FEMALE_BASE, 'gtts', 'Translate', 'Google Translate voice (2010s)',
+    'Flat, slightly dull web-page reader: even and steady, with very little drift.',
+    { centerNote: 59, bandwidthScale: 1.05, tiltBase: 0.38, drift: 0.1, closeMs: 0.35, consonantLevel: 1.05, sizeScale: 1.15 }, 0.99),
+];
+
 // Character voices from later synthesis scenes. Same approach as above: a parameter set patterned on
 // the *character* of the voice, not its data. A UTAU voicebank is a set of recorded samples, which
 // this formant engine cannot play, so these never contain or imitate any specific recording.
@@ -283,7 +366,30 @@ const CHARACTER: VoiceProfile[] = [
     { centerNote: 64, bandwidthScale: 1.0, upperFormantScale: 1.12, sizeScale: 1.2, openPhase: 0.5, closeMs: 0.3, tiltBase: 0.38, tiltVelocity: 0.4, breath: 0.06, drift: 1.1 }, 1.04),
 ];
 
-export const VOICES: ReadonlyArray<VoiceProfile> = [...BASES, ...PERIOD, ...CHARACTER];
+export const VOICES: ReadonlyArray<VoiceProfile> = [...BASES, ...PERIOD, ...ERAS, ...CHARACTER];
+
+/** The year in a voice's model name ("... (1984)"), or null for the character voices, which have none. */
+export function voiceYear(v: VoiceProfile): number | null {
+  const m = /\((?:[^)]*?,\s*)?(\d{4})\)/.exec(v.model);
+  if (m) return Number(m[1]);
+  const spelled = /\b(\d{4})s\b/.exec(v.model); // "(2010s)"
+  if (spelled) return Number(spelled[1]);
+  const short = /\b(\d)0s\b/.exec(v.model); // "80s speech chip"
+  return short ? 1900 + Number(short[1]) * 10 : null;
+}
+
+/** The voices grouped by decade, oldest first, each group in chronological order; undated voices come last. */
+export function voicesByEra(): Array<{ label: string; voices: VoiceProfile[] }> {
+  const groups = new Map<string, VoiceProfile[]>();
+  for (const v of VOICES) {
+    const y = voiceYear(v);
+    const label = y === null ? 'Characters' : `${Math.floor(y / 10) * 10}s`;
+    groups.set(label, [...(groups.get(label) ?? []), v]);
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => (a === 'Characters' ? 1 : b === 'Characters' ? -1 : a.localeCompare(b)))
+    .map(([label, voices]) => ({ label, voices: [...voices].sort((p, q) => (voiceYear(p) ?? 9999) - (voiceYear(q) ?? 9999)) }));
+}
 
 export const CLASSIC: VoiceProfile = VOICES[0];
 
