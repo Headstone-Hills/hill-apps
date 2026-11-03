@@ -95,6 +95,7 @@ export async function renderUtau(
       prevVowel,
       releaseAtEnd: wordEnds && !connectedNext,
       melisma: !!syl.melisma,
+      dialect: bank.dialect,
     });
     if (units.length === 0) {
       // Report what the plan would have needed, for the diagnostics.
@@ -103,10 +104,10 @@ export async function renderUtau(
       continue;
     }
     const f0 = hzOf(n.note) * tune;
-    const gain = 0.4 + 0.6 * n.velocity;
+    const gain = (0.4 + 0.6 * n.velocity) * bank.levelGain;
     const list: Placed[] = [];
     for (const u of units) {
-      const e = bank.entry(u.alias)!;
+      const e = bank.entry(u.alias, f0)!;
       const src = await bank.source(e.wavPath);
       if (!src) {
         missing.add(u.alias);

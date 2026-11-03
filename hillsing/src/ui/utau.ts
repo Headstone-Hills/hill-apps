@@ -6,6 +6,7 @@ import type { UtauSession } from '../utau/session';
 import { Voicebank, type BankFile } from '../utau/voicebank';
 import { openZip } from '../utau/zip';
 import type { HillLibrary, LibraryEntry } from './library';
+import { englishCoverage } from '../utau/planner';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const noteName = (n: number): string => `${NOTE_NAMES[((n % 12) + 12) % 12]}${Math.floor(n / 12) - 1}`;
@@ -128,7 +129,15 @@ export class UtauPanel {
     }
     if (!this.el.alias.value || !b.has(this.el.alias.value)) this.el.alias.value = b.aliases().find((a) => a.length <= 3) ?? b.aliases()[0];
     this.el.play.disabled = false;
-    const summary = `${b.entries.length} entries, ${b.aliases().length} aliases from ${b.otoFiles.length} oto.ini.`;
+    const cov = englishCoverage((a) => b.has(a), b.dialect);
+    const pct = Math.round(cov.fraction * 100);
+    const kind = b.dialect === 'arpabet' ? 'ARPAbet' : 'X-SAMPA';
+    const warn = cov.fraction < 0.6
+      ? ` Warning: this bank is not set up for English (${kind} names; it has ${cov.vowels[0]}/${cov.vowels[1]} English vowels and ${cov.consonants[0]}/${cov.consonants[1]} consonants), so English lyrics will be silent or partial. The alias box below still plays its sounds.`
+      : cov.fraction < 0.95
+        ? ` English coverage ${pct}% (${cov.vowels[0]}/${cov.vowels[1]} vowels, ${cov.consonants[0]}/${cov.consonants[1]} consonants): some sounds will be missing.`
+        : '';
+    const summary = `${b.entries.length} entries, ${b.aliases().length} aliases${b.multiPitch ? ' at several pitches' : ''} from ${b.otoFiles.length} oto.ini.${warn}`;
     // Phones and tablets: decode samples when first used instead of all at once (the whole bank is ~190 MB decoded).
     if (window.matchMedia?.('(pointer: coarse)').matches) {
       this.say(`${summary} Samples are loaded as they are used on this device. Pick an alias and a pitch, then play.`);
