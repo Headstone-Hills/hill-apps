@@ -21,6 +21,7 @@ import { UtauPanel } from './utau';
 import { Spectrogram } from './spectrogram';
 import { Scope } from './scope';
 import { OnScreenPiano } from './keyboard';
+import { baseName, describeLibrary, type LibraryState } from './library';
 import { ScreenBottomPin } from './pinbar';
 import { MAX_RECORD_SEC, Recorder, type Recording } from '../audio/recorder';
 import { encodeWav } from '../audio/wav';
@@ -721,7 +722,7 @@ export function startApp(): void {
     });
   }
 
-  new UtauPanel(utauSession);
+  const utauPanel = new UtauPanel(utauSession);
   new TuningPanel($('tune-grid'), $<HTMLButtonElement>('tune-reset'), tuning);
   // Listening switches: tick one or more parts of a note to hear only those; "still vowel" holds the vowel steady.
   const solo = { attack: $<HTMLInputElement>('diag-attack'), sustain: $<HTMLInputElement>('diag-sustain'), end: $<HTMLInputElement>('diag-end') };
@@ -1108,7 +1109,8 @@ export function startApp(): void {
   // ---- Voice chooser next to the lyrics: the generated formant voices and the sample-based voicebank ----
   const mainVoice = $<HTMLSelectElement>('voice-main');
   function syncMainVoice(): void {
-    mainVoice.value = utauSession.active ? 'utau' : voiceId;
+    const libEntry = utauPanel.libraryPath ? libState?.entries.find((e) => e.path === utauPanel.libraryPath) : undefined;
+    mainVoice.value = utauSession.active ? (libEntry ? `lib:${libEntry.path}` : 'utau') : voiceId;
     $('voice-main-desc').textContent = utauSession.active
       ? `Sample-based: live keys and melodies (MIDI file or piano roll) are sung with this voicebank. The Voice lab and its sliders still use the formant voice ${getVoice(voiceId).name}.`
       : getVoice(voiceId).description;
@@ -1131,9 +1133,19 @@ export function startApp(): void {
     sample.label = 'Sample-based (UTAU voicebank)';
     const u = document.createElement('option');
     u.value = 'utau';
-    u.textContent = utauSession.bank ? utauSession.bank.name : 'Load a UTAU voicebank…';
+    u.textContent = utauSession.bank && !utauPanel.libraryPath ? utauSession.bank.name : 'Load a UTAU voicebank…';
     sample.append(u);
-    mainVoice.append(...formant, sample);
+    const groups: HTMLOptGroupElement[] = [...formant];
+    if (library) {
+      const lg = document.createElement('optgroup');
+      lg.label = libState?.root ? `Voicebank library · ${baseName(libState.root)}` : 'Voicebank library';
+      if (!libState?.root) lg.append(new Option('Choose a voicebank folder…', 'lib-choose'));
+      else if (!libState.ok) lg.append(Object.assign(new Option(libState.error === 'not-found' ? 'Folder not found: is the drive connected?' : 'Folder unreadable', ''), { disabled: true }));
+      else if (libState.entries.length === 0) lg.append(Object.assign(new Option('No voicebanks in this folder', ''), { disabled: true }));
+      for (const e of libState?.entries ?? []) lg.append(new Option(e.kind === 'zip' ? `${e.name} (zip)` : e.name, `lib:${e.path}`));
+      groups.push(lg);
+    }
+    mainVoice.append(...groups, sample);
     syncMainVoice();
   }
   // A folder picker is for desktop browsers; phones and tablets load a .zip.
@@ -1143,7 +1155,14 @@ export function startApp(): void {
   $('voice-load-folder').addEventListener('click', () => $<HTMLInputElement>('voice-folder').click());
   mainVoice.addEventListener('change', () => {
     const choice = mainVoice.value;
-    if (choice === 'utau') {
+    if (choice === 'lib-choose') {
+      syncMainVoice();
+      void chooseLibraryFolder();
+    } else if (choice.startsWith('lib:')) {
+      const entry = libState?.entries.find((e) => `lib:${e.path}` === choice);
+      syncMainVoice(); // keep the current voice until the voicebank has actually loaded
+      if (entry) void loadLibraryBank(entry);
+    } else if (choice === 'utau') {
       if (utauSession.bank) utauSession.setUse(true);
       else {
         syncMainVoice(); // keep the current voice until a voicebank is actually loaded
@@ -1152,9 +1171,76 @@ export function startApp(): void {
     } else {
       utauSession.setUse(false);
       applyVoice(choice);
+      setLibraryFlag('0'); // the formant voice is the one to come back to
     }
     mainVoice.blur();
   });
+  // ---- Voicebank library (Mac app): a folder chosen once, whose voicebanks are listed in the Voice menu -------
+  const library = window.hillLibrary ?? null;
+  let libState: LibraryState | null = null;
+  const LIB_ACTIVE_KEY = 'hillsing.library.active.v1';
+  const LIB_LAST_KEY = 'hillsing.library.last.v1';
+  const LIB_SKIP_KEY = 'hillsing.library.skipped.v1';
+  function setLibraryFlag(v: '0' | '1'): void {
+    try {
+      storage?.setItem(LIB_ACTIVE_KEY, v);
+    } catch {
+      /* storage unavailable: fine */
+    }
+  }
+  async function loadLibraryBank(entry: NonNullable<LibraryState['entries'][number]>): Promise<void> {
+    if (!library) return;
+    const ok = await utauPanel.loadFromLibrary(entry, library);
+    if (ok) {
+      setLibraryFlag('1');
+      try {
+        storage?.setItem(LIB_LAST_KEY, entry.path);
+      } catch {
+        /* storage unavailable: fine */
+      }
+    }
+  }
+  function showLibrary(state: LibraryState): void {
+    libState = state;
+    fillMainVoice();
+    const status = $('voice-load-status');
+    if (!utauSession.bank) {
+      status.textContent = describeLibrary(state);
+      status.classList.toggle('error', !state.ok);
+    }
+    $('voice-library').title = state.root ? `Voicebank folder: ${state.root} (click to change)` : 'Choose your voicebank folder';
+  }
+  async function chooseLibraryFolder(): Promise<void> {
+    if (!library) return;
+    const state = await library.choose();
+    if (state) showLibrary(state);
+  }
+  if (library) {
+    const welcome = $<HTMLDialogElement>('library-welcome');
+    $<HTMLButtonElement>('voice-library').hidden = false;
+    $('voice-library').addEventListener('click', () => void chooseLibraryFolder());
+    $('library-pick').addEventListener('click', async () => {
+      await chooseLibraryFolder();
+      if (libState?.root) welcome.close();
+    });
+    $('library-skip').addEventListener('click', () => {
+      try {
+        storage?.setItem(LIB_SKIP_KEY, '1');
+      } catch {
+        /* storage unavailable: fine */
+      }
+      welcome.close();
+    });
+    void library.get().then(async (state) => {
+      showLibrary(state);
+      if (!state.root && storage?.getItem(LIB_SKIP_KEY) !== '1') welcome.showModal();
+      // Come back to the voicebank that was in use last time.
+      const last = storage?.getItem(LIB_LAST_KEY);
+      const entry = state.entries.find((e) => e.path === last);
+      if (state.ok && entry && storage?.getItem(LIB_ACTIVE_KEY) === '1') await loadLibraryBank(entry);
+    });
+  }
+
   utauSession.onChange(() => {
     // Switching between the voicebank and the formant voices: let go of anything still sounding.
     performance.allNotesOff();

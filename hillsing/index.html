@@ -25,6 +25,16 @@
       </div>
     </header>
 
+    <dialog id="library-welcome" class="welcome">
+      <h2>Where do your voicebanks live?</h2>
+      <p>Choose the folder that holds your UTAU voicebanks (an external drive works): each one as its own folder with an oto.ini in it, or as a .zip. HillSing lists them in the Voice menu and reads them from there. Nothing is copied or uploaded.</p>
+      <p class="hint">You can change the folder later with the 📚 button under the Voice menu.</p>
+      <div class="welcome-actions">
+        <button id="library-pick" type="button">Choose folder…</button>
+        <button id="library-skip" type="button">Not now</button>
+      </div>
+    </dialog>
+
     <div id="rec-panel" class="midi-panel" hidden>
       <div class="midi-row"><b>Recording</b> <span id="rec-info" class="hint"></span></div>
       <audio id="rec-preview" controls style="width: 100%; margin: 4px 0 8px"></audio>
@@ -76,6 +86,7 @@
             <div id="voice-main-desc" class="hint"></div>
             <div class="voice-load">
               <button id="voice-load-zip" type="button" title="Pick a zipped UTAU voicebank (the way to load one on a phone). It is read in place, never uploaded">📂 Load voicebank (.zip)</button>
+              <button id="voice-library" type="button" hidden title="Choose the folder where your voicebanks live (an external drive works). Every voicebank in it appears in the Voice menu">📚 Voicebank folder…</button>
               <button id="voice-load-folder" type="button" hidden title="Pick a UTAU voicebank folder (the one with oto.ini)">📁 Folder</button>
               <input id="voice-zip" class="vh" type="file" accept=".zip,application/zip,application/x-zip-compressed,application/octet-stream" tabindex="-1" aria-label="Choose a zipped UTAU voicebank" />
               <input id="voice-folder" class="vh" type="file" webkitdirectory tabindex="-1" aria-label="Choose a UTAU voicebank folder" />

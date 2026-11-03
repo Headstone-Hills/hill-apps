@@ -5,6 +5,7 @@ import { getBus } from '../audio/bus';
 import type { UtauSession } from '../utau/session';
 import { Voicebank, type BankFile } from '../utau/voicebank';
 import { openZip } from '../utau/zip';
+import type { HillLibrary, LibraryEntry } from './library';
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const noteName = (n: number): string => `${NOTE_NAMES[((n % 12) + 12) % 12]}${Math.floor(n / 12) - 1}`;
@@ -13,6 +14,8 @@ const hzOf = (note: number): number => 440 * Math.pow(2, (note - 69) / 12);
 export class UtauPanel {
   private bank: Voicebank | null = null;
   private source: AudioBufferSourceNode | null = null;
+  /** The library entry the current voicebank came from (null when it was loaded with a picker). */
+  libraryPath: string | null = null;
 
   private readonly el = {
     folder: this.q<HTMLInputElement>('utau-folder'),
@@ -70,6 +73,7 @@ export class UtauPanel {
   private async loadFolder(input: HTMLInputElement): Promise<void> {
     const list = input.files;
     if (!list || list.length === 0) return;
+    this.libraryPath = null;
     const files: BankFile[] = [...list].map((f) => ({
       path: f.webkitRelativePath || f.name,
       read: async () => new Uint8Array(await f.arrayBuffer()),
@@ -80,8 +84,25 @@ export class UtauPanel {
   private async loadZip(input: HTMLInputElement): Promise<void> {
     const f = input.files?.[0];
     if (!f) return;
+    this.libraryPath = null;
     await this.loadFiles(() => openZip(f), f.name.replace(/\.zip$/i, '').normalize('NFC'));
     input.value = ''; // so picking the same file again still loads it
+  }
+
+  /** Load a voicebank from the library folder (Mac app): a folder is read file by file as needed, a zip is opened in place. */
+  async loadFromLibrary(entry: LibraryEntry, lib: HillLibrary): Promise<boolean> {
+    this.libraryPath = entry.path;
+    const name = entry.name.normalize('NFC');
+    if (entry.kind === 'zip') {
+      await this.loadFiles(async () => openZip(new Blob([(await lib.read(entry.path)) as BlobPart])), name);
+    } else {
+      await this.loadFiles(async () => {
+        const rels = await lib.files(entry.path);
+        return rels.map((rel) => ({ path: `${name}/${rel}`, read: () => lib.read(`${entry.path}/${rel}`) }));
+      }, name);
+    }
+    if (!this.bank) this.libraryPath = null;
+    return this.bank !== null;
   }
 
   private async loadFiles(open: () => Promise<BankFile[]>, name: string): Promise<void> {

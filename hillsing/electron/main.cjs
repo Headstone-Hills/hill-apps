@@ -6,9 +6,11 @@
 // Why a custom scheme instead of file://: AudioWorklet modules, fetch() of the dictionary and
 // module workers need a secure origin with normal fetch semantics, which file:// does not give.
 
-const { app, BrowserWindow, Menu, protocol, net, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, net, session, shell } = require('electron');
 const path = require('node:path');
+const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
+const { isInside, listBankFiles, scanLibrary } = require('./library.cjs');
 
 const DIST = path.join(__dirname, '..', 'dist');
 const SCHEME = 'app';
@@ -51,6 +53,48 @@ function allowMidi() {
   });
 }
 
+// ---- The voicebank library folder (chosen once, remembered) ------------------------------------------------------
+const CONFIG = () => path.join(app.getPath('userData'), 'library.json');
+function savedRoot() {
+  try {
+    const root = JSON.parse(fs.readFileSync(CONFIG(), 'utf8')).root;
+    return typeof root === 'string' && root ? root : null;
+  } catch {
+    return null;
+  }
+}
+function saveRoot(root) {
+  fs.writeFileSync(CONFIG(), JSON.stringify({ root }));
+}
+function libraryState(root) {
+  return root ? { root, ...scanLibrary(root) } : { root: null, ok: true, entries: [] };
+}
+function registerLibrary() {
+  ipcMain.handle('library:get', () => libraryState(savedRoot()));
+  ipcMain.handle('library:choose', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Choose the folder where your voicebanks live',
+      properties: ['openDirectory', 'createDirectory'],
+      buttonLabel: 'Use this folder',
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    saveRoot(res.filePaths[0]);
+    return libraryState(res.filePaths[0]);
+  });
+  // Everything below only touches paths inside the chosen folder.
+  ipcMain.handle('library:files', (_e, bankPath) => {
+    const root = savedRoot();
+    if (!root || typeof bankPath !== 'string' || !isInside(root, bankPath)) throw new Error('Not inside the voicebank folder');
+    return listBankFiles(bankPath);
+  });
+  ipcMain.handle('library:read', async (_e, filePath) => {
+    const root = savedRoot();
+    if (!root || typeof filePath !== 'string' || !isInside(root, filePath)) throw new Error('Not inside the voicebank folder');
+    return fs.promises.readFile(filePath);
+  });
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1180,
@@ -60,6 +104,7 @@ function createWindow() {
     title: 'HillSing',
     backgroundColor: '#14171c',
     webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -88,6 +133,7 @@ function buildMenu() {
 
 app.whenReady().then(async () => {
   registerProtocol();
+  registerLibrary();
   allowMidi();
   buildMenu();
   // Start from an empty HTTP cache so nothing from an older build can be shown (settings in localStorage are untouched).

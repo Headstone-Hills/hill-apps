@@ -321,3 +321,9 @@ button.nudge { outline: 2px solid var(--next); box-shadow: 0 0 10px var(--next);
 #rec-btn.recording { background: #c0332b; border-color: #ff4a3d; color: #fff; }
 .rec-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
 #rec-status { min-height: 1.3em; }
+
+/* ---- First-run voicebank folder prompt ---- */
+dialog.welcome { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; max-width: 460px; }
+dialog.welcome::backdrop { background: rgba(0, 0, 0, 0.6); }
+dialog.welcome h2 { margin: 0 0 8px; font-size: 18px; }
+.welcome-actions { display: flex; gap: 10px; margin-top: 12px; }
