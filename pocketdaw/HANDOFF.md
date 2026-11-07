@@ -44,9 +44,9 @@ Test command: `cd pocketdaw && python3 -m unittest discover -s tests` (stdlib on
 
 ## IMMEDIATE NEXT STEP — Phase 0, needs the real device
 
-**On the SP itself (no computer):** upload `pocketdaw-phase0.tar.gz` to `/root/` with the Termius SFTP browser, then:
+**On the SP itself (no computer):** upload `pocketdaw-phase0.tar` to `/root/` with the Termius SFTP browser, then:
 ```
-mkdir -p /mnt/sdcard/ports/pocketdaw && tar -xzf /root/pocketdaw-phase0.tar.gz -C /mnt/sdcard/ports/pocketdaw
+mkdir -p /mnt/sdcard/ports/pocketdaw && tar -xf /root/pocketdaw-phase0.tar -C /mnt/sdcard/ports/pocketdaw
 cd /mnt/sdcard/ports/pocketdaw && bash phase0.sh
 ```
 (Rebuild the tarball with `bash make_tarball.sh`.)
