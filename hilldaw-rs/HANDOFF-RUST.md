@@ -166,3 +166,12 @@ Keys: L2/R2 section, Up/Down row (voice: +-10), Left/Right value (Y: +-10), A ef
 - `app/src/fm1link.rs`: a thread owns the USB MIDI port, opened lazily on the first message and reopened after a failed write. **While HillDAW has the port open, `fm1tool`/`hdtool` cannot claim it** (usbfs: one claim per interface): quit HillDAW first, or use the tools before touching the FM-1 screen.
 - Controls marked `?` (reverb decay, delay decay, phaser freq/depth) could not be measured; the screen says so.
 - 25 app tests + 3 link tests; screens checked by snapshot. **Run on the SP 2026-11-08: the owner ran the checklist (voice steps change the sound, effect switch and value audible, test note, settings restored after restart) and reports everything works.** Not measured: how long the first message takes after opening the port.
+
+## Clock drift test (2026-11-08)
+
+Question: the FM-1 records on its clock, the SP plays on its own; do they agree well enough to record against the drums?
+Method (`core/src/drift.rs`): each clock is compared with the system's monotonic clock by a least-squares fit of frames against time (precise to a few ppm even with 20 ms timestamp jitter; tested).
+- `hdtool drift-cap [--secs 300]`: FM-1 capture clock. Prints a running figure every 30 s and saves `/root/drift-capture.txt`.
+- HillDAW itself counts the frames its audio callback delivers; after 30 s a line "AUDIO OUT 44100.xx Hz +n ppm" appears above the footer, and on quit the figures are saved to `hilldaw-drift.json` (state store) next to the program.
+- Relative drift = capture rate / output rate - 1. Rule of thumb: under ~20 ppm is negligible for a few-minute song (1.2 ms per minute); 50 ppm is 3 ms per minute (30 ms per 10 minutes).
+Run both together for 5+ minutes (HillDAW on the Mixer screen with the drums playing, `hdtool drift-cap --secs 300` in Termius). Not yet run on the SP.

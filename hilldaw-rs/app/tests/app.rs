@@ -536,3 +536,27 @@ fn the_fm1_screen_draws_every_tab_without_panicking() {
         press(&mut a, Btn::Right);
     }
 }
+
+#[test]
+fn the_output_clock_is_measured_from_the_audio_callback_with_a_known_error() {
+    let mut a = app();
+    assert!(a.out_clock().is_none(), "nothing before there is data");
+    // a sound card that really runs 80 ppm fast, with a callback that is up to 8 ms early or late
+    let real_rate = 44100.0 * (1.0 + 80e-6);
+    let mut buf = vec![0.0f32; 2048]; // 1024 frames per callback
+    let (mut frames, mut seed) = (0u64, 99u64);
+    for _ in 0..5200 {
+        frames += 1024;
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let jitter = ((seed >> 33) as f64 / (1u64 << 31) as f64 - 0.5) * 0.016;
+        a.audio_at(&mut buf, frames as f64 / real_rate + jitter);
+    }
+    let f = a.out_clock().expect("two minutes of data");
+    assert!((f.ppm - 80.0).abs() < 3.0, "measured {:+.1} ppm", f.ppm);
+    assert!(f.span_s > 110.0 && f.span_s < 130.0, "{}", f.span_s);
+    // it is on screen and is saved with the project
+    let mut fb = Fb::new();
+    a.render(&mut fb);
+    let lit_in_strip = (437 * 640..445 * 640).filter(|i| fb.px[*i as usize] != hill_core::fb::BG).count();
+    assert!(lit_in_strip > 100, "the readout is drawn ({lit_in_strip} px)");
+}

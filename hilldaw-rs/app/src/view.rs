@@ -52,6 +52,7 @@ impl HillDaw {
             View::Fm1 => self.draw_fm1(fb),
         }
         self.draw_footer(fb);
+        self.draw_clock(fb);
         self.toast.draw(fb);
         if self.help.open {
             self.help.draw(fb, "HillDAW", HELP);
@@ -255,6 +256,13 @@ impl HillDaw {
             }
         }
         fb.text(22, 372, "? = effect could not be measured; position from the vendor guide", 1, DIM);
+    }
+
+    /// The sound card's measured clock, once there are 30 s of data: what the drift test reads off the screen.
+    fn draw_clock(&self, fb: &mut Fb) {
+        if let Some(f) = self.out_clock() {
+            fb.text(12, 437, &format!("AUDIO OUT {:.2} Hz {:+.0} ppm  {:.0} s", f.rate_hz, f.ppm, f.span_s), 1, DIM);
+        }
     }
 
     fn draw_footer(&self, fb: &mut Fb) {

@@ -16,6 +16,7 @@ use hill_core::input::{Held, Repeat, TapTempo};
 use hill_core::presets;
 use hill_core::ui::{Help, Toast, QUIT_HOLD_MS};
 use hill_core::{fb::Fb, App, Btn, Host};
+use hilldaw_core::drift::{DriftEstimator, Fit};
 use hilldaw_core::drums::DrumPattern;
 use fm1link::{Fm1Msg, Fm1Out};
 use hilldaw_core::fm1::fx_map;
@@ -89,6 +90,11 @@ pub struct HillDaw {
     pub(crate) transport: Transport,
     rate: u32,
     spans: Vec<(u64, usize)>,
+    /// how fast the sound card really consumes frames, against the system clock (see `core/src/drift.rs`)
+    out_clock: DriftEstimator,
+    clock0: Option<std::time::Instant>,
+    out_frames: u64,
+    out_last_push: f64,
     /// loudest sample per strip since the last UI tick, then smoothed for drawing
     hold: [f32; STRIPS],
     hold_master: f32,
@@ -170,6 +176,10 @@ impl HillDaw {
             transport: Transport::new(rate),
             rate,
             spans: Vec::new(),
+            out_clock: DriftEstimator::new(rate as f64),
+            clock0: None,
+            out_frames: 0,
+            out_last_push: 0.0,
             hold: [0.0; STRIPS],
             hold_master: 0.0,
             meter: [0.0; STRIPS],
@@ -624,6 +634,80 @@ impl HillDaw {
     }
 }
 
+impl HillDaw {
+    /// The audio callback with the time given by the caller (tests drive it with a pretend clock).
+    pub fn audio_at(&mut self, out: &mut [f32], t_s: f64) {
+        self.out_frames += (out.len() / 2) as u64;
+        if t_s - self.out_last_push >= 0.2 {
+            self.out_last_push = t_s;
+            self.out_clock.push(t_s, self.out_frames);
+        }
+        out.fill(0.0);
+        let frames = out.len() / 2;
+        let mut spans = std::mem::take(&mut self.spans);
+        self.transport.advance(frames, &mut spans);
+        let mut at = 0usize;
+        for &(start, len) in &spans {
+            self.mixer.render(start, &mut out[at * 2..(at + len) * 2]);
+            for i in 0..STRIPS {
+                self.hold[i] = self.hold[i].max(self.mixer.tracks[i].peak);
+            }
+            self.hold_master = self.hold_master.max(self.mixer.master_peak);
+            at += len;
+        }
+        self.spans = spans;
+    }
+
+    /// Measured output clock after at least 30 s of running (`None` before).
+    pub fn out_clock(&self) -> Option<Fit> {
+        self.out_clock.fit(30.0)
+    }
+
+    fn tick_inner(&mut self, dt_ms: u32) {
+        self.ms += dt_ms as u64;
+        self.toast.tick(dt_ms);
+        if self.held.is(Btn::Start) && self.held.is(Btn::Select) {
+            self.quit_ms += dt_ms;
+        } else {
+            self.quit_ms = 0;
+        }
+        if !self.help.open {
+            if let Some(b) = self.rep.tick(dt_ms) {
+                self.act(b);
+            }
+        }
+        // meters: take the peak since the last tick, fall smoothly
+        let fall = (-(dt_ms as f32) / 300.0).exp();
+        for i in 0..STRIPS {
+            self.meter[i] = self.hold[i].max(self.meter[i] * fall);
+            self.hold[i] = 0.0;
+        }
+        self.meter_master = self.hold_master.max(self.meter_master * fall);
+        self.hold_master = 0.0;
+        if let Some((n, left)) = self.audition {
+            if left <= dt_ms {
+                self.audition = None;
+                self.fm1_send(Fm1Msg::NoteOff(n));
+            } else {
+                self.audition = Some((n, left - dt_ms));
+            }
+        }
+        self.status_ms += dt_ms;
+        if self.status_ms >= 500 {
+            self.status_ms = 0;
+            if let Ok(s) = self.status_src.lock() {
+                self.status = s.clone();
+            }
+            // the FM-1 just appeared (or was there at startup): send what the user chose
+            if self.status.fm1 && !self.fm1_was_up {
+                self.fm1_resync();
+            }
+            self.fm1_was_up = self.status.fm1;
+        }
+    }
+
+}
+
 impl App for HillDaw {
     fn name(&self) -> &'static str {
         "hilldaw"
@@ -696,20 +780,9 @@ impl App for HillDaw {
     }
 
     fn audio(&mut self, out: &mut [f32]) {
-        out.fill(0.0);
-        let frames = out.len() / 2;
-        let mut spans = std::mem::take(&mut self.spans);
-        self.transport.advance(frames, &mut spans);
-        let mut at = 0usize;
-        for &(start, len) in &spans {
-            self.mixer.render(start, &mut out[at * 2..(at + len) * 2]);
-            for i in 0..STRIPS {
-                self.hold[i] = self.hold[i].max(self.mixer.tracks[i].peak);
-            }
-            self.hold_master = self.hold_master.max(self.mixer.master_peak);
-            at += len;
-        }
-        self.spans = spans;
+        let now = std::time::Instant::now();
+        let t0 = *self.clock0.get_or_insert(now);
+        self.audio_at(out, now.duration_since(t0).as_secs_f64());
     }
 
     fn render(&self, fb: &mut Fb) {
@@ -717,46 +790,7 @@ impl App for HillDaw {
     }
 
     fn tick(&mut self, dt_ms: u32) {
-        self.ms += dt_ms as u64;
-        self.toast.tick(dt_ms);
-        if self.held.is(Btn::Start) && self.held.is(Btn::Select) {
-            self.quit_ms += dt_ms;
-        } else {
-            self.quit_ms = 0;
-        }
-        if !self.help.open {
-            if let Some(b) = self.rep.tick(dt_ms) {
-                self.act(b);
-            }
-        }
-        // meters: take the peak since the last tick, fall smoothly
-        let fall = (-(dt_ms as f32) / 300.0).exp();
-        for i in 0..STRIPS {
-            self.meter[i] = self.hold[i].max(self.meter[i] * fall);
-            self.hold[i] = 0.0;
-        }
-        self.meter_master = self.hold_master.max(self.meter_master * fall);
-        self.hold_master = 0.0;
-        if let Some((n, left)) = self.audition {
-            if left <= dt_ms {
-                self.audition = None;
-                self.fm1_send(Fm1Msg::NoteOff(n));
-            } else {
-                self.audition = Some((n, left - dt_ms));
-            }
-        }
-        self.status_ms += dt_ms;
-        if self.status_ms >= 500 {
-            self.status_ms = 0;
-            if let Ok(s) = self.status_src.lock() {
-                self.status = s.clone();
-            }
-            // the FM-1 just appeared (or was there at startup): send what the user chose
-            if self.status.fm1 && !self.fm1_was_up {
-                self.fm1_resync();
-            }
-            self.fm1_was_up = self.status.fm1;
-        }
+        self.tick_inner(dt_ms);
     }
 
     fn set_rate(&mut self, rate: f32) {
@@ -774,5 +808,10 @@ impl App for HillDaw {
     fn save(&mut self) {
         let json = self.project.to_json();
         self.lib.host_mut().save_state(STATE_KEY, &json);
+        // the measured output clock, for the drift test (read it from hilldaw-drift.json next to the program)
+        if let Some(f) = self.out_clock() {
+            let text = format!("output clock {:.3} Hz = {:+.1} ppm over {:.0} s, {} samples, timestamp jitter {:.1} ms\n", f.rate_hz, f.ppm, f.span_s, f.samples, f.jitter_ms);
+            self.lib.host_mut().save_state("hilldaw-drift", &text);
+        }
     }
 }
