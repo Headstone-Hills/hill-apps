@@ -12,46 +12,64 @@ import struct
 import wave
 
 
-def _samples(raw, subframe):
+def _to_int32(raw, subframe):
+    """Raw LE PCM -> array('i') with every sample left-aligned in 32 bits (value << shift).
+    Pure slice-assignment + array.frombytes: runs at C speed (the SP has no numpy)."""
+    import sys
+    from array import array
+    if subframe not in (2, 3, 4):
+        raise ValueError("unsupported subframe size %d" % subframe)
     n = len(raw) // subframe
-    if subframe == 2:
-        return list(struct.unpack("<%dh" % n, raw[:n * 2]))
-    if subframe == 3:
-        return [int.from_bytes(raw[i * 3:i * 3 + 3], "little", signed=True) for i in range(n)]
-    if subframe == 4:
-        return list(struct.unpack("<%di" % n, raw[:n * 4]))
-    raise ValueError("unsupported subframe size %d" % subframe)
+    out = bytearray(4 * n)
+    for b in range(subframe):
+        out[(4 - subframe) + b::4] = raw[b:n * subframe:subframe]
+    a = array("i")
+    a.frombytes(bytes(out))
+    if sys.byteorder == "big":
+        a.byteswap()
+    return a, 8 * (4 - subframe)
 
 
 def _db(x, full):
     return -999.0 if x <= 0 else 20 * math.log10(x / full)
 
 
-def analyze_pcm(raw, channels=2, subframe=3, rate=44100, silence_db=-70.0):
+def analyze_pcm(raw, channels=2, subframe=3, rate=44100, silence_db=-70.0, max_stat_samples=200000):
+    """Exact peak and L/R difference over every sample; RMS/DC/silence from an evenly strided
+    subset of at most `max_stat_samples` per channel (plenty for a level check)."""
+    import operator
     frame = channels * subframe
     full = float(1 << (subframe * 8 - 1))
     r = {"bytes": len(raw), "misaligned_bytes": len(raw) % frame, "channels": channels,
          "subframe": subframe, "rate": rate}
-    s = _samples(raw[:len(raw) - len(raw) % frame], subframe)
-    frames = len(s) // channels
+    raw = raw[:len(raw) - len(raw) % frame]
+    frames = len(raw) // frame
     r["frames"] = frames
     r["seconds"] = frames / float(rate) if rate else 0.0
     if frames == 0:
         r.update(peak_db=[-999.0] * channels, rms_db=[-999.0] * channels, dc=[0.0] * channels,
                  silent=True, lr_identical=None, lr_max_diff=None, silent_fraction=1.0)
         return r
-    chans = [s[c::channels] for c in range(channels)]
-    r["peak_db"] = [_db(max(abs(v) for v in ch), full) for ch in chans]
-    r["rms_db"] = [_db(math.sqrt(sum(v * v for v in ch) / len(ch)), full) for ch in chans]
-    r["dc"] = [sum(ch) / len(ch) / full for ch in chans]
-    thr = full * 10 ** (silence_db / 20.0)
-    r["silent_fraction"] = sum(1 for v in chans[0] if abs(v) < thr) / float(len(chans[0]))
+    arr, shift = _to_int32(raw, subframe)
+    f32 = float(1 << 31)
+    chans = [arr[c::channels] for c in range(channels)]
+    r["peak_db"] = [_db(max(max(ch), -min(ch)), f32) for ch in chans]
+    step = max(1, frames // max_stat_samples)
+    rms, dc = [], []
+    for ch in chans:
+        sub = ch[::step]
+        rms.append(_db(math.sqrt(math.fsum(float(v) * v for v in sub) / len(sub)), f32))
+        dc.append(math.fsum(sub) / len(sub) / f32)
+    r["rms_db"], r["dc"] = rms, dc
+    thr = f32 * 10 ** (silence_db / 20.0)
+    sub0 = chans[0][::step]
+    r["silent_fraction"] = sum(1 for v in sub0 if abs(v) < thr) / float(len(sub0))
     r["silent"] = max(r["peak_db"]) < silence_db
     if channels >= 2:
-        diff = max(abs(a - b) for a, b in zip(chans[0], chans[1]))
+        diff = max(map(abs, map(operator.sub, chans[0], chans[1]))) >> shift      # native LSBs
         r["lr_max_diff"] = diff
         r["lr_identical"] = diff == 0
-        r["lr_near_identical"] = diff <= full * 10 ** (-60 / 20.0)   # within -60 dBFS
+        r["lr_near_identical"] = diff <= full * 10 ** (-60 / 20.0)
     else:
         r["lr_identical"] = r["lr_max_diff"] = None
     return r

@@ -25,7 +25,7 @@ Legend: DONE+TESTED (unit tests / host) · WRITTEN (compiles, **not run on hardw
 |---|---|
 | USB-MIDI out/in layer, discovery by VID/PID, reconnect (`fm1_usb.py`) | Discovery + sysfs endpoint lookup PROVEN on hardware (found `/dev/bus/usb/008/002`, ep 0x04/0x84). MIDI out PROVEN (middle C played during capture). MIDI **in** PROVEN after fixing an ioctl-return bug: FM-1 sends NOTE ON/OFF on ch1 over ep 0x84 (velocity always 90 in the test). |
 | UAC1 descriptor parser (`usb_desc.py`) | PROVEN on the real device: parsed output matches the brief exactly. Real 334-byte blob is now a fixture (`tests/fixtures/fm1_descriptors.bin`, `RealDeviceTests`). |
-| Iso capture helper (`helper/isocap.c`, `build_helper.sh`) | PROVEN on hardware (`docs/PHASE0_RESULTS.md`): 4 s capture, 0 bad/empty packets, exactly 176,400 frames. Not yet tested for 60 s+ or under UI load. |
+| Iso capture helper (`helper/isocap.c`, `build_helper.sh`) | PROVEN on hardware (`docs/PHASE0_RESULTS.md`): 60 s capture, 60,000 packets, 0 bad/empty, exactly 2,646,000 frames. Not yet tested under UI/mixer load. |
 | `fm1tool.py` (`list`, `descriptors`, `note`, `midi-in`, `capture`, `wavcheck`) | WRITTEN; `capture --mock`, `wavcheck`, `list` verified off-device. `latency-test` from the brief **not written yet**. |
 | `wavcheck.py` numeric analysis (peak/RMS/silence/L-R identical) | DONE+TESTED |
 | `deploy.sh` (tar-over-ssh deploy, `phase0` runner) | WRITTEN, never run |
@@ -34,7 +34,7 @@ Legend: DONE+TESTED (unit tests / host) · WRITTEN (compiles, **not run on hardw
 Test command: `cd pocketdaw && python3 -m unittest discover -s tests` (stdlib only; 9 tests).
 
 ## Phase 0 result (2026-11-08): capture WORKS
-See [`docs/PHASE0_RESULTS.md`](docs/PHASE0_RESULTS.md). MIDI IN now proven too. Remaining Phase 0 items: a 60 s capture soak test (the first attempt was interrupted); then proceed to brief section 9 step 2 onward. The numbered "IMMEDIATE NEXT STEP" below is now historical.
+See [`docs/PHASE0_RESULTS.md`](docs/PHASE0_RESULTS.md). MIDI IN now proven too. Remaining Phase 0 items: (60 s soak now done); then proceed to brief section 9 step 2 onward. The numbered "IMMEDIATE NEXT STEP" below is now historical.
 
 ## Device facts learned from the user's SSH session (iPhone/Termius, root on the SP)
 - Tools on the SP: `curl`, `wget`, `tar`, **no `git`**. Python **3.11.8**. **numpy not installed** (vendor into `pylibs/` like the Hill apps).

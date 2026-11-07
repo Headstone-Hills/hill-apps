@@ -182,7 +182,7 @@ def cmd_capture(a):
         print("bytes %d vs %d expected at nominal rate (%.0f%%)" %
               (len(raw), expect, 100.0 * len(raw) / max(1, expect)))
     wavcheck.write_wav(a.out, raw, ch, sub, rate)
-    print("wrote", a.out)
+    print("wrote", a.out, "- analysing...", flush=True)
     print(wavcheck.format_report(wavcheck.analyze_pcm(raw, ch, sub, rate)))
     return 0
 

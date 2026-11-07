@@ -42,3 +42,27 @@ class WavCheckTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FastPathTests(unittest.TestCase):
+    def test_matches_brute_force(self):
+        import random, struct, math
+        random.seed(3)
+        n = 5000
+        L = [random.randint(-8000000, 8000000) for _ in range(n)]
+        R = [v + random.randint(-50, 50) for v in L]
+        L[1234], R[777] = -8388608, 8388607           # extremes incl. full-scale negative
+        raw = b"".join(a.to_bytes(3, "little", signed=True) + b.to_bytes(3, "little", signed=True)
+                       for a, b in zip(L, R))
+        r = wc.analyze_pcm(raw, 2, 3)
+        self.assertEqual(r["lr_max_diff"], max(abs(a - b) for a, b in zip(L, R)))
+        self.assertAlmostEqual(r["peak_db"][0], 20 * math.log10(8388608 / 8388608.0), places=6)
+        rms = math.sqrt(sum(v * v for v in L) / n)
+        self.assertAlmostEqual(r["rms_db"][0], 20 * math.log10(rms / 8388608.0), places=4)
+
+    def test_long_capture_is_fast(self):
+        import time
+        raw = wc.synth_tone(10, 440)                   # 10 s stereo 24-bit
+        t0 = time.time()
+        wc.analyze_pcm(raw, 2, 3)
+        self.assertLess(time.time() - t0, 5)
