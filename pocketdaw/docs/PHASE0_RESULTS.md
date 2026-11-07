@@ -12,7 +12,7 @@ Source: the user's pasted terminal output from `phase0.sh` (SSH from iPhone). mu
 | Signal | Peak -20.0 dBFS, RMS -33.5 dBFS; 21% of frames below -70 dBFS (the note plays for ~2 s of the 4 s). |
 | Idle capture, 3 s | **Exactly digital silence** (every sample 0). 132,652 frames in 3.01 s. Clean noise floor, nothing leaks into the stream when the synth is quiet. |
 | Left vs right | Not bit-identical while sounding: max difference 3253 LSB of 2^23 = about **-68 dBFS**, peaks -20.0 / -20.1 dBFS. Effectively mirrored; mono downmix by averaging is safe (loses nothing audible). Idle capture was identical. |
-| MIDI IN (ep 0x84), 8 s | **Nothing received. Inconclusive**: it was not confirmed that keys/knobs were pressed inside the window. Retry with a longer window. |
+| MIDI IN (ep 0x84), 8 s | **INVALID RESULT.** `UsbMidiDevice.read()` had a bug: `fcntl.ioctl()` with a bytes arg returns the buffer, not the byte count, so every read looked empty. Fixed (`_ioctl` helper + `tests/test_ioctl.py`). The user reports the FM-1 has sent MIDI to a computer over USB-C before, so a real answer is still needed. Rerun `midi-in` with the fixed build. |
 | VBUS | `regulator.20 axp2202-drivevbus` reads **disabled** while the FM-1 is attached and fully working. So that regulator is not what the kernel reports as supplying the FM-1; 5 V arrives by some other path. `/sys/devices/platform/soc/usbc0` has `otg_role` (rw) and `usb_host`/`usb_device`/`usb_null` (mode 0400), driven by an "otg manager" driver. Unexplored; nothing was written. |
 
 ## Not yet shown

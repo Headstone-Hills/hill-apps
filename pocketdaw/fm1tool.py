@@ -102,10 +102,19 @@ def cmd_midi_in(a):
     dev = usb.UsbMidiDevice(d)
     dev.open()
     print("listening %ds on endpoint 0x%02x - press FM-1 keys / turn knobs ..." % (a.seconds, d.ep_in))
-    end, got = time.monotonic() + a.seconds, 0
+    end, got, reads, empty, errs = time.monotonic() + a.seconds, 0, 0, 0, 0
     try:
         while time.monotonic() < end:
-            data = dev.read(100)
+            try:
+                data = dev.read(100)
+            except usb.UsbError as e:
+                errs += 1
+                print("read error:", e)
+                time.sleep(0.2)
+                continue
+            reads += 1
+            if not data:
+                empty += 1
             for i in range(0, len(data) - len(data) % 4, 4):
                 if data[i:i + 4] == b"\0\0\0\0":
                     continue
@@ -113,8 +122,13 @@ def cmd_midi_in(a):
                 print(" ".join(usb.decode_packets(data[i:i + 4])))
     finally:
         dev.close()
-    print("RESULT: %s" % ("FM-1 TRANSMITS MIDI (%d packets)" % got if got else
-                          "nothing received (keys may not emit USB MIDI, or no keys pressed)"))
+    print("reads=%d (timeouts=%d, errors=%d), MIDI packets=%d" % (reads, empty, errs, got))
+    if got:
+        print("RESULT: FM-1 TRANSMITS MIDI")
+    elif errs:
+        print("RESULT: read errors - the endpoint is not readable; see messages above")
+    else:
+        print("RESULT: endpoint readable (%d clean timeouts) but the FM-1 sent nothing" % empty)
     return 0
 
 

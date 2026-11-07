@@ -23,7 +23,7 @@ Legend: DONE+TESTED (unit tests / host) · WRITTEN (compiles, **not run on hardw
 
 | Item | State |
 |---|---|
-| USB-MIDI out/in layer, discovery by VID/PID, reconnect (`fm1_usb.py`) | Discovery + sysfs endpoint lookup PROVEN on hardware (found `/dev/bus/usb/008/002`, ep 0x04/0x84). MIDI out PROVEN (middle C played during capture). MIDI **in** ran but received nothing in 8 s: inconclusive. |
+| USB-MIDI out/in layer, discovery by VID/PID, reconnect (`fm1_usb.py`) | Discovery + sysfs endpoint lookup PROVEN on hardware (found `/dev/bus/usb/008/002`, ep 0x04/0x84). MIDI out PROVEN (middle C played during capture). MIDI **in** had a bug (ioctl returned the buffer, not the count) so the earlier 'nothing received' is **void**; fixed in `_ioctl`, needs a rerun on the device. |
 | UAC1 descriptor parser (`usb_desc.py`) | PROVEN on the real device: parsed output matches the brief exactly. Unit tests still use a **synthetic** fixture; swap in the real 334-byte `fm1_descriptors.bin` from the SP (`/mnt/sdcard/ports/pocketdaw/`). |
 | Iso capture helper (`helper/isocap.c`, `build_helper.sh`) | PROVEN on hardware (`docs/PHASE0_RESULTS.md`): 4 s capture, 0 bad/empty packets, exactly 176,400 frames. Not yet tested for 60 s+ or under UI load. |
 | `fm1tool.py` (`list`, `descriptors`, `note`, `midi-in`, `capture`, `wavcheck`) | WRITTEN; `capture --mock`, `wavcheck`, `list` verified off-device. `latency-test` from the brief **not written yet**. |

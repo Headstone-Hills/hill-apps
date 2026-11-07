@@ -51,6 +51,15 @@ if _PTR64:  # the values proven on the device (aarch64)
     assert USBDEVFS_BULK == 0xC0185502
 
 
+def _ioctl(fd, request, arg):
+    """ioctl returning the kernel's integer result.
+
+    fcntl.ioctl() given an immutable bytes arg returns a *copy of the buffer*, not the ioctl's
+    return value (USBDEVFS_BULK returns the transferred byte count). A bytearray makes it
+    return the int. (This bit midi-in once: every read looked empty.)"""
+    return fcntl.ioctl(fd, request, bytearray(arg))
+
+
 # --- USB-MIDI packets ---------------------------------------------------------
 CIN_NOTE_OFF, CIN_NOTE_ON, CIN_CC, CIN_PC, CIN_PB, CIN_SINGLE = 0x08, 0x09, 0x0B, 0x0C, 0x0E, 0x0F
 
@@ -207,7 +216,7 @@ class UsbMidiDevice(object):
     def open(self):
         try:
             self.fd = os.open(self.info.path, os.O_RDWR)
-            fcntl.ioctl(self.fd, USBDEVFS_CLAIMINTERFACE, struct.pack("I", self.info.iface))
+            _ioctl(self.fd, USBDEVFS_CLAIMINTERFACE, struct.pack("I", self.info.iface))
             self._claimed = True
         except OSError as e:
             self.close()
@@ -222,10 +231,10 @@ class UsbMidiDevice(object):
         buf = ctypes.create_string_buffer(bytes(data[:n]), n)
         req = struct.pack(_BULK_FMT, self.info.ep_out, n, self.timeout_ms, ctypes.addressof(buf))
         try:
-            sent = fcntl.ioctl(self.fd, USBDEVFS_BULK, req)
+            sent = _ioctl(self.fd, USBDEVFS_BULK, req)
         except OSError as e:
             raise UsbError("bulk write failed: %s" % e)
-        if isinstance(sent, int) and sent >= 0 and sent != n:
+        if sent >= 0 and sent != n:
             raise UsbError("short write %d/%d" % (sent, n))
 
     def read(self, timeout_ms=100, length=64):
@@ -236,12 +245,12 @@ class UsbMidiDevice(object):
         buf = ctypes.create_string_buffer(length)
         req = struct.pack(_BULK_FMT, self.info.ep_in, length, timeout_ms, ctypes.addressof(buf))
         try:
-            n = fcntl.ioctl(self.fd, USBDEVFS_BULK, req)
+            n = _ioctl(self.fd, USBDEVFS_BULK, req)
         except OSError as e:
             if e.errno == errno.ETIMEDOUT:
                 return b""
             raise UsbError("bulk read failed: %s" % e)
-        return bytes(buf.raw[:max(0, n)]) if isinstance(n, int) else b""
+        return bytes(buf.raw[:max(0, n)])
 
     def close(self):
         fd, self.fd = self.fd, None
@@ -249,7 +258,7 @@ class UsbMidiDevice(object):
             return
         if self._claimed:
             try:
-                fcntl.ioctl(fd, USBDEVFS_RELEASEINTERFACE, struct.pack("I", self.info.iface))
+                _ioctl(fd, USBDEVFS_RELEASEINTERFACE, struct.pack("I", self.info.iface))
             except OSError:
                 pass
             self._claimed = False
