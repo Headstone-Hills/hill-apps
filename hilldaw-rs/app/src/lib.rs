@@ -54,6 +54,7 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("FN + A", "tap tempo"),
     ("FN + X", "click on / off"),
     ("FN + B", "back to the start"),
+    ("FN + Y", "loop the drum arrangement on / off"),
     ("FN + L2/R2", "drum swing -/+"),
     ("FN + SELECT", "this help"),
     ("START + SELECT hold", "quit"),
@@ -266,6 +267,7 @@ impl HillDaw {
             }
         }
         self.arr_sel = self.arr_sel.min(self.project.drums.sections.len().saturating_sub(1));
+        self.apply_loop();
     }
 
     fn apply_mixer(&mut self) {
@@ -381,7 +383,24 @@ impl HillDaw {
                 self.transport.pos = 0;
                 self.toast.say("Back to start");
             }
+            Btn::Y => {
+                self.project.drums.loop_arrangement = !self.project.drums.loop_arrangement;
+                self.apply_loop();
+                self.toast.say(if self.project.drums.loop_arrangement { "Loop on" } else { "Loop off" });
+            }
             _ => {}
+        }
+    }
+
+    /// Wrap the transport at the end of the drum arrangement (when looping is on and there is an arrangement).
+    pub(crate) fn apply_loop(&mut self) {
+        let end = self.drum_total;
+        self.transport.loop_region = if self.project.drums.loop_arrangement && end > 0 { Some((0, end)) } else { None };
+        // an edit that shortened the arrangement must not leave the playhead beyond its new end
+        if let Some((_, e)) = self.transport.loop_region {
+            if self.transport.pos >= e {
+                self.transport.pos %= e;
+            }
         }
     }
 

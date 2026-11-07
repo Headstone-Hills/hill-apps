@@ -119,11 +119,13 @@ pub struct DrumsModel {
     pub solo: bool,
     /// where the first section starts on the timeline (frames)
     pub start: u64,
+    /// the transport wraps at the end of the drum arrangement, so a groove keeps going instead of stopping after its last bar
+    pub loop_arrangement: bool,
 }
 
 impl Default for DrumsModel {
     fn default() -> Self {
-        DrumsModel { enabled: true, sections: vec![], swing: 0.0, vol: [1.0; 8], mute: [false; 8], gain: 1.0, pan: 0.0, solo: false, start: 0 }
+        DrumsModel { enabled: true, sections: vec![], swing: 0.0, vol: [1.0; 8], mute: [false; 8], gain: 1.0, pan: 0.0, solo: false, start: 0, loop_arrangement: true }
     }
 }
 

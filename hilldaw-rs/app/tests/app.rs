@@ -560,3 +560,64 @@ fn the_output_clock_is_measured_from_the_audio_callback_with_a_known_error() {
     let lit_in_strip = (437 * 640..445 * 640).filter(|i| fb.px[*i as usize] != hill_core::fb::BG).count();
     assert!(lit_in_strip > 100, "the readout is drawn ({lit_in_strip} px)");
 }
+
+#[test]
+fn the_drums_keep_going_past_the_end_of_the_arrangement_while_looping() {
+    // regression: the starter groove is 4 cycles (4 bars) and used to fall silent after them
+    let mut a = app();
+    assert!(a.project.drums.loop_arrangement);
+    press(&mut a, Btn::Start);
+    let len = a.drum_frames() as usize;
+    assert!(len > 44100 * 8, "starter arrangement is about 9.6 s at 100 bpm: {len}");
+    render_audio(&mut a, len + 2 * 44100);
+    // two seconds after the end it is playing the groove again
+    let again = render_audio(&mut a, 2 * 44100);
+    assert!(peak(&again) > 0.05, "drums still sounding after the loop point");
+    assert!(a.bar_beat().0 <= 2, "the position wrapped back to the start: {:?}", a.bar_beat());
+}
+
+#[test]
+fn fn_y_turns_the_loop_off_and_then_the_arrangement_ends() {
+    let mut a = app();
+    with(&mut a, Btn::Fn, Btn::Y);
+    assert!(!a.project.drums.loop_arrangement);
+    assert!(a.toast_text().contains("Loop off"));
+    press(&mut a, Btn::Start);
+    let len = a.drum_frames() as usize;
+    render_audio(&mut a, len + 2 * 44100);
+    assert_eq!(peak(&render_audio(&mut a, 44100)), 0.0, "ended, nothing loops");
+    with(&mut a, Btn::Fn, Btn::Y);
+    assert!(a.toast_text().contains("Loop on"));
+}
+
+#[test]
+fn looping_is_identical_for_any_buffer_size_and_survives_an_edit_that_shortens_the_song() {
+    let render = |chunk: usize| {
+        let mut a = app();
+        press(&mut a, Btn::Start);
+        let mut all = Vec::new();
+        let mut left = 44100 * 14; // past the loop point
+        let mut buf = vec![0.0f32; chunk * 2];
+        while left > 0 {
+            let n = left.min(chunk);
+            a.audio(&mut buf[..n * 2]);
+            all.extend_from_slice(&buf[..n * 2]);
+            left -= n;
+        }
+        all
+    };
+    assert!(render(1024) == render(777), "wrapping at the loop point depends on the buffer size");
+    // shorten the song while the playhead is beyond the new end: it wraps instead of sitting past the end
+    let mut a = app();
+    press(&mut a, Btn::Start);
+    render_audio(&mut a, 44100 * 8);
+    press(&mut a, Btn::R1);
+    a.event(Btn::Y, true);
+    for _ in 0..3 {
+        press(&mut a, Btn::Left); // cycles 4 -> 1
+    }
+    a.event(Btn::Y, false);
+    assert_eq!(a.project.drums.sections[0].cycles, 1);
+    let out = render_audio(&mut a, 44100 * 3);
+    assert!(peak(&out) > 0.05, "still playing after the song got shorter");
+}

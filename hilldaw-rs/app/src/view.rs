@@ -101,9 +101,11 @@ impl HillDaw {
         let sw = 50 + (self.project.drums.swing * 100.0).round() as i32;
         fb.text(400, 90, &format!("{}/4  swing {sw}%", self.project.beats_per_bar), 1, DIM);
         fb.text(400, 106, &format!("click {}", if self.click_on { "on" } else { "off" }), 1, if self.click_on { ACCENT } else { DIM });
+        let looping = self.transport.loop_region.is_some();
+        fb.text(484, 106, if looping { "loop on" } else { "loop off" }, 1, if looping { ACCENT } else { DIM });
         let armed = self.armed.iter().filter(|a| **a).count();
         if armed > 0 {
-            fb.text(500, 106, &format!("{armed} armed"), 1, WARN);
+            fb.text(570, 106, &format!("{armed} armed"), 1, WARN);
         }
     }
 
