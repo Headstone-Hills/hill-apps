@@ -98,6 +98,33 @@ pub fn decode_mono(b: &[u8]) -> Result<(u32, Vec<f32>), String> {
     Ok((p.rate, out))
 }
 
+/// Resample mono audio from `from` Hz to `to` Hz with 4-point Hermite interpolation (what a take from a 48 kHz-only USB mic needs to play
+/// at the project rate). Cheap rather than studio-grade: fine below about 0.4 of the lower rate, with a little loss above.
+pub fn resample_mono(x: &[f32], from: u32, to: u32) -> Vec<f32> {
+    if x.is_empty() || from == 0 || to == 0 {
+        return Vec::new();
+    }
+    if from == to {
+        return x.to_vec();
+    }
+    let n = (x.len() as u64 * to as u64 / from as u64) as usize;
+    let step = from as f64 / to as f64;
+    let at = |i: i64| x[i.clamp(0, x.len() as i64 - 1) as usize];
+    (0..n)
+        .map(|k| {
+            let t = k as f64 * step;
+            let i = t.floor() as i64;
+            let f = (t - i as f64) as f32;
+            let (y0, y1, y2, y3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
+            let c0 = y1;
+            let c1 = 0.5 * (y2 - y0);
+            let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+            let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+            ((c3 * f + c2) * f + c1) * f + c0
+        })
+        .collect()
+}
+
 /// Linear-interpolation resample (cheap; fine for import and auditioning).
 pub fn resample_linear(a: &Audio, rate: u32) -> Audio {
     if a.rate == rate || a.frames() == 0 {
@@ -153,6 +180,25 @@ mod tests {
 
     fn ramp(frames: usize, rate: u32) -> Audio {
         Audio { rate, data: (0..frames).flat_map(|i| [i as f32 / frames as f32, -(i as f32) / frames as f32]).collect() }
+    }
+
+    #[test]
+    fn resample_mono_keeps_pitch_level_and_length() {
+        let sine = |hz: f64, rate: u32, n: usize| -> Vec<f32> { (0..n).map(|i| (2.0 * std::f64::consts::PI * hz * i as f64 / rate as f64).sin() as f32 * 0.8).collect() };
+        let x = sine(1000.0, 48_000, 48_000);
+        let y = resample_mono(&x, 48_000, 44_100);
+        assert_eq!(y.len(), 44_100, "one second stays one second");
+        // the same 1 kHz tone at the new rate: compare with a sine generated directly at 44.1 kHz
+        let want = sine(1000.0, 44_100, 44_100);
+        let worst = y.iter().zip(&want).skip(10).take(44_000).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(worst < 0.01, "1 kHz is reproduced to within 1%: {worst}");
+        // a higher tone still has its level
+        let hi = resample_mono(&sine(10_000.0, 48_000, 48_000), 48_000, 44_100);
+        let amp = hi[100..40_000].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(amp > 0.7 && amp < 0.85, "10 kHz keeps about its level: {amp}");
+        assert_eq!(resample_mono(&x, 48_000, 48_000), x);
+        assert!(resample_mono(&[], 48_000, 44_100).is_empty() && resample_mono(&x, 0, 44_100).is_empty());
+        assert_eq!(resample_mono(&sine(100.0, 44_100, 44_100), 44_100, 48_000).len(), 48_000);
     }
 
     #[test]

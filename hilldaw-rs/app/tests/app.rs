@@ -356,7 +356,7 @@ fn a_corrupt_saved_project_or_unknown_preset_does_not_stop_the_app() {
 fn status_bar_picks_up_battery_storage_and_fm1() {
     let st = status();
     let mut a = HillDaw::new(Box::new(MemHost::default()), st.clone());
-    *st.lock().unwrap() = Status { battery_pct: Some(45), charging: true, battery_low: false, free_bytes: Some(100 << 30), fm1: true };
+    *st.lock().unwrap() = Status { battery_pct: Some(45), charging: true, battery_low: false, free_bytes: Some(100 << 30), fm1: true, ..Default::default() };
     a.tick(600);
     assert_eq!(a.status().battery_pct, Some(45));
     assert!(a.status().fm1);

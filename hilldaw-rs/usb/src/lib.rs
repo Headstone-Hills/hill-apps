@@ -10,6 +10,7 @@
 #[cfg(not(target_pointer_width = "64"))]
 compile_error!("the usbfs struct layouts here are the 64-bit ones (aarch64 / x86_64)");
 
+pub mod audio;
 pub mod desc;
 pub mod dev;
 pub mod iso;

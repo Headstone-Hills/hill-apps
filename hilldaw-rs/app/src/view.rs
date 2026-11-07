@@ -104,10 +104,13 @@ impl HillDaw {
         };
         fb.text_right(x, 11, &sd, 1, sc);
         x -= Fb::text_w(&sd, 1) + 18;
-        // FM-1 on the USB bus
-        let (fm, fc) = if s.fm1 { ("FM-1", ACCENT) } else { ("FM-1 --", DIM) };
-        fb.text_right(x, 11, fm, 1, fc);
-        fb.rect(x - Fb::text_w(fm, 1) - 12, 12, 7, 7, fc);
+        // the audio input that would be recorded from (the FM-1, a mic, ...)
+        let (fm, fc) = match self.current_input() {
+            Some(i) => (hill_core::fb::clip(&i.name.to_uppercase(), 14), ACCENT),
+            None => ("NO INPUT".to_string(), DIM),
+        };
+        fb.text_right(x, 11, &fm, 1, fc);
+        fb.rect(x - Fb::text_w(&fm, 1) - 12, 12, 7, 7, fc);
     }
 
     fn draw_transport(&self, fb: &mut Fb) {
@@ -265,6 +268,8 @@ impl HillDaw {
     /// FM-1 screen: voice (Program Change) and the effect controls. Unset values show "--": the unit's real state is unknown.
     fn draw_fm1(&self, fb: &mut Fb) {
         fb.rect(10, 138, 620, 262, PANEL);
+        let (ms, mc) = if self.status.fm1 { ("FM-1 MIDI: connected", ACCENT) } else { ("FM-1 MIDI: not found", DIM) };
+        fb.text(22, 388, ms, 1, mc);
         let effects = hilldaw_core::fm1::fx_map().effects();
         let mut x = 22;
         let names: Vec<&str> = std::iter::once("VOICE").chain(effects.iter().map(|(e, _)| *e)).collect();
@@ -458,34 +463,49 @@ impl HillDaw {
                 fb.text(22, 386, "Reverb room is shared by every track. Delay needs its mix above off.", 1, DIM);
             }
             TrackTab::Input => {
-                fb.text(26, 176, "FM-1 input level", 2, TEXT);
-                hbar(fb, 26, 206, 400, 18, self.in_level, self.in_hold);
+                fb.text(26, 168, "Input level", 2, TEXT);
+                hbar(fb, 26, 192, 400, 16, self.in_level, self.in_hold);
                 for db in [-48.0f32, -24.0, -12.0, -6.0, 0.0] {
                     let x = 26 + ((db + 60.0) / 60.0 * 400.0) as i32;
-                    fb.rect(x, 226, 1, 5, DIM);
-                    fb.text(x - 12, 234, &format!("{db:.0}"), 1, DIM);
+                    fb.rect(x, 210, 1, 5, DIM);
+                    fb.text(x - 12, 218, &format!("{db:.0}"), 1, DIM);
                 }
                 if self.clip_ms > 0 {
-                    fb.text(440, 208, "CLIP", 2, WARN);
+                    fb.text(440, 194, "CLIP", 2, WARN);
                 }
                 if let Some(e) = &self.monitor_err {
-                    fb.text(26, 252, &hill_core::fb::clip(&format!("No input: {e}"), 70), 1, WARN);
+                    fb.text(26, 230, &hill_core::fb::clip(&format!("No input: {e}"), 70), 1, WARN);
                 } else if !self.input_live() {
-                    fb.text(26, 252, "Waiting for the FM-1 ...", 1, DIM);
+                    fb.text(26, 230, "Waiting for the input ...", 1, DIM);
                 }
+                // row 0: which input; its format on the line below
+                let device = match (&self.settings.input_device, self.current_input()) {
+                    (None, Some(i)) => format!("Auto: {}", i.name),
+                    (None, None) => "Auto: none found".to_string(),
+                    (Some(_), Some(i)) => i.name.clone(),
+                    (Some(id), None) => format!("{id} (not connected)"),
+                };
                 let ms = self.project.latency_offset_frames as f64 / 44.1;
-                let rows = [("Latency offset", format!("{ms:.0} ms")), ("Count-in", (if self.project.count_in { "on" } else { "off" }).to_string())];
+                let rows = [("Input", hill_core::fb::clip(&device, 22)), ("Latency offset", format!("{ms:.0} ms")), ("Count-in", (if self.project.count_in { "on" } else { "off" }).to_string())];
+                let ys = [244, 280, 308];
                 for (r, (label, value)) in rows.iter().enumerate() {
-                    let y = 276 + r as i32 * 28;
+                    let y = ys[r];
                     if r == self.track_row {
                         sel_bar(fb, y, 26);
                     }
                     fb.text(26, y + 2, label, 2, TEXT);
-                    fb.text(300, y + 2, value, 2, WHITE);
+                    fb.text(300, y + 2, value, 2, if r == 0 && self.current_input().is_none() { DIM } else { WHITE });
+                }
+                if let Some(i) = self.current_input() {
+                    let note = if i.rate == 44100 { i.summary.clone() } else { format!("{}  (resampled to 44.1 kHz)", i.summary) };
+                    fb.text(300, 266, &hill_core::fb::clip(&note, 40), 1, DIM);
+                } else {
+                    fb.text(300, 266, "plug in a USB audio input (mic, interface, FM-1)", 1, DIM);
                 }
                 fb.text(22, 346, "The meter runs while a track is armed or this tab is open.", 1, DIM);
-                fb.text(22, 358, "Play your loudest part; set the FM-1 volume so peaks reach about -6.", 1, DIM);
-                fb.text(22, 374, "Raising the latency offset moves takes earlier (use it if takes sit late).", 1, DIM);
+                fb.text(22, 358, "Play your loudest part; set the input volume so peaks reach about -6.", 1, DIM);
+                fb.text(22, 370, "Raising the latency offset moves takes earlier (use it if takes sit late).", 1, DIM);
+                fb.text(22, 382, "Input: Left/Right picks Auto or a device. Class-compliant USB mics work; USB 2.0 audio is not supported yet.", 1, DIM);
             }
             TrackTab::Loop => {
                 let bar = self.bar_frames();

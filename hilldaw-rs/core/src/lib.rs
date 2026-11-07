@@ -21,6 +21,7 @@ pub mod project;
 pub mod record;
 pub mod sampler;
 pub mod session;
+pub mod settings;
 pub mod tempo;
 pub mod transport;
 pub mod wav;

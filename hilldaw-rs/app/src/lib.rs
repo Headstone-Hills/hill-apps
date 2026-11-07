@@ -31,7 +31,8 @@ use std::collections::HashMap;
 use hilldaw_core::project::{ClipModel, DrumSectionModel, ExportFormat, Project, TakeModel, TrackFxModel, MAX_DRUM_SECTIONS, MAX_SECTION_CYCLES, MAX_TRACKS};
 use hilldaw_core::transport::Transport;
 use hilldaw_drums::{find_preset, DrumLibrary};
-use status::{Status, StatusHandle};
+use hilldaw_core::settings::{Settings, SETTINGS_KEY};
+use status::{effective_input, InputSummary, Status, StatusHandle};
 use std::sync::Arc;
 
 /// Key under which the project is kept in the host's state store.
@@ -155,6 +156,9 @@ pub struct HillDaw {
     lib: DrumLibrary,
     status_src: StatusHandle,
     pub(crate) status: Status,
+    pub(crate) settings: Settings,
+    /// the input the meter is currently listening to (to notice when the automatic choice changes)
+    monitored: Option<String>,
     pub project: Project,
     pub(crate) mixer: Mixer,
     pub(crate) transport: Transport,
@@ -269,6 +273,7 @@ impl HillDaw {
     pub fn new(host: Box<dyn Host>, status: StatusHandle) -> Self {
         let mut lib = DrumLibrary::new(host);
         let mut toast = Toast::default();
+        let settings = lib.host_mut().load_state(SETTINGS_KEY).map(|t| Settings::from_json(&t)).unwrap_or_default();
         let mut project = match lib.host_mut().load_state(STATE_KEY) {
             Some(text) => Project::from_json(&text).unwrap_or_else(|e| {
                 toast.say("Saved project unreadable: new one");
@@ -288,6 +293,8 @@ impl HillDaw {
             lib,
             status_src: status,
             status: Status::default(),
+            settings,
+            monitored: None,
             project,
             mixer: Mixer::new(rate, 1024),
             transport: Transport::new(rate),
@@ -367,6 +374,9 @@ impl HillDaw {
     /// Connect recording: the FM-1 capture and the place recordings are stored and read back from.
     pub fn with_recorder(mut self, r: Box<dyn Recorder>) -> Self {
         self.recorder = Some(r);
+        if let Some(r) = self.recorder.as_mut() {
+            r.select_input(self.settings.input_device.clone());
+        }
         for i in 0..MAX_TRACKS {
             self.rebuild_track(i);
         }
@@ -873,13 +883,14 @@ impl HillDaw {
                 }
             }
             TrackTab::Input => {
-                self.track_row = self.track_row.min(1);
+                self.track_row = self.track_row.min(2);
                 match b {
                     Btn::Up => self.track_row = self.track_row.saturating_sub(1),
-                    Btn::Down => self.track_row = (self.track_row + 1).min(1),
+                    Btn::Down => self.track_row = (self.track_row + 1).min(2),
+                    Btn::Left | Btn::Right if self.track_row == 0 => self.change_input(if b == Btn::Right { 1 } else { -1 }),
                     Btn::Left | Btn::Right => {
                         let dir = if b == Btn::Right { 1i64 } else { -1 };
-                        if self.track_row == 0 {
+                        if self.track_row == 1 {
                             // about 1 ms (44 frames) a step, 5 ms with Y; never earlier than the capture (0) or later than 100 ms
                             let step = if big { 220 } else { 44 };
                             self.project.latency_offset_frames = (self.project.latency_offset_frames + dir * step).clamp(0, 4410);
@@ -887,12 +898,45 @@ impl HillDaw {
                             self.project.count_in = !self.project.count_in;
                         }
                     }
-                    Btn::A if self.track_row == 1 => self.project.count_in = !self.project.count_in,
+                    Btn::A if self.track_row == 2 => self.project.count_in = !self.project.count_in,
                     _ => {}
                 }
             }
             TrackTab::Loop => self.loop_act(b, big),
         }
+    }
+
+    /// The input in use right now (the chosen one, or the automatic pick), if it is attached.
+    pub(crate) fn current_input(&self) -> Option<&InputSummary> {
+        effective_input(&self.status.inputs, &self.settings.input_device)
+    }
+
+    /// Step the input choice through Auto and every attached device, remember it, tell the recorder, and restart the meter on the new one.
+    fn change_input(&mut self, dir: i32) {
+        if self.rec.is_some() {
+            self.toast.say("Stop recording first");
+            return;
+        }
+        let mut opts: Vec<Option<String>> = vec![None];
+        opts.extend(self.status.inputs.iter().map(|i| Some(i.id.clone())));
+        // a chosen device that is unplugged is not in the list: Right goes to the first device, Left to Auto
+        let cur = opts.iter().position(|o| *o == self.settings.input_device).unwrap_or(if dir > 0 { 0 } else { 1 });
+        let next = (cur as i32 + dir).rem_euclid(opts.len() as i32) as usize;
+        self.settings.input_device = opts[next].clone();
+        let json = self.settings.to_json();
+        self.lib.host_mut().save_state(SETTINGS_KEY, &json);
+        if let Some(r) = self.recorder.as_mut() {
+            r.select_input(self.settings.input_device.clone());
+            if self.monitoring {
+                let _ = r.monitor(false); // the meter reopens on the new input
+                self.monitoring = false;
+            }
+        }
+        self.monitor_err = None;
+        self.monitor_block_ms = 0;
+        self.in_hold = 0.0;
+        let name = self.current_input().map_or_else(|| "none found".to_string(), |i| i.name.clone());
+        self.toast.say(&hill_core::fb::clip(&format!("Input: {}", if self.settings.input_device.is_none() { format!("auto ({name})") } else { name }), 30));
     }
 
     fn takes_act(&mut self, b: Btn, strip: usize) {
@@ -1002,11 +1046,20 @@ impl HillDaw {
         self.monitor_block_ms = self.monitor_block_ms.saturating_sub(dt_ms);
         self.clip_ms = self.clip_ms.saturating_sub(dt_ms);
         let wanted = self.recorder.is_some() && self.rec.is_none() && (self.armed.iter().any(|a| *a) || (self.view == View::Track && self.track_tab == TrackTab::Input));
+        // the automatic choice can change while the meter runs (the FM-1 is plugged in): reopen on the new one
+        let eff = self.current_input().map(|i| i.id.clone());
+        if self.monitoring && self.monitored != eff {
+            if let Some(r) = self.recorder.as_mut() {
+                let _ = r.monitor(false);
+            }
+            self.monitoring = false;
+        }
         if wanted != self.monitoring && (!wanted || self.monitor_block_ms == 0) {
             if let Some(r) = self.recorder.as_mut() {
                 match r.monitor(wanted) {
                     Ok(()) => {
                         self.monitoring = wanted;
+                        self.monitored = if wanted { eff } else { None };
                         self.monitor_err = None;
                     }
                     Err(e) => {
@@ -1324,6 +1377,14 @@ impl HillDaw {
     pub fn bar_beat(&self) -> (u32, u32) {
         self.transport.bar_beat()
     }
+    /// The name of the input in use (`None` when nothing is attached).
+    pub fn input_name(&self) -> Option<&str> {
+        self.current_input().map(|i| i.name.as_str())
+    }
+    /// The chosen input id, or `None` for automatic.
+    pub fn selected_input(&self) -> Option<&str> {
+        self.settings.input_device.as_deref()
+    }
     pub fn track_tab(&self) -> TrackTab {
         self.track_tab
     }
@@ -1463,7 +1524,6 @@ impl HillDaw {
             }
         }
         self.export_poll();
-        self.monitor_tick(dt_ms);
         if !self.help.open {
             if let Some(b) = self.rep.tick(dt_ms) {
                 self.act(b);
@@ -1497,6 +1557,8 @@ impl HillDaw {
             }
             self.fm1_was_up = self.status.fm1;
         }
+        // after the status refresh, so the meter reacts to the device list of this very tick
+        self.monitor_tick(dt_ms);
     }
 
 }

@@ -19,6 +19,18 @@ pub struct BulkTransfer {
     pub data: *mut c_void,
 }
 
+/// `struct usbdevfs_ctrltransfer` (a control request on endpoint 0).
+#[repr(C)]
+pub struct CtrlTransfer {
+    pub request_type: u8,
+    pub request: u8,
+    pub value: u16,
+    pub index: u16,
+    pub length: u16,
+    pub timeout: u32,
+    pub data: *mut c_void,
+}
+
 #[repr(C)]
 pub struct SetInterface {
     pub interface: u32,
@@ -54,6 +66,8 @@ pub const URB_SIZE: usize = std::mem::size_of::<Urb>();
 pub const URB_TYPE_ISO: u8 = 0;
 pub const URB_ISO_ASAP: u32 = 2;
 
+/// `USBDEVFS_CONTROL`: 0xC0185500 on 64-bit Linux (checked against the real header with compile-time asserts, see HANDOFF).
+pub const CONTROL: u32 = ioc(IOC_READ | IOC_WRITE, b'U', 0, std::mem::size_of::<CtrlTransfer>());
 pub const CLAIMINTERFACE: u32 = ioc(IOC_READ, b'U', 15, 4);
 pub const RELEASEINTERFACE: u32 = ioc(IOC_READ, b'U', 16, 4);
 pub const SETINTERFACE: u32 = ioc(IOC_READ, b'U', 4, std::mem::size_of::<SetInterface>());
@@ -82,6 +96,16 @@ pub fn errno() -> i32 {
 mod tests {
     use super::*;
     use std::mem::{offset_of, size_of};
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn control_transfer_matches_the_64_bit_kernel_abi() {
+        // proven with _Static_assert against linux/usbdevice_fs.h (aarch64-linux-musl)
+        assert_eq!(size_of::<CtrlTransfer>(), 24);
+        assert_eq!((offset_of!(CtrlTransfer, request_type), offset_of!(CtrlTransfer, request), offset_of!(CtrlTransfer, value)), (0, 1, 2));
+        assert_eq!((offset_of!(CtrlTransfer, index), offset_of!(CtrlTransfer, length), offset_of!(CtrlTransfer, timeout), offset_of!(CtrlTransfer, data)), (4, 6, 8, 16));
+        assert_eq!(CONTROL, 0xC018_5500);
+    }
 
     // Printed by a C program compiled against <linux/usbdevice_fs.h> (see HANDOFF.md).
     #[test]

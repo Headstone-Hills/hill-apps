@@ -3,7 +3,7 @@
 use hill_core::fb::Fb;
 use hill_core::{App, Btn, Host, MemHost};
 use hilldaw_app::recorder::{ExportFile, RecInfo, Recorder};
-use hilldaw_app::status::{Status, StatusHandle};
+use hilldaw_app::status::{InputSummary, Status, StatusHandle};
 use hilldaw_app::{HillDaw, TrackTab, View};
 use hilldaw_core::project::{ExportFormat, TakeModel, TrackFxModel};
 use hilldaw_core::wav::decode;
@@ -42,6 +42,8 @@ struct State {
     monitor_calls: Vec<bool>,
     monitor_fail: Option<String>,
     level: f32,
+    /// every `select_input` the app made
+    selected: Vec<Option<String>>,
 }
 
 #[derive(Clone, Default)]
@@ -68,6 +70,9 @@ impl Recorder for Fake {
         let n = *self.0.lock().unwrap().files.get(rel)?;
         let k: f32 = rel.trim_start_matches("audio/rec-").trim_end_matches(".wav").parse().ok()?;
         Some((0..n).map(|i| i as f32 * k * 1e-5).collect())
+    }
+    fn select_input(&mut self, id: Option<String>) {
+        self.0.lock().unwrap().selected.push(id);
     }
     fn monitor(&mut self, on: bool) -> Result<(), String> {
         let mut s = self.0.lock().unwrap();
@@ -492,6 +497,7 @@ fn a_missing_fm1_is_shown_not_retried_every_tick_and_recording_takes_over_from_t
 fn the_latency_offset_can_be_nudged_and_moves_where_the_next_take_is_placed() {
     let (mut a, _f, mut clock) = recording_app();
     to_tab(&mut a, TrackTab::Input);
+    press(&mut a, Btn::Down); // row 0 is the input device; row 1 the latency offset
     assert_eq!(a.project.latency_offset_frames, 563);
     press(&mut a, Btn::Left);
     assert_eq!(a.project.latency_offset_frames, 519, "about 1 ms per step");
@@ -694,4 +700,145 @@ fn every_track_tab_draws_for_a_track_and_for_the_drums() {
             }
         }
     }
+}
+
+// ---- generic USB audio input ----
+
+const FM1: &str = "4c4a:c755";
+const MIC: &str = "1234:00ab";
+
+fn inputs(list: &[(&str, &str, &str, u32)]) -> Vec<InputSummary> {
+    list.iter().map(|(id, name, summary, rate)| InputSummary { id: id.to_string(), name: name.to_string(), summary: summary.to_string(), rate: *rate }).collect()
+}
+
+fn both_attached() -> Vec<InputSummary> {
+    inputs(&[(MIC, "Studio Mic", "1ch 16-bit 48 kHz", 48_000), (FM1, "FM-1", "2ch 24-bit 44.1 kHz", 44_100)])
+}
+
+/// An app on a shared host, with a status handle the test can fill in, and the Input tab open.
+fn input_app(host: &Shared) -> (HillDaw, Fake, StatusHandle) {
+    let fake = Fake::default();
+    let st = status();
+    let mut a = HillDaw::new(Box::new(host.clone()), st.clone()).with_recorder(Box::new(fake.clone()));
+    to_tab(&mut a, TrackTab::Input);
+    (a, fake, st)
+}
+
+#[test]
+fn the_automatic_input_is_the_fm1_when_attached_otherwise_the_first_and_the_top_bar_says_which() {
+    let (mut a, _f, st) = input_app(&Shared::default());
+    a.tick(600);
+    assert_eq!((a.input_name(), a.selected_input()), (None, None), "nothing attached");
+    st.lock().unwrap().inputs = inputs(&[(MIC, "Studio Mic", "1ch 16-bit 48 kHz", 48_000)]);
+    a.tick(600);
+    assert_eq!(a.input_name(), Some("Studio Mic"), "no FM-1: the first input");
+    st.lock().unwrap().inputs = both_attached();
+    a.tick(600);
+    assert_eq!(a.input_name(), Some("FM-1"), "the FM-1 wins automatically even though the mic is listed first");
+    for view in [View::Mixer, View::Track, View::Export] {
+        to_view(&mut a, view);
+        let mut fb = Fb::new();
+        a.render(&mut fb);
+        assert!(fb.px.iter().filter(|p| **p != hill_core::fb::BG).count() > 12_000);
+    }
+}
+
+#[test]
+fn the_input_is_chosen_with_left_right_remembered_across_restarts_and_given_to_the_recorder() {
+    let host = Shared::default();
+    let (mut a, fake, st) = input_app(&host);
+    st.lock().unwrap().inputs = both_attached();
+    a.tick(600);
+    assert_eq!(a.track_row(), 0);
+    press(&mut a, Btn::Right); // Auto -> first device (the mic)
+    assert_eq!((a.selected_input(), a.input_name()), (Some(MIC), Some("Studio Mic")));
+    press(&mut a, Btn::Right);
+    assert_eq!((a.selected_input(), a.input_name()), (Some(FM1), Some("FM-1")));
+    press(&mut a, Btn::Right); // round to Auto
+    assert_eq!(a.selected_input(), None);
+    press(&mut a, Btn::Left); // and back the other way
+    assert_eq!(a.selected_input(), Some(FM1));
+    press(&mut a, Btn::Left);
+    assert_eq!(a.selected_input(), Some(MIC));
+    assert_eq!(fake.0.lock().unwrap().selected.last().unwrap().as_deref(), Some(MIC), "the recorder was told");
+    assert!(a.toast_text().contains("Studio Mic"), "{}", a.toast_text());
+
+    // a restart remembers it and tells the recorder before anything is opened
+    let (b, fake2, st2) = input_app(&host);
+    assert_eq!(b.selected_input(), Some(MIC));
+    assert_eq!(fake2.0.lock().unwrap().selected.first().unwrap().as_deref(), Some(MIC));
+    // the choice is the device's, not the song's: it is not in the project file
+    let project_json = host.load_state("hilldaw").unwrap_or_default();
+    assert!(!project_json.contains(MIC), "the project file does not carry the input choice");
+    drop((b, st2));
+}
+
+#[test]
+fn a_chosen_input_that_is_unplugged_is_shown_as_such_and_not_replaced_by_another() {
+    let host = Shared::default();
+    let (mut a, _f, st) = input_app(&host);
+    st.lock().unwrap().inputs = both_attached();
+    a.tick(600);
+    press(&mut a, Btn::Right); // the mic
+    st.lock().unwrap().inputs = inputs(&[(FM1, "FM-1", "2ch 24-bit 44.1 kHz", 44_100)]); // the mic is unplugged
+    a.tick(600);
+    assert_eq!((a.selected_input(), a.input_name()), (Some(MIC), None), "still chosen, but there is no input: the FM-1 is not substituted");
+    let mut fb = Fb::new();
+    a.render(&mut fb);
+    // moving on from a missing choice lands on the first entry (Auto when going left, the first device going right)
+    press(&mut a, Btn::Left);
+    assert_eq!(a.selected_input(), None);
+    press(&mut a, Btn::Right);
+    assert_eq!(a.selected_input(), Some(FM1));
+}
+
+#[test]
+fn the_meter_reopens_on_the_new_input_when_the_choice_or_the_automatic_pick_changes() {
+    let settle = |a: &mut HillDaw| {
+        a.tick(600);
+        for _ in 0..3 {
+            a.tick(100);
+        }
+    };
+    let host = Shared::default();
+    let (mut a, fake, st) = input_app(&host);
+    st.lock().unwrap().inputs = inputs(&[(MIC, "Studio Mic", "1ch 16-bit 48 kHz", 48_000)]);
+    settle(&mut a);
+    assert!(fake.0.lock().unwrap().monitoring, "listening to the mic (the Input tab is open)");
+    // the FM-1 is plugged in: the automatic pick moves to it, so the meter reopens on it
+    let base = fake.0.lock().unwrap().monitor_calls.len();
+    st.lock().unwrap().inputs = both_attached();
+    settle(&mut a);
+    assert_eq!(&fake.0.lock().unwrap().monitor_calls[base..], &[false, true]);
+    assert!(fake.0.lock().unwrap().monitoring);
+    // choosing a device by hand reopens it too, and nothing else changes while it just keeps running
+    let base = fake.0.lock().unwrap().monitor_calls.len();
+    press(&mut a, Btn::Right);
+    settle(&mut a);
+    assert_eq!(&fake.0.lock().unwrap().monitor_calls[base..], &[false, true]);
+    let base = fake.0.lock().unwrap().monitor_calls.len();
+    settle(&mut a);
+    assert_eq!(fake.0.lock().unwrap().monitor_calls.len(), base, "no churn while nothing changes");
+}
+
+#[test]
+fn the_input_cannot_be_changed_while_recording() {
+    let host = Shared::default();
+    let fake = Fake::default();
+    let st = status();
+    let mut a = HillDaw::new(Box::new(host), st.clone()).with_recorder(Box::new(fake.clone()));
+    st.lock().unwrap().inputs = both_attached();
+    a.tick(600);
+    remove_drums(&mut a);
+    with(&mut a, Btn::Fn, Btn::L1);
+    press(&mut a, Btn::A);
+    let mut clock = Clock(0);
+    a.set_test_clock(Some(0.0));
+    press(&mut a, Btn::Select);
+    clock.run(&mut a, 4410);
+    to_tab(&mut a, TrackTab::Input);
+    press(&mut a, Btn::Right);
+    assert!(a.toast_text().contains("Stop recording first"), "{}", a.toast_text());
+    assert_eq!(a.selected_input(), None);
+    press(&mut a, Btn::Select);
 }

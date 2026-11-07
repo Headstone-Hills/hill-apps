@@ -103,6 +103,12 @@ pub struct IsoCapture {
 impl IsoCapture {
     /// Claim the streaming interface, select the alt setting (alt 0 has no bandwidth), allocate URBs.
     pub fn open(info: &DeviceInfo, alt: &StreamAlt, frames_per_urb: usize, n_urbs: usize) -> Result<Self, UsbError> {
+        Self::open_with_rate(info, alt, None, frames_per_urb, n_urbs)
+    }
+
+    /// Like [`Self::open`], and for a device that offers several rates, tell it which one to stream at (best effort: a device that
+    /// refuses keeps its default, and the caller can see which rate it really delivers from the packet sizes).
+    pub fn open_with_rate(info: &DeviceInfo, alt: &StreamAlt, rate: Option<u32>, frames_per_urb: usize, n_urbs: usize) -> Result<Self, UsbError> {
         let fd = dev::open_node(info)?;
         if let Err(e) = dev::claim(fd, alt.iface) {
             unsafe { libc::close(fd) };
@@ -114,6 +120,9 @@ impl IsoCapture {
             dev::release(fd, alt.iface);
             unsafe { libc::close(fd) };
             return Err(e);
+        }
+        if let Some(r) = rate.filter(|_| alt.rates.len() > 1) {
+            let _ = dev::set_sampling_rate(fd, alt.ep, r);
         }
         let maxpkt = alt.max_packet as usize;
         let bufs = (0..n_urbs.clamp(1, 64)).map(|i| UrbBuf::new(frames_per_urb.max(1), maxpkt, alt.ep, i)).collect();

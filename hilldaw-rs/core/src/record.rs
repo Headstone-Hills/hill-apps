@@ -34,6 +34,54 @@ impl Downmixer {
     }
 }
 
+/// Any PCM capture format -> 24-bit little-endian mono, the average of all channels. Handles 16-, 24- and 32-bit signed samples
+/// (32-bit keeps its top 24 bits) and carries bytes that do not complete a frame to the next call. For 2 channels of 24-bit it gives
+/// exactly what [`Downmixer`] does.
+pub struct MonoMixer {
+    channels: usize,
+    bytes: usize,
+    carry: Vec<u8>,
+}
+
+impl MonoMixer {
+    /// `bytes_per_sample` must be 2, 3 or 4 and `channels` at least 1.
+    pub fn new(channels: u8, bytes_per_sample: u8) -> Self {
+        assert!(matches!(bytes_per_sample, 2..=4) && channels >= 1, "unsupported capture format");
+        MonoMixer { channels: channels as usize, bytes: bytes_per_sample as usize, carry: Vec::new() }
+    }
+
+    pub fn frame_bytes(&self) -> usize {
+        self.channels * self.bytes
+    }
+
+    fn sample(&self, b: &[u8]) -> i32 {
+        match self.bytes {
+            2 => (i16::from_le_bytes([b[0], b[1]]) as i32) << 8,
+            3 => (((b[2] as i8) as i32) << 16) | ((b[1] as i32) << 8) | b[0] as i32,
+            _ => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) >> 8,
+        }
+    }
+
+    pub fn push(&mut self, input: &[u8], out: &mut Vec<u8>) {
+        let mut buf;
+        let data: &[u8] = if self.carry.is_empty() {
+            input
+        } else {
+            buf = std::mem::take(&mut self.carry);
+            buf.extend_from_slice(input);
+            &buf
+        };
+        let fb = self.frame_bytes();
+        let whole = data.len() - data.len() % fb;
+        for f in data[..whole].chunks_exact(fb) {
+            let sum: i64 = f.chunks_exact(self.bytes).map(|s| self.sample(s) as i64).sum();
+            let m = sum.div_euclid(self.channels as i64) as i32; // floor, like `>> 1` for two channels
+            out.extend_from_slice(&m.to_le_bytes()[..3]);
+        }
+        self.carry = data[whole..].to_vec();
+    }
+}
+
 /// 24-bit mono bytes -> float (for analysis and onset detection).
 pub fn mono24_to_f32(b: &[u8]) -> Vec<f32> {
     b.chunks_exact(3).map(|p| ((((p[2] as i8) as i32) << 16) | ((p[1] as i32) << 8) | p[0] as i32) as f32 / 8388608.0).collect()
@@ -124,6 +172,60 @@ mod tests {
         let mut v = l.to_le_bytes()[..3].to_vec();
         v.extend_from_slice(&r.to_le_bytes()[..3]);
         v
+    }
+
+    #[test]
+    fn mono_mixer_matches_the_fm1_downmixer_and_handles_other_formats() {
+        // 2ch 24-bit: identical to Downmixer for any input
+        let mut bytes = Vec::new();
+        for i in 0..500i32 {
+            bytes.extend(stereo24((i * 7919 % 8_000_000) - 4_000_000, -(i * 104_729 % 8_000_000) + 4_000_000));
+        }
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        Downmixer::default().push(&bytes, &mut a);
+        MonoMixer::new(2, 3).push(&bytes, &mut b);
+        assert!(a == b, "same 24-bit stereo result");
+
+        // mono 16-bit: the value moved up into 24 bits
+        let mut m = Vec::new();
+        MonoMixer::new(1, 2).push(&[0x34, 0x12, 0x00, 0x80], &mut m); // 0x1234, -32768
+        let v: Vec<i32> = m.chunks(3).map(|c| (((c[2] as i8) as i32) << 16) | ((c[1] as i32) << 8) | c[0] as i32).collect();
+        assert_eq!(v, vec![0x1234 << 8, -32768 << 8]);
+
+        // stereo 16-bit averages; 32-bit keeps the top 24 bits; 4 channels average all of them
+        let mut m = Vec::new();
+        MonoMixer::new(2, 2).push(&[0x00, 0x10, 0x00, 0x30], &mut m); // 0x1000 and 0x3000 -> 0x2000
+        assert_eq!(m, (0x2000i32 << 8).to_le_bytes()[..3].to_vec());
+        let mut m = Vec::new();
+        MonoMixer::new(1, 4).push(&0x7FFF_FF00i32.to_le_bytes(), &mut m);
+        assert_eq!(m, vec![0xFF, 0xFF, 0x7F], "top 24 bits of a 32-bit sample");
+        let mut m = Vec::new();
+        let mut four = Vec::new();
+        for v in [100i32, 200, 300, 400] {
+            four.extend_from_slice(&v.to_le_bytes()[..3]);
+        }
+        MonoMixer::new(4, 3).push(&four, &mut m);
+        assert_eq!(m, 250i32.to_le_bytes()[..3].to_vec());
+    }
+
+    #[test]
+    fn mono_mixer_carries_a_partial_frame_between_packets_for_any_split() {
+        let mut bytes = Vec::new();
+        for i in 0..200i16 {
+            bytes.extend_from_slice(&(i * 150).to_le_bytes());
+            bytes.extend_from_slice(&(-i * 90).to_le_bytes());
+        }
+        let mut whole = Vec::new();
+        MonoMixer::new(2, 2).push(&bytes, &mut whole);
+        for split in [1usize, 3, 5, 7, 99] {
+            let mut mx = MonoMixer::new(2, 2);
+            let mut got = Vec::new();
+            for c in bytes.chunks(split) {
+                mx.push(c, &mut got);
+            }
+            assert!(got == whole, "split {split}");
+        }
+        assert_eq!(whole.len(), 200 * 3);
     }
 
     #[test]

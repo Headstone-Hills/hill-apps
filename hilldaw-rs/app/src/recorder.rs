@@ -1,4 +1,4 @@
-//! Capturing the FM-1 to disk, and reading recordings back for playback.
+//! Capturing a USB audio input (the FM-1, or any class-compliant USB mic or interface) to disk, and reading recordings back for playback.
 //!
 //! The app talks to a [`Recorder`] and never to USB, so everything about *which frames belong to which take* (that is
 //! `hilldaw_core::session::RecordSession`) is tested without hardware. The real recorder is [`UsbRecorder`]: one continuous
@@ -7,12 +7,12 @@
 //! about once a second so a crash or power loss leaves a valid file that is at most a second short.
 
 use hilldaw_core::project::is_safe_relative;
-use hilldaw_core::record::{Downmixer, StreamingWav};
-use hilldaw_core::wav::decode_mono;
-use hilldaw_usb::desc::{parse_audio_streams, pick_capture};
-use hilldaw_usb::dev::{find_devices, SYSFS_USB};
+use hilldaw_core::record::{MonoMixer, StreamingWav};
+use hilldaw_core::wav::{decode_mono, resample_mono};
+pub use hilldaw_usb::audio::{pick_input, FM1_ID};
+use hilldaw_usb::audio::{list_inputs, AudioInput};
+use hilldaw_usb::dev::SYSFS_USB;
 use hilldaw_usb::iso::IsoCapture;
-use hilldaw_usb::{FM1_PID, FM1_VID};
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -46,6 +46,9 @@ pub trait Recorder: Send {
     fn finish(&mut self, min_frames: u64) -> Result<RecInfo, String>;
     /// A recording as mono float, for playback.
     fn load(&mut self, rel: &str) -> Option<Vec<f32>>;
+    /// Which USB audio input to use: `Some("vid:pid")` for that device, `None` for automatic (the FM-1 if it is there, else the first input
+    /// found). Takes effect the next time the capture is opened.
+    fn select_input(&mut self, _id: Option<String>) {}
     /// Start or stop listening to the FM-1 without writing anything, so the input level can be shown before recording.
     fn monitor(&mut self, _on: bool) -> Result<(), String> {
         Ok(())
@@ -101,15 +104,16 @@ pub fn load_recording(project_dir: &Path, rel: &str) -> Option<Vec<f32>> {
     }
     let bytes = std::fs::read(&path).ok()?;
     let (rate, mono) = decode_mono(&bytes).ok()?;
-    if rate != RATE {
-        eprintln!("hilldaw: {rel} is {rate} Hz, expected {RATE}");
+    if rate == 0 || rate > 384_000 {
         return None;
     }
-    Some(mono)
+    // a take from a device that cannot do 44.1 kHz was captured at its own rate (48 kHz usually); bring it to the project rate once,
+    // here, so the rest of the app works in project frames
+    Some(if rate == RATE { mono } else { resample_mono(&mono, rate, RATE) })
 }
 
 /// The pieces of a running capture, before it is filed as the recording or the monitor.
-type Launched = (Arc<AtomicBool>, Arc<AtomicU64>, Arc<AtomicU64>, JoinHandle<Result<(), String>>);
+type Launched = (Arc<AtomicBool>, Arc<AtomicU64>, Arc<AtomicU64>, JoinHandle<Result<(), String>>, u32);
 
 struct Active {
     stop: Arc<AtomicBool>,
@@ -118,6 +122,8 @@ struct Active {
     capture: JoinHandle<Result<(), String>>,
     /// `None` while only monitoring
     writer: Option<JoinHandle<u64>>,
+    /// the device's sample rate (frames counted by `captured` and written by the writer are at this rate)
+    rate: u32,
 }
 
 /// The FM-1 over USB, written under `<project_dir>/audio/`.
@@ -126,33 +132,32 @@ pub struct UsbRecorder {
     active: Option<Active>,
     /// listening only (no file)
     monitor: Option<Active>,
+    /// the input chosen by the user (`vid:pid`); `None` = automatic
+    selected: Option<String>,
+    /// where USB devices are listed (the real sysfs; tests use a temp folder)
+    sysfs: PathBuf,
     /// loudest sample since the last `level()`, in 24-bit units
     peak: Arc<AtomicU64>,
 }
 
 impl UsbRecorder {
     pub fn new(project_dir: impl Into<PathBuf>) -> Self {
-        UsbRecorder { project_dir: project_dir.into(), active: None, monitor: None, peak: Arc::new(AtomicU64::new(0)) }
+        UsbRecorder { project_dir: project_dir.into(), active: None, monitor: None, selected: None, sysfs: PathBuf::from(SYSFS_USB), peak: Arc::new(AtomicU64::new(0)) }
     }
 }
 
 impl UsbRecorder {
-    /// Open the FM-1's capture stream and run it on its own thread. With a writer the audio goes to disk too; without one it is only
+    /// Open the chosen input's capture stream and run it on its own thread. With a writer the audio goes to disk too; without one it is only
     /// measured (the input meter). The iso handle is created on the capture thread and never leaves it.
-    fn launch(&self, tx: Option<mpsc::SyncSender<Vec<u8>>>) -> Result<Launched, String> {
-        let info = find_devices(FM1_VID, FM1_PID, Path::new(SYSFS_USB)).into_iter().next().ok_or("FM-1 not found")?;
+    fn launch(&self, input: AudioInput, tx: Option<mpsc::SyncSender<Vec<u8>>>) -> Result<Launched, String> {
+        let rate = input.rate;
         let stop = Arc::new(AtomicBool::new(false));
         let captured = Arc::new(AtomicU64::new(0));
         let overruns = Arc::new(AtomicU64::new(0));
         let (st, cf, ov, pk) = (stop.clone(), captured.clone(), overruns.clone(), self.peak.clone());
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         let capture = std::thread::spawn(move || {
-            let streams = parse_audio_streams(&info.descriptors().unwrap_or_default());
-            let opened = match pick_capture(&streams, RATE) {
-                Some(cap) => IsoCapture::open(&info, cap, 16, 8).map_err(|e| e.to_string()),
-                None => Err("no capture endpoint".to_string()),
-            };
-            let mut cp = match opened {
+            let mut cp = match IsoCapture::open_with_rate(&input.info, &input.alt, Some(input.rate), 16, 8).map_err(|e| e.to_string()) {
                 Ok(c) => {
                     let _ = ready_tx.send(Ok(()));
                     c
@@ -162,11 +167,11 @@ impl UsbRecorder {
                     return Err(e);
                 }
             };
-            let mut dm = Downmixer::default();
+            let mut mix = MonoMixer::new(input.alt.channels, input.alt.subframe);
             let mut scratch = Vec::with_capacity(512);
             cp.run(&st, 0.0, |p| {
                 scratch.clear();
-                dm.push(p, &mut scratch);
+                mix.push(p, &mut scratch);
                 cf.fetch_add((scratch.len() / 3) as u64, Ordering::Relaxed);
                 pk.fetch_max(peak_24(&scratch), Ordering::Relaxed);
                 if let Some(tx) = &tx {
@@ -179,15 +184,25 @@ impl UsbRecorder {
             .map_err(|e| e.to_string())
         });
         match ready_rx.recv_timeout(Duration::from_secs(3)) {
-            Ok(Ok(())) => Ok((stop, captured, overruns, capture)),
+            Ok(Ok(())) => Ok((stop, captured, overruns, capture, rate)),
             Ok(Err(e)) => {
                 let _ = capture.join();
                 Err(e)
             }
             Err(_) => {
                 stop.store(true, Ordering::Relaxed);
-                Err("the FM-1 did not start streaming".into())
+                Err("the input did not start streaming".into())
             }
+        }
+    }
+
+    /// The input that would be used now, or why there is none.
+    fn pick(&self) -> Result<AudioInput, String> {
+        let found = list_inputs(&self.sysfs);
+        match pick_input(&found, &self.selected) {
+            Some(i) => Ok(i.clone()),
+            None if self.selected.is_some() => Err("the chosen input is not connected".into()),
+            None => Err("no USB audio input found".into()),
         }
     }
 
@@ -209,6 +224,8 @@ impl Recorder for UsbRecorder {
         if self.active.is_some() {
             return Err("already recording".into());
         }
+        let input = self.pick()?;
+        let dev_rate = input.rate;
         self.stop_monitor(); // the interface can be claimed once: recording takes over from monitoring
         let audio_dir = self.project_dir.join("audio");
         std::fs::create_dir_all(&audio_dir).map_err(|e| format!("cannot create {}: {e}", audio_dir.display()))?;
@@ -218,7 +235,7 @@ impl Recorder for UsbRecorder {
         // capture thread -> bounded queue -> writer thread -> SD card
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(512); // ~512 USB-sized chunks of slack
         let writer = std::thread::spawn(move || {
-            let Ok(mut w) = StreamingWav::new(BufWriter::with_capacity(256 * 1024, file), 1, 3, RATE) else { return 0 };
+            let Ok(mut w) = StreamingWav::new(BufWriter::with_capacity(256 * 1024, file), 1, 3, dev_rate) else { return 0 };
             let mut last_flush = Instant::now();
             for chunk in rx {
                 if w.write(&chunk).is_err() {
@@ -233,9 +250,9 @@ impl Recorder for UsbRecorder {
             let _ = w.finish();
             frames
         });
-        match self.launch(Some(tx)) {
-            Ok((stop, captured, overruns, capture)) => {
-                self.active = Some(Active { stop, captured, overruns, capture, writer: Some(writer) });
+        match self.launch(input, Some(tx)) {
+            Ok((stop, captured, overruns, capture, rate)) => {
+                self.active = Some(Active { stop, captured, overruns, capture, writer: Some(writer), rate });
                 Ok(format!("audio/{name}"))
             }
             Err(e) => {
@@ -243,6 +260,10 @@ impl Recorder for UsbRecorder {
                 Err(e)
             }
         }
+    }
+
+    fn select_input(&mut self, id: Option<String>) {
+        self.selected = id;
     }
 
     fn monitor(&mut self, on: bool) -> Result<(), String> {
@@ -253,8 +274,9 @@ impl Recorder for UsbRecorder {
         if self.monitor.is_some() || self.active.is_some() {
             return Ok(());
         }
-        let (stop, captured, overruns, capture) = self.launch(None)?;
-        self.monitor = Some(Active { stop, captured, overruns, capture, writer: None });
+        let input = self.pick()?;
+        let (stop, captured, overruns, capture, rate) = self.launch(input, None)?;
+        self.monitor = Some(Active { stop, captured, overruns, capture, writer: None, rate });
         Ok(())
     }
 
@@ -263,14 +285,16 @@ impl Recorder for UsbRecorder {
     }
 
     fn frames(&self) -> u64 {
-        self.active.as_ref().map_or(0, |a| a.captured.load(Ordering::Relaxed))
+        // project-rate frames, whatever rate the device runs at
+        self.active.as_ref().map_or(0, |a| a.captured.load(Ordering::Relaxed) * RATE as u64 / a.rate.max(1) as u64)
     }
 
     fn finish(&mut self, min_frames: u64) -> Result<RecInfo, String> {
         let a = self.active.take().ok_or("not recording")?;
         // the captured audio lags the transport: keep reading until the frames the takes need have arrived (or the stream stalls)
+        let need = (min_frames * a.rate as u64).div_ceil(RATE as u64); // in the device's own frames
         let t0 = Instant::now();
-        while a.captured.load(Ordering::Relaxed) < min_frames && t0.elapsed() < Duration::from_millis(1500) {
+        while a.captured.load(Ordering::Relaxed) < need && t0.elapsed() < Duration::from_millis(1500) {
             std::thread::sleep(Duration::from_millis(5));
         }
         a.stop.store(true, Ordering::Relaxed);
@@ -280,6 +304,8 @@ impl Recorder for UsbRecorder {
             None => 0,
         };
         cap?;
+        // the file is at the device's rate; the app counts in project frames (the file is resampled to match when it is loaded)
+        let frames = frames * RATE as u64 / a.rate.max(1) as u64;
         Ok(RecInfo { frames, overruns: a.overruns.load(Ordering::Relaxed) })
     }
 
@@ -334,10 +360,48 @@ mod tests {
         assert!(load_recording(&d, "../audio/rec-001.wav").is_none(), "cannot leave the project folder");
         assert!(load_recording(&d, "/etc/hosts").is_none());
         assert!(load_recording(&d, "audio/missing.wav").is_none());
-        std::fs::write(d.join("audio/rec-002.wav"), encode(&Audio { rate: 48000, data: vec![0.0; 200] }, 16)).unwrap();
-        assert!(load_recording(&d, "audio/rec-002.wav").is_none(), "wrong sample rate");
+        // a take from a 48 kHz-only device is brought to the project rate when it is loaded: 4800 frames at 48 kHz = 4410 at 44.1 kHz
+        let tone = Audio { rate: 48000, data: vec![0.5; 9600] };
+        std::fs::write(d.join("audio/rec-002.wav"), encode(&tone, 16)).unwrap();
+        let r = load_recording(&d, "audio/rec-002.wav").unwrap();
+        assert_eq!(r.len(), 4410);
+        assert!((r[2000] - 0.5).abs() < 0.01, "level kept");
+        std::fs::write(d.join("audio/rec-004.wav"), encode(&Audio { rate: 0, data: vec![0.0; 200] }, 16)).ok();
         std::fs::write(d.join("audio/rec-003.wav"), b"not a wav").unwrap();
         assert!(load_recording(&d, "audio/rec-003.wav").is_none());
+    }
+
+    fn input(id: &str, name: &str) -> AudioInput {
+        use hilldaw_usb::desc::StreamAlt;
+        use hilldaw_usb::dev::DeviceInfo;
+        AudioInput {
+            id: id.into(),
+            name: name.into(),
+            info: DeviceInfo { sysname: "x".into(), busnum: 1, devnum: 2, product: name.into(), midi_iface: 0, ep_out: 0, ep_in: 0, sysdir: PathBuf::new() },
+            alt: StreamAlt { channels: 1, subframe: 2, bits: 16, rates: vec![48000], ep: 0x81, ..Default::default() },
+            rate: 48000,
+        }
+    }
+
+    #[test]
+    fn automatic_input_prefers_the_fm1_then_the_first_and_a_chosen_one_is_never_swapped() {
+        let list = vec![input("1234:00ab", "Mic"), input(FM1_ID, "FM-1")];
+        assert_eq!(pick_input(&list, &None).unwrap().id, FM1_ID, "automatic: the FM-1 wins even when listed second");
+        assert_eq!(pick_input(&list[..1], &None).unwrap().id, "1234:00ab", "no FM-1: the first input");
+        assert_eq!(pick_input(&list, &Some("1234:00ab".into())).unwrap().id, "1234:00ab", "a chosen device, even with the FM-1 present");
+        assert!(pick_input(&list, &Some("dead:beef".into())).is_none(), "a chosen device that is unplugged is not replaced by another");
+        assert!(pick_input(&[], &None).is_none());
+    }
+
+    #[test]
+    fn an_unplugged_or_missing_input_is_reported_clearly() {
+        let mut r = UsbRecorder::new(tmp("pick"));
+        r.sysfs = tmp("empty-sysfs");
+        assert_eq!(r.start().unwrap_err(), "no USB audio input found");
+        r.select_input(Some("1234:00ab".into()));
+        assert_eq!(r.start().unwrap_err(), "the chosen input is not connected");
+        assert!(r.monitor(true).is_err());
+        assert!(r.monitor(false).is_ok());
     }
 
     #[test]
@@ -355,10 +419,11 @@ mod tests {
     }
 
     #[test]
-    fn without_the_fm1_start_fails_cleanly_and_finish_without_start_is_an_error() {
+    fn without_an_input_start_fails_cleanly_and_finish_without_start_is_an_error() {
         let mut r = UsbRecorder::new(tmp("nodev"));
+        r.sysfs = tmp("nodev-sysfs"); // never touch the real USB bus in a test
         let e = r.start().unwrap_err();
-        assert!(e.contains("FM-1") || e.contains("not found"), "{e}");
+        assert!(e.contains("no USB audio input"), "{e}");
         assert_eq!(r.frames(), 0);
         assert!(r.finish(0).is_err());
     }

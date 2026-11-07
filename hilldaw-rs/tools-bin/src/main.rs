@@ -7,7 +7,8 @@
 //!                                              render a preset through the DAW mixer and limiter, so it can be heard with `aplay`
 //!   hdtool probe-cc [--ch 2] [--from 70] [--to 93] [--group 4] [--out FILE]
 //!                                              play a note while changing each MIDI CC and measure, from the FM-1's own audio, what it does
-//!   hdtool drift-cap [--secs 300] [--out FILE]  how fast the FM-1's capture clock really runs, against the system clock
+//!   hdtool inputs                              every USB audio input attached, with the format it would be read in
+//!   hdtool drift-cap [--secs 300] [--input VID:PID] [--out FILE]  how fast an input's capture clock really runs, against the system clock
 //!   hdtool record SECS OUT.wav --synthetic     no FM-1: a real-time tone source (to test the writer on any machine)
 
 use hilldaw_core::record::{detect_onset, mono24_to_f32, Downmixer, StreamingWav};
@@ -270,21 +271,44 @@ fn probe_cc(args: &[String]) {
     }
 }
 
+/// `hdtool inputs`: what HillDAW would see as recordable inputs.
+fn inputs() {
+    let list = hilldaw_usb::audio::list_inputs(Path::new(SYSFS_USB));
+    if list.is_empty() {
+        println!("no USB audio input found (class-compliant USB Audio 1.0 devices with a capture stream; USB Audio 2.0 is not supported yet)");
+        return;
+    }
+    for i in &list {
+        let auto = if i.id == hilldaw_usb::audio::FM1_ID { "  (automatic choice)" } else { "" };
+        println!("{}  {}  {}  [iface {} alt {} ep 0x{:02x}, all rates {:?}]{auto}", i.id, i.name, i.summary(), i.alt.iface, i.alt.alt, i.alt.ep, i.alt.rates);
+    }
+}
+
+/// Pick the input named by `--input vid:pid`, or the automatic one (the FM-1 if attached, else the first).
+fn pick_input(args: &[String]) -> hilldaw_usb::audio::AudioInput {
+    let list = hilldaw_usb::audio::list_inputs(Path::new(SYSFS_USB));
+    let want: Option<String> = args.iter().position(|a| a == "--input").and_then(|i| args.get(i + 1)).cloned();
+    hilldaw_usb::audio::pick_input(&list, &want).cloned().unwrap_or_else(|| {
+        eprintln!("{}", if want.is_some() { "that input is not attached (see: hdtool inputs)" } else { "no USB audio input found (see: hdtool inputs)" });
+        exit(2)
+    })
+}
+
 /// `hdtool drift-cap`: capture from the FM-1 for a few minutes and fit frames against time (see `hilldaw_core::drift`).
 fn drift_cap(args: &[String]) {
     use hilldaw_core::drift::{describe, DriftEstimator};
     let secs: f64 = opt(args, "--secs", 300.0f64).clamp(40.0, 7200.0);
     let out: String = opt(args, "--out", "/root/drift-capture.txt".to_string());
-    let d = device();
-    let mut cp = open_capture(&d);
-    println!("Capturing from the FM-1 for {secs:.0} s to measure its clock. Leave it plugged in; HillDAW can be running meanwhile.");
+    let input = pick_input(args);
+    let mut cp = IsoCapture::open_with_rate(&input.info, &input.alt, Some(input.rate), 16, 8).unwrap_or_else(|e| { eprintln!("{e}"); exit(2) });
+    let frame_bytes = input.alt.frame_bytes().max(1);
+    println!("Capturing from {} ({}) for {secs:.0} s to measure its clock. Leave it plugged in; HillDAW can be running meanwhile.", input.name, input.summary());
     let t0 = Instant::now();
     let (mut frames, mut last_push, mut last_print) = (0u64, 0.0f64, 0.0f64);
-    let mut est = DriftEstimator::new(RATE as f64);
-    // the capture format is 2 channels x 24-bit = 6 bytes per frame
+    let mut est = DriftEstimator::new(input.rate as f64);
     let stats = cp
         .run(&AtomicBool::new(false), secs, |p| {
-            frames += (p.len() / 6) as u64;
+            frames += (p.len() / frame_bytes) as u64;
             let t = t0.elapsed().as_secs_f64();
             if t - last_push >= 0.1 {
                 est.push(t, frames);
@@ -301,8 +325,8 @@ fn drift_cap(args: &[String]) {
         .unwrap_or_else(|e| { eprintln!("{e}"); exit(2) });
     let text = match est.fit(30.0) {
         Some(f) => format!(
-            "FM-1 capture clock: {:.3} Hz = {:+.1} ppm from 44100 over {:.0} s ({} samples, timestamp jitter {:.1} ms)\n{}\ncapture stats: {}\n",
-            f.rate_hz, f.ppm, f.span_s, f.samples, f.jitter_ms, describe(f.ppm), stats.summary()
+            "{} capture clock: {:.3} Hz = {:+.1} ppm from {} over {:.0} s ({} samples, timestamp jitter {:.1} ms)\n{}\ncapture stats: {}\n",
+            input.name, f.rate_hz, f.ppm, input.rate, f.span_s, f.samples, f.jitter_ms, describe(f.ppm), stats.summary()
         ),
         None => "not enough data for a fit\n".to_string(),
     };
@@ -404,6 +428,7 @@ fn main() {
         Some("drums") => drums(&args[1..]),
         Some("probe-cc") => probe_cc(&args[1..]),
         Some("drift-cap") => drift_cap(&args[1..]),
-        _ => println!("usage: hdtool record SECS OUT.wav [--note N] [--synthetic] | latency [--runs N] [--note N] | drift-cap [--secs 300] | probe-cc [--ch 2] [--from 70] [--to 93] [--out FILE] | drums list|render ... | status [PATH]"),
+        Some("inputs") => inputs(),
+        _ => println!("usage: hdtool record SECS OUT.wav [--note N] [--synthetic] | latency [--runs N] [--note N] | inputs | drift-cap [--secs 300] [--input VID:PID] | probe-cc [--ch 2] [--from 70] [--to 93] [--out FILE] | drums list|render ... | status [PATH]"),
     }
 }

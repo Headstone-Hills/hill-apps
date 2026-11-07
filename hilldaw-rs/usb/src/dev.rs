@@ -147,6 +147,17 @@ pub(crate) fn claim(fd: i32, iface: u8) -> Result<(), UsbError> {
     Ok(())
 }
 
+/// USB Audio Class 1.0: set the sampling frequency of an isochronous endpoint (SET_CUR, SAMPLING_FREQ_CONTROL). A device that offers
+/// several rates stays at its default until told; one with a single rate ignores or stalls the request, which callers can ignore.
+pub(crate) fn set_sampling_rate(fd: i32, ep: u8, rate: u32) -> Result<(), UsbError> {
+    let mut data = [rate as u8, (rate >> 8) as u8, (rate >> 16) as u8];
+    let mut t = sys::CtrlTransfer { request_type: 0x22, request: 0x01, value: 0x0100, index: ep as u16, length: 3, timeout: 1000, data: data.as_mut_ptr() as *mut std::os::raw::c_void };
+    if unsafe { sys::ioctl(fd, sys::CONTROL, &mut t) } < 0 {
+        return Err(os_error("set sampling rate"));
+    }
+    Ok(())
+}
+
 pub(crate) fn release(fd: i32, iface: u8) {
     let mut i: u32 = iface as u32;
     unsafe { sys::ioctl(fd, sys::RELEASEINTERFACE, &mut i) };

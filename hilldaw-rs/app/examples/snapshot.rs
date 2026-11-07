@@ -24,7 +24,7 @@ fn save(a: &HillDaw, path: &str) {
 
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
-    let st = Arc::new(Mutex::new(Status { battery_pct: Some(45), charging: true, battery_low: false, free_bytes: Some(100 << 30), fm1: true }));
+    let st = Arc::new(Mutex::new(Status { battery_pct: Some(45), charging: true, battery_low: false, free_bytes: Some(100 << 30), fm1: true, ..Default::default() }));
     let mut a = HillDaw::new(Box::new(MemHost::default()), st);
     // mixer: some levels, a mute, a solo, an arm, then play so meters move
     press(&mut a, Btn::Down);
