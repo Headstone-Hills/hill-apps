@@ -96,6 +96,22 @@ Method: `fm1tool cc N V --ch C` then `fm1tool note 60`, compared with a plain no
 So: **on V16, FX controls are CC 70-93 on channel 2, and the old CC 0-23 do nothing.** Notes and program change use the note channel (the FM-1 answers note-on on channel 1 and Omni).
 Not yet checked: which of CC 70 (filter switch?) and CC 72 (cutoff?) caused the change, and what the other 22 numbers do. The "old number + 70" order (CC 70 Filter switch, 71 Type, 72 Cutoff, 73 Q, 74 Reverb switch ... 93 Phaser Mix) is consistent with the two that worked but is **still a guess for the rest**. The unit keeps its FX state: the tests left the filter switch off and cutoff at 127.
 
+### Probe run 1 (`hdtool probe-cc`, 2026-11-08, V16, CC 70-93 on channel 2, note 60 on channel 1)
+
+Measured from the FM-1's own USB audio. Baseline all-low: level -26.4 dB, centroid 1191 Hz, tail -65 dB (noise limits 1 dB / 5% / 3 dB, so pass 1 is trustworthy).
+
+**Pass 1 (raise one CC alone from all-off): only two CCs changed the sound**
+
+| CC | Result | Reading |
+|---|---|---|
+| 70 | quieter 13.6 dB, duller 80%, tail -9 dB | **Filter switch on** (with cutoff still 0 this is a closed low-pass). Matches the earlier by-ear test. |
+| 82 | quieter 20.2 dB, duller 11%, tail -20 dB | Consistent with a **Distortion switch** turning on with its level at 0 (old table: Distortion Switch = CC 12; 12 + 70 = 82). Inferred, not isolated. |
+| all other 22 | no change | Expected for parameters whose switch is off, and for reverb/delay/chorus/phaser switches whose mix is 0. |
+
+Two of two numbers that moved match the "old position + 70" order (filter switch 0 -> 70, distortion switch 12 -> 82).
+
+**Pass 2 (lower one CC from all-on): not usable.** The all-high state is almost silent (-65 dB, noise limits 19 dB / 32% / 136 dB): filter on, type clamped to high-pass, cutoff at maximum blocks the whole note. CC 70, 71, 72 and 73 each restored sound (+40 dB), which only shows they are the four filter controls in some order. Everything else in that column compares against a nearly silent baseline and should be ignored. The probe is being changed to test one effect at a time (see `core/src/probe.rs`).
+
 ## What this means for HillDAW
 
 1. **FM-1 CC control must go to the FX channel (default 2), not channel 1.** `fm1tool cc N V` defaults to channel 1; use `--ch 2`. Notes and program change go to the note channel.
