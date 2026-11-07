@@ -6,8 +6,10 @@
 //!
 //! Two passes, because an effect's parameter does nothing while its switch is off (a reverb switch with its mix at 0 is silent):
 //! * **add one**: start with every probed CC at its low value, raise one CC at a time. Finds switches and anything that works alone.
-//! * **knock one out**: start with every probed CC at its high value (everything on and up), lower one CC at a time. Finds each
-//!   parameter in the context where it matters.
+//! * **one effect at a time**: the CCs are split into groups (the FM-1 guide has 4 per effect: switch, then three parameters). For each
+//!   group the first CC (its switch) is on, the others sit at a middle value and every other group is off; then each CC is set to
+//!   its low and to its high value in turn. Testing a group alone keeps one effect's extreme settings (a filter closed all the way)
+//!   from hiding everything else, which an "everything at maximum" baseline does.
 //!
 //! Everything here is a pure function of audio; the hardware only supplies a `trial` closure that applies a CC state, plays a
 //! note and returns the captured mono audio.
@@ -211,9 +213,29 @@ pub struct Config {
     pub ccs: Vec<u8>,
     pub low: u8,
     pub high: u8,
+    /// the resting value of a group's parameters while one of them is tested
+    pub mid: u8,
+    /// CCs per effect; the first of each group is treated as its on/off switch. 0 = all CCs in one group.
+    pub group: usize,
     pub timing: Timing,
-    /// identical baseline trials per pass, to learn the noise level
+    /// identical baseline trials in pass 1, to learn the noise level
     pub baseline_reps: usize,
+    /// identical baseline trials per group in pass 2
+    pub group_reps: usize,
+}
+
+impl Config {
+    fn groups(&self) -> Vec<&[u8]> {
+        let g = if self.group == 0 { self.ccs.len().max(1) } else { self.group };
+        self.ccs.chunks(g).collect()
+    }
+
+    /// How many trials `run` will make (for progress messages).
+    pub fn trial_count(&self) -> usize {
+        let reps1 = self.baseline_reps.max(2);
+        let reps2 = self.group_reps.max(2);
+        reps1 + self.ccs.len() + self.groups().iter().map(|g| reps2 + 1 + 2 * g.len().saturating_sub(1)).sum::<usize>()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -228,17 +250,27 @@ pub struct Row {
     pub cc: u8,
     /// raising this CC alone from the all-low state
     pub add: Effect,
-    /// lowering this CC alone from the all-high state
-    pub knock: Effect,
+    /// pass 2, relative to its group's resting state (switch on, parameters at `mid`):
+    /// this CC set to `low`, and set to `high` (`None` for a group's switch, which is already on)
+    pub down: Effect,
+    pub up: Option<Effect>,
+}
+
+#[derive(Debug)]
+pub struct GroupBase {
+    pub ccs: Vec<u8>,
+    /// the resting value of the group's parameters that gave a sound (`mid`, else `low`); `None` = silent either way, group skipped
+    pub rest: Option<u8>,
+    pub base: Option<Features>,
+    pub thr: Thresholds,
 }
 
 #[derive(Debug)]
 pub struct Report {
     pub rows: Vec<Row>,
     pub base_low: Features,
-    pub base_high: Features,
     pub thr_low: Thresholds,
-    pub thr_high: Thresholds,
+    pub groups: Vec<GroupBase>,
 }
 
 fn mean(f: &[Features]) -> Features {
@@ -250,20 +282,22 @@ fn uniform(ccs: &[u8], v: u8) -> State {
     ccs.iter().map(|c| (*c, v)).collect()
 }
 
+fn baseline(state: &State, reps: usize, label: &str, cfg: &Config, trial: &mut dyn FnMut(&State) -> Vec<f32>, progress: &mut dyn FnMut(&str)) -> Result<(Features, Thresholds), String> {
+    let reps = reps.max(2);
+    let mut fs = Vec::new();
+    for i in 0..reps {
+        progress(&format!("{label} baseline {}/{reps}", i + 1));
+        let f = analyze(&trial(state), &cfg.timing).ok_or_else(|| format!("no sound captured at the {label} baseline: is the FM-1 volume up, and is its sound muted?"))?;
+        fs.push(f);
+    }
+    Ok((mean(&fs), Thresholds::from_baselines(&fs)))
+}
+
 /// Run both passes. `trial` applies the CC state, plays a note and returns the captured mono audio.
 pub fn run(cfg: &Config, trial: &mut dyn FnMut(&State) -> Vec<f32>, progress: &mut dyn FnMut(&str)) -> Result<Report, String> {
-    let baseline = |state: &State, label: &str, trial: &mut dyn FnMut(&State) -> Vec<f32>, progress: &mut dyn FnMut(&str)| -> Result<(Features, Thresholds), String> {
-        let mut fs = Vec::new();
-        for i in 0..cfg.baseline_reps.max(2) {
-            progress(&format!("{label} baseline {}/{}", i + 1, cfg.baseline_reps.max(2)));
-            let f = analyze(&trial(state), &cfg.timing).ok_or_else(|| format!("no sound captured at the {label} baseline: is the FM-1 volume up, and is its sound muted?"))?;
-            fs.push(f);
-        }
-        Ok((mean(&fs), Thresholds::from_baselines(&fs)))
-    };
-
+    // pass 1: raise each CC alone from all-low
     let mut low = uniform(&cfg.ccs, cfg.low);
-    let (base_low, thr_low) = baseline(&low, "all-low", trial, progress)?;
+    let (base_low, thr_low) = baseline(&low, cfg.baseline_reps, "all-low", cfg, trial, progress)?;
     let mut adds: BTreeMap<u8, Effect> = BTreeMap::new();
     for &cc in &cfg.ccs {
         progress(&format!("CC {cc} up (alone)"));
@@ -273,34 +307,79 @@ pub fn run(cfg: &Config, trial: &mut dyn FnMut(&State) -> Vec<f32>, progress: &m
         adds.insert(cc, e);
     }
 
-    let mut high = uniform(&cfg.ccs, cfg.high);
-    let (base_high, thr_high) = baseline(&high, "all-high", trial, progress)?;
+    // pass 2: one effect at a time
     let mut rows = Vec::new();
-    for &cc in &cfg.ccs {
-        progress(&format!("CC {cc} down (from all-on)"));
-        high.insert(cc, cfg.low);
-        let knock = effect(&base_high, &thr_high, &trial(&high), &cfg.timing);
-        high.insert(cc, cfg.high);
-        let add = adds.remove(&cc).expect("every probed CC was added");
-        rows.push(Row { cc, add, knock });
+    let mut groups = Vec::new();
+    for g in cfg.groups() {
+        let label = format!("group CC {}-{}", g[0], g[g.len() - 1]);
+        let resting = |rest: u8| {
+            let mut st = uniform(&cfg.ccs, cfg.low);
+            for (k, &cc) in g.iter().enumerate() {
+                st.insert(cc, if k == 0 { cfg.high } else { rest });
+            }
+            st
+        };
+        // parameters at mid; if that is silent (a filter closed by its own settings), try them at low; if still silent, skip the group
+        let mut found = None;
+        for rest in [cfg.mid, cfg.low] {
+            let st = resting(rest);
+            if let Ok((base, thr)) = baseline(&st, cfg.group_reps, &label, cfg, trial, progress) {
+                found = Some((rest, st, base, thr));
+                break;
+            }
+            if cfg.mid == cfg.low {
+                break;
+            }
+        }
+        let Some((rest, mut st, base, thr)) = found else {
+            let skipped = Effect { delta: Delta { level_db: 0.0, centroid_pct: 0.0, tail_db: 0.0 }, changed: false, text: "skipped: silent at rest".into() };
+            for &cc in g {
+                rows.push(Row { cc, add: adds.remove(&cc).expect("every probed CC was added"), down: skipped.clone(), up: None });
+            }
+            groups.push(GroupBase { ccs: g.to_vec(), rest: None, base: None, thr: Thresholds::MIN });
+            continue;
+        };
+        for (k, &cc) in g.iter().enumerate() {
+            let at_rest = st[&cc];
+            progress(&format!("CC {cc} down ({label})"));
+            st.insert(cc, cfg.low);
+            let down = effect(&base, &thr, &trial(&st), &cfg.timing);
+            let up = if k == 0 {
+                None
+            } else {
+                progress(&format!("CC {cc} up ({label})"));
+                st.insert(cc, cfg.high);
+                Some(effect(&base, &thr, &trial(&st), &cfg.timing))
+            };
+            st.insert(cc, at_rest);
+            rows.push(Row { cc, add: adds.remove(&cc).expect("every probed CC was added"), down, up });
+        }
+        groups.push(GroupBase { ccs: g.to_vec(), rest: Some(rest), base: Some(base), thr });
     }
-    Ok(Report { rows, base_low, base_high, thr_low, thr_high })
+    Ok(Report { rows, base_low, thr_low, groups })
 }
 
 impl Report {
     /// Plain-text table for pasting back into a chat.
     pub fn render(&self) -> String {
         let mut s = String::new();
-        let t = |e: &Effect| e.text.clone();
-        s += &format!("baseline all-low : level {:.1} dB, centroid {:.0} Hz, tail {:.0} dB   (noise limits: {:.1} dB / {:.0}% / {:.0} dB)\n", self.base_low.body_db, self.base_low.centroid_hz, self.base_low.tail_db, self.thr_low.level_db, self.thr_low.centroid_pct, self.thr_low.tail_db);
-        s += &format!("baseline all-high: level {:.1} dB, centroid {:.0} Hz, tail {:.0} dB   (noise limits: {:.1} dB / {:.0}% / {:.0} dB)\n", self.base_high.body_db, self.base_high.centroid_hz, self.base_high.tail_db, self.thr_high.level_db, self.thr_high.centroid_pct, self.thr_high.tail_db);
-        s += "CC   ADD (raise alone from all-off)          | KNOCK (lower alone from all-on)\n";
-        for r in &self.rows {
-            s += &format!("{:<4} {:<40} | {}\n", r.cc, t(&r.add), t(&r.knock));
+        let line = |name: &str, b: &Features, t: &Thresholds| format!("{name}: level {:.1} dB, centroid {:.0} Hz, tail {:.0} dB   (noise limits {:.1} dB / {:.0}% / {:.0} dB)\n", b.body_db, b.centroid_hz, b.tail_db, t.level_db, t.centroid_pct, t.tail_db);
+        s += &line("all CCs low", &self.base_low, &self.thr_low);
+        for g in &self.groups {
+            let name = format!("group {}-{}", g.ccs[0], g.ccs[g.ccs.len() - 1]);
+            match (&g.base, g.rest) {
+                (Some(b), Some(r)) => s += &line(&format!("{name} resting (switch on, others at {r})"), b, &g.thr),
+                _ => s += &format!("{name}: silent at rest (switch on, others at mid and at 0), skipped\n"),
+            }
         }
-        let ch = |f: fn(&Row) -> &Effect| self.rows.iter().filter(|r| f(r).changed).map(|r| r.cc.to_string()).collect::<Vec<_>>().join(" ");
-        s += &format!("CCs that changed the sound when raised alone: {}\n", ch(|r| &r.add));
-        s += &format!("CCs that changed the sound when lowered from all-on: {}\n", ch(|r| &r.knock));
+        s += "\nADD = raise this CC alone from all-low.   DOWN / UP = set this CC to 0 / 127 while its effect group is on and the rest of the group is at mid.\n";
+        s += &format!("{:<4} {:<38} {:<38} {}\n", "CC", "ADD", "DOWN (to 0)", "UP (to 127)");
+        for r in &self.rows {
+            s += &format!("{:<4} {:<38} {:<38} {}\n", r.cc, r.add.text, r.down.text, r.up.as_ref().map_or("-".to_string(), |e| e.text.clone()));
+        }
+        let ids = |f: &dyn Fn(&Row) -> bool| self.rows.iter().filter(|r| f(r)).map(|r| r.cc.to_string()).collect::<Vec<_>>().join(" ");
+        s += &format!("\nchanged the sound when raised alone: {}\n", ids(&|r| r.add.changed));
+        s += &format!("changed the sound within their group (down or up): {}\n", ids(&|r| r.down.changed || r.up.as_ref().is_some_and(|e| e.changed)));
         s
     }
 }
@@ -372,8 +451,10 @@ mod tests {
         assert!((t.level_db - 12.0).abs() < 1e-9 && (t.tail_db - 40.0).abs() < 1e-9 && t.centroid_pct > 50.0, "{t:?}");
     }
 
-    /// A pretend FM-1 with a hidden mapping: CC 70 = filter switch, 72 = filter cutoff (cutoff = 200 + 60*value Hz, only when the
-    /// switch is on), 74 = reverb switch, 76 = reverb mix (0..0.3 tail amplitude, only when the switch is on). Everything else is inert.
+    /// A pretend FM-1 with a hidden mapping in two groups of four:
+    /// filter 70 switch, 71 type (inert here), 72 cutoff (200 + 60 x value Hz, only while the switch is on), 73 inert;
+    /// reverb 74 switch, 75 inert, 76 mix (tail amplitude value/127 x 0.3, only while the switch is on), 77 inert.
+    /// A *global* all-high state would put this filter at 7.8 kHz and the reverb at full, so it also checks that testing one group at a time works.
     fn fake(state: &State) -> Vec<f32> {
         let g = |c: u8| *state.get(&c).unwrap_or(&0);
         let max_hz = if g(70) > 0 { 200.0 + 60.0 * g(72) as f64 } else { 8000.0 };
@@ -381,33 +462,63 @@ mod tests {
         note(220.0, max_hz, tail, 2.4)
     }
 
+    fn cfg() -> Config {
+        Config { ccs: (70..=77).collect(), low: 0, high: 127, mid: 64, group: 4, timing: T, baseline_reps: 2, group_reps: 2 }
+    }
+
     #[test]
-    fn the_two_passes_find_a_hidden_mapping_including_dependent_parameters() {
-        let cfg = Config { ccs: (70..=77).collect(), low: 0, high: 127, timing: T, baseline_reps: 2 };
+    fn the_passes_find_a_hidden_mapping_including_dependent_parameters() {
+        let c = cfg();
         let mut log = Vec::new();
-        let rep = run(&cfg, &mut |s| fake(s), &mut |m| log.push(m.to_string())).unwrap();
-        let changed = |f: fn(&Row) -> &Effect| rep.rows.iter().filter(|r| f(r).changed).map(|r| r.cc).collect::<Vec<_>>();
-        // raising alone from all-off: only the filter switch does anything (the reverb switch has mix 0, cutoff/mix need their switch)
-        assert_eq!(changed(|r| &r.add), vec![70]);
-        // ...and with the cutoff at 0 the pretend filter silences the note entirely, which is reported as a change
-        assert!(rep.rows[0].add.text.contains("silenced"), "{}", rep.rows[0].add.text);
-        // lowering from all-on: cutoff, reverb switch and reverb mix matter. (The filter switch does not: at cutoff 127 the filter passes the whole note.)
-        assert_eq!(changed(|r| &r.knock), vec![72, 74, 76]);
-        let row72 = rep.rows.iter().find(|r| r.cc == 72).unwrap();
-        assert!(row72.knock.text.contains("duller"));
-        let row74 = rep.rows.iter().find(|r| r.cc == 74).unwrap();
-        assert!(row74.knock.text.contains("tail"));
-        assert!(log.iter().any(|m| m.contains("CC 73")) && !log.is_empty());
+        let rep = run(&c, &mut |s| fake(s), &mut |m| log.push(m.to_string())).unwrap();
+        let row = |cc: u8| rep.rows.iter().find(|r| r.cc == cc).unwrap();
+        // pass 1: only the filter switch does anything alone (and with the cutoff at 0 it silences the note entirely)
+        let alone: Vec<u8> = rep.rows.iter().filter(|r| r.add.changed).map(|r| r.cc).collect();
+        assert_eq!(alone, vec![70]);
+        assert!(row(70).add.text.contains("silenced"), "{}", row(70).add.text);
+        // pass 2, filter group: the switch matters (filter off = brighter than cutoff 4 kHz); cutoff matters both ways
+        assert!(row(70).down.changed);
+        assert!(row(72).down.changed && row(72).down.text.contains("silenced"), "{}", row(72).down.text);
+        assert!(row(72).up.as_ref().unwrap().text.contains("brighter"), "{}", row(72).up.as_ref().unwrap().text);
+        for inert in [71, 73, 75, 77] {
+            assert!(!row(inert).down.changed && !row(inert).up.as_ref().unwrap().changed, "CC {inert} should do nothing");
+        }
+        // pass 2, reverb group: the switch and the mix matter (tail), and the mix both ways
+        assert!(row(74).down.changed && row(74).down.text.contains("tail"));
+        assert!(row(76).down.changed && row(76).up.as_ref().unwrap().changed);
+        assert!(row(74).up.is_none(), "a group's switch is already on at rest");
         let text = rep.render();
-        assert!(text.contains("raised alone: 70") && text.contains("lowered from all-on: 72 74 76"), "{text}");
-        // 2 baselines + 8 add + 2 baselines + 8 knock
-        assert_eq!(log.len(), 2 + 8 + 2 + 8);
+        assert!(text.contains("raised alone: 70"), "{text}");
+        assert!(text.contains("within their group (down or up): 70 72 74 76"), "{text}");
+        assert_eq!(log.len(), c.trial_count(), "progress reports every trial: {log:?}");
+    }
+
+    #[test]
+    fn trial_count_matches_a_real_run_for_the_fm1_layout() {
+        let c = Config { ccs: (70..=93).collect(), group: 4, ..cfg() };
+        // pass 1: 2 + 24; pass 2: 6 groups x (2 baselines + switch down + 3 x (down, up)) = 6 x 9
+        assert_eq!(c.trial_count(), 26 + 54);
+    }
+
+    #[test]
+    fn a_group_that_is_silent_at_mid_falls_back_to_low_and_a_silent_one_is_skipped() {
+        let c = Config { ccs: (70..=73).collect(), ..cfg() };
+        // Q (73) at mid kills the sound; at 0 the sound is fine
+        let plain = || note(220.0, 8000.0, 0.0, 2.4);
+        let rep = run(&c, &mut |s| if s.get(&73) == Some(&64) { vec![0.0; 105_000] } else { plain() }, &mut |_| {}).unwrap();
+        assert_eq!(rep.groups[0].rest, Some(0));
+        assert!(rep.render().contains("others at 0"));
+        // silent whenever the group's switch (70) is on, whatever the rest value: skipped; the run still finishes and pass 1 still reports
+        let rep = run(&c, &mut |s| if s.get(&70) == Some(&127) { vec![0.0; 105_000] } else { plain() }, &mut |_| {}).unwrap();
+        assert_eq!(rep.groups[0].rest, None);
+        assert!(rep.rows.iter().all(|r| r.down.text.contains("skipped")));
+        assert!(rep.render().contains("skipped"));
     }
 
     #[test]
     fn no_sound_at_the_baseline_is_an_error_not_an_empty_table() {
-        let cfg = Config { ccs: vec![70], low: 0, high: 127, timing: T, baseline_reps: 2 };
-        let err = run(&cfg, &mut |_| vec![0.0; 105_000], &mut |_| {}).unwrap_err();
+        let c = Config { ccs: vec![70], ..cfg() };
+        let err = run(&c, &mut |_| vec![0.0; 105_000], &mut |_| {}).unwrap_err();
         assert!(err.contains("no sound"), "{err}");
     }
 }

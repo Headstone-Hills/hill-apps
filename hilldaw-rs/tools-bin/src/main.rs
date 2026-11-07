@@ -5,7 +5,7 @@
 //!   hdtool drums list [TEXT]                   the HillBeat presets (id, name, style), optionally filtered
 //!   hdtool drums render ID OUT.wav [--cycles N] [--bpm B] [--swing S] [--samples DIR]
 //!                                              render a preset through the DAW mixer and limiter, so it can be heard with `aplay`
-//!   hdtool probe-cc [--ch 2] [--from 70] [--to 93] [--out FILE]
+//!   hdtool probe-cc [--ch 2] [--from 70] [--to 93] [--group 4] [--out FILE]
 //!                                              play a note while changing each MIDI CC and measure, from the FM-1's own audio, what it does
 //!   hdtool record SECS OUT.wav --synthetic     no FM-1: a real-time tone source (to test the writer on any machine)
 
@@ -210,7 +210,9 @@ fn probe_cc(args: &[String]) {
     let d = device();
     let midi_dev = Arc::new(MidiDevice::open(&d).unwrap_or_else(|e| { eprintln!("{e}"); exit(2) }));
     let ccs: Vec<u8> = (from..=to).collect();
-    let n_trials = 3 + ccs.len() + 3 + ccs.len();
+    let group: usize = opt(args, "--group", 4usize);
+    let cfg = Config { ccs: ccs.clone(), low: 0, high: 127, mid: 64, group, timing: Timing { rate: RATE, hold_s }, baseline_reps: 3, group_reps: 2 };
+    let n_trials = cfg.trial_count();
     println!("Probing CC {from}..{to} on MIDI channel {} with note {note} on channel {}: {n_trials} trials, about {} s.", ch + 1, note_ch + 1, (n_trials as f64 * (total_s + 0.5)) as u32);
     println!("Keep the FM-1 volume UP and leave its controls alone until it says DONE. The CCs are left at 0 afterwards.");
 
@@ -240,7 +242,6 @@ fn probe_cc(args: &[String]) {
         std::thread::sleep(Duration::from_millis(250));
         mono24_to_f32(&pcm)
     };
-    let cfg = Config { ccs: ccs.clone(), low: 0, high: 127, timing: Timing { rate: RATE, hold_s }, baseline_reps: 3 };
     let mut n = 0;
     let result = run(&cfg, &mut trial, &mut |m| {
         n += 1;
