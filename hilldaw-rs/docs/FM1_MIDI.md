@@ -1,6 +1,6 @@
 # M-VAVE FM-1 MIDI: what the vendor documents, and what is still unverified
 
-Collected 2026-11-08. Nothing below has been tested on the real unit yet; see "Verify on the SP" at the end.
+Collected 2026-11-08. The section "Verified on the owner's unit" below is what has been checked by ear on a real FM-1 running firmware **V16**; everything else is from documents only.
 **Do not put CC numbers into code from this file until they are verified** (HANDOFF rule: do not invent CC numbers).
 
 ## Sources
@@ -82,6 +82,20 @@ Warning in the guide: CC 1 (mod wheel) sent on the FX channel acts as an FX para
 - mksl (2026-07-09): "quick test over usb midi says no" to CC; (2026-07-12) says firmware v13 added Program Change, not CC. Both predate V16 and the FX-channel explanation above, so treat as unreliable.
 - A third-party browser tool for FM-1 SysEx bank management exists (<https://grandsummoner.github.io/fm-1-helper/FM-1%20Helper.html>). Not evaluated.
 
+## Verified on the owner's unit (firmware V16, 2026-11-08, by ear, one listener)
+
+Method: `fm1tool cc N V --ch C` then `fm1tool note 60`, compared with a plain note. "Duller" = filter closed.
+
+| Test | Result |
+|---|---|
+| Old guide numbers, CC 0 = on and CC 2 = 5, on channel 2 and on all 16 channels | **no audible change** (the CC 0-23 table does not apply to V16) |
+| New numbers, CC 70 = 127 and CC 72 = 5, on all 16 channels at once | **duller** |
+| Same, one channel at a time, 1-16 | **only channel 2 is duller** (the Effect Ch default) |
+| CC 8 / CC 78 = 127 on channel 2 (delay switch guesses), then a note | no audible change either way; not informative (a delay with Mix at 0 is silent) |
+
+So: **on V16, FX controls are CC 70-93 on channel 2, and the old CC 0-23 do nothing.** Notes and program change use the note channel (the FM-1 answers note-on on channel 1 and Omni).
+Not yet checked: which of CC 70 (filter switch?) and CC 72 (cutoff?) caused the change, and what the other 22 numbers do. The "old number + 70" order (CC 70 Filter switch, 71 Type, 72 Cutoff, 73 Q, 74 Reverb switch ... 93 Phaser Mix) is consistent with the two that worked but is **still a guess for the rest**. The unit keeps its FX state: the tests left the filter switch off and cutoff at 127.
+
 ## What this means for HillDAW
 
 1. **FM-1 CC control must go to the FX channel (default 2), not channel 1.** `fm1tool cc N V` defaults to channel 1; use `--ch 2`. Notes and program change go to the note channel.
@@ -90,7 +104,7 @@ Warning in the guide: CC 1 (mod wheel) sent on the FX channel acts as an FX para
 4. **The unit's own sound can probably be silenced for sampling** by routing it to a channel nothing listens on, but nothing here says so; test.
 5. Firmware version of the owner's unit is unknown. It decides which CC table applies.
 
-## Verify on the SP (one command at a time; listen or watch the FM-1 display)
+## Remaining checks (one command at a time; listen or watch the FM-1 display)
 
 First learn the firmware version (FM-1 global settings screen, or the version the FM-1 Helper tool / firmware updater shows).
 

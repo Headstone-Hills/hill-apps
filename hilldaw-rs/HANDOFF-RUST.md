@@ -145,4 +145,4 @@ Install on the SP: binary to `/mnt/sdcard/ports/hilldaw/hilldaw`, `ports/HillDAW
 
 Found: the vendor's "MIDI CONTROL EN" guide and the release note are on <https://www.m-vave.com/download.html>. Transcribed with sources in `docs/FM1_MIDI.md`.
 Key points: CC for FX goes on the **FX channel (default 2), not the note channel**; Program Change 0-127 selects voices; **the guide lists FX CCs 0-23 but the V16 release note says they became CC 70-93**, with no per-number table, so which applies is unverified.
-Nothing is coded from it yet. Next: run the verification commands at the end of that file on the SP.
+Verified on the owner's V16 unit (2026-11-08): FX CCs are 70-93 on channel 2; the old 0-23 do nothing. The order within 70-93 is still only inferred (old number + 70) apart from 70 and 72. Nothing is coded from it yet.
