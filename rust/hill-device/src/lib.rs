@@ -5,7 +5,7 @@ mod host;
 
 use buttons::{hat_buttons, Map};
 use hill_core::fb::{self, Fb};
-use hill_core::{apps, App, Btn, SAMPLE_RATE};
+use hill_core::{apps, App, Btn, Host, SAMPLE_RATE};
 use host::{exe_dir, FsHost};
 use sdl2::audio::{AudioCallback, AudioSpecDesired};
 use sdl2::event::Event;
@@ -61,6 +61,11 @@ fn present(canvas: &mut Canvas<Window>, tex: &mut sdl2::render::Texture, fb: &Fb
 }
 
 pub fn run(name: &str) -> Result<(), String> {
+    run_with(name, |host| apps::create(name, host))
+}
+
+/// Like [`run`], for an app that is not built into hill-core: `make` gets the sample/state host and builds the app.
+pub fn run_with(name: &str, make: impl FnOnce(Box<dyn Host>) -> Option<Box<dyn App>>) -> Result<(), String> {
     let sdl = sdl2::init()?;
     let audio_sub = sdl.audio()?;
     let joy_sub = sdl.joystick()?;
@@ -70,7 +75,7 @@ pub fn run(name: &str) -> Result<(), String> {
 
     let host = FsHost::detect();
     let have_samples = host.sample_root.is_some();
-    let app = apps::create(name, Box::new(host)).ok_or("unknown app")?;
+    let app = make(Box::new(host)).ok_or("unknown app")?;
     let app = Arc::new(Mutex::new(app));
 
     let desired = AudioSpecDesired { freq: Some(SAMPLE_RATE as i32), channels: Some(2), samples: Some(1024) };
