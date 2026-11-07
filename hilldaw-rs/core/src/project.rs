@@ -101,6 +101,26 @@ pub struct Fm1Model {
     pub fx: std::collections::BTreeMap<u8, u8>,
 }
 
+/// How "export" writes its files.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct ExportModel {
+    /// 16 or 24
+    pub bits: u16,
+    /// dither when writing 16-bit (24-bit needs none)
+    pub dither: bool,
+    /// raise or lower the mix so its peak is -1 dBFS
+    pub normalize: bool,
+    /// also write one file per track and one for the drums
+    pub stems: bool,
+}
+
+impl Default for ExportModel {
+    fn default() -> Self {
+        ExportModel { bits: 24, dither: true, normalize: false, stems: false }
+    }
+}
+
 pub const MAX_DRUM_SECTIONS: usize = 64;
 pub const MAX_SECTION_CYCLES: u32 = 256;
 
@@ -147,6 +167,7 @@ pub struct Project {
     pub tracks: Vec<TrackModel>,
     pub drums: DrumsModel,
     pub fm1: Fm1Model,
+    pub export: ExportModel,
 }
 
 impl Default for Project {
@@ -163,6 +184,7 @@ impl Default for Project {
             tracks: (1..=MAX_TRACKS).map(|i| TrackModel { name: format!("TRACK {i}"), ..Default::default() }).collect(),
             drums: DrumsModel::default(),
             fm1: Fm1Model::default(),
+            export: ExportModel::default(),
         }
     }
 }
@@ -216,6 +238,9 @@ impl Project {
         }
         d.swing = if d.swing.is_finite() { d.swing.clamp(0.0, 0.25) } else { 0.0 };
         d.gain = if d.gain.is_finite() { d.gain.clamp(0.0, MAX_STRIP_GAIN) } else { 1.0 };
+        if self.export.bits != 16 && self.export.bits != 24 {
+            self.export.bits = 24;
+        }
         self.fm1.program = self.fm1.program.min(127);
         // keep only known FX controls, each inside its own range
         let map = crate::fm1::fx_map();
@@ -327,6 +352,17 @@ mod tests {
         bad.fm1.fx.insert(5, 1); // not an FX CC
         let q = Project::from_json(&bad.to_json()).unwrap();
         assert_eq!((q.fm1.program, q.fm1.fx.get(&71).copied(), q.fm1.fx.contains_key(&5)), (127, Some(2), false));
+    }
+
+    #[test]
+    fn export_settings_roundtrip_default_to_24_bit_and_bad_bit_depths_are_fixed() {
+        let mut p = Project::default();
+        assert_eq!((p.export.bits, p.export.dither, p.export.normalize, p.export.stems), (24, true, false, false));
+        p.export = ExportModel { bits: 16, dither: false, normalize: true, stems: true };
+        assert_eq!(Project::from_json(&p.to_json()).unwrap(), p);
+        p.export.bits = 8;
+        assert_eq!(Project::from_json(&p.to_json()).unwrap().export.bits, 24);
+        assert_eq!(Project::from_json(r#"{"version":1}"#).unwrap().export, ExportModel::default(), "old files");
     }
 
     #[test]

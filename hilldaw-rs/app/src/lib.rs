@@ -8,6 +8,7 @@
 //! mutex, so `render` must stay cheap. Anything slow (battery, storage, USB presence) is gathered by a background
 //! thread into a [`status::StatusHandle`] and only copied here.
 
+pub mod export;
 pub mod fm1link;
 pub mod recorder;
 pub mod status;
@@ -19,6 +20,7 @@ use hill_core::ui::{Help, Toast, QUIT_HOLD_MS};
 use hill_core::{fb::Fb, App, Btn, Host};
 use hilldaw_core::drift::{DriftEstimator, Fit};
 use hilldaw_core::drums::DrumPattern;
+use export::{ClipSnap, ExportReport, Job, OutFile, Snapshot, StripSnap};
 use fm1link::{Fm1Msg, Fm1Out};
 use hilldaw_core::fm1::fx_map;
 use hilldaw_core::mixer::{Click, MonoClip, Mixer, Source, Track};
@@ -47,6 +49,8 @@ pub enum View {
     Arrange,
     /// voice (Program Change) and FX controls of the FM-1
     Fm1,
+    /// mixdown and stems to WAV
+    Export,
 }
 
 pub(crate) const HELP: &[(&str, &str)] = &[
@@ -79,6 +83,11 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("A", "effect on / off;  voice: send it"),
     ("X", "play a test note (C4)"),
     ("B", "all notes off"),
+    ("Export screen", ""),
+    ("Up / Down", "pick an option"),
+    ("Left / Right", "change it"),
+    ("A", "export now"),
+    ("B", "cancel a running export"),
     ("Arrange (drums)", ""),
     ("Up / Down", "pick a section"),
     ("Left / Right", "previous / next pattern"),
@@ -139,6 +148,9 @@ pub struct HillDaw {
     pub(crate) arr_sel: usize,
     fm1_out: Option<Box<dyn Fm1Out>>,
     recorder: Option<Box<dyn Recorder>>,
+    export_job: Option<Job>,
+    pub(crate) export_report: Option<Result<ExportReport, String>>,
+    pub(crate) export_row: usize,
     pub(crate) rec: Option<ActiveRec>,
     /// recordings already loaded for playback, by file
     audio_cache: HashMap<String, Arc<Vec<f32>>>,
@@ -232,6 +244,9 @@ impl HillDaw {
             arr_sel: 0,
             fm1_out: None,
             recorder: None,
+            export_job: None,
+            export_report: None,
+            export_row: 0,
             rec: None,
             audio_cache: HashMap::new(),
             test_clock: None,
@@ -498,24 +513,24 @@ impl HillDaw {
         }
     }
 
+    /// A recording's audio, loaded once and shared.
+    fn clip_data(&mut self, file: &str) -> Option<Arc<Vec<f32>>> {
+        if let Some(d) = self.audio_cache.get(file) {
+            return Some(d.clone());
+        }
+        let a = Arc::new(self.recorder.as_mut()?.load(file)?);
+        self.audio_cache.insert(file.to_string(), a.clone());
+        Some(a)
+    }
+
     /// Rebuild a track's playback from the clips in the project (loading each recording once).
     fn rebuild_track(&mut self, i: usize) {
         let clips = self.project.tracks[i].clips.clone();
         let mut sources: Vec<Box<dyn Source>> = Vec::new();
         for c in &clips {
-            let data = match self.audio_cache.get(&c.file) {
-                Some(d) => d.clone(),
-                None => match self.recorder.as_mut().and_then(|r| r.load(&c.file)) {
-                    Some(v) => {
-                        let a = Arc::new(v);
-                        self.audio_cache.insert(c.file.clone(), a.clone());
-                        a
-                    }
-                    None => {
-                        self.toast.say("A recording is missing");
-                        continue;
-                    }
-                },
+            let Some(data) = self.clip_data(&c.file) else {
+                self.toast.say("A recording is missing");
+                continue;
             };
             let len = c.len.unwrap_or_else(|| (data.len() as u64).saturating_sub(c.offset));
             sources.push(Box::new(MonoClip { data, start: c.start, offset: c.offset, len, gain: c.gain, fade_in: c.fade_in, fade_out: c.fade_out, reverse: c.reverse }));
@@ -534,6 +549,7 @@ impl HillDaw {
             View::Mixer => self.mixer_act(b),
             View::Arrange => self.arrange_act(b),
             View::Fm1 => self.fm1_act(b),
+            View::Export => self.export_act(b),
         }
     }
 
@@ -676,6 +692,138 @@ impl HillDaw {
                 self.project.drums.sections.remove(self.arr_sel);
                 self.rebuild_drums();
                 self.toast.say("Section deleted");
+            }
+            _ => {}
+        }
+    }
+
+    // ---- export -------------------------------------------------------------------------------------------------------
+
+    /// What an export would render now, or `None` when there is nothing to export.
+    fn export_snapshot(&mut self) -> Option<Snapshot> {
+        let rate = self.rate;
+        let mut strips = Vec::new();
+        let mut end = 0u64;
+        for i in 0..MAX_TRACKS {
+            let tm = self.project.tracks[i].clone();
+            let mut clips = Vec::new();
+            for c in &tm.clips {
+                let Some(data) = self.clip_data(&c.file) else { continue };
+                let len = c.len.unwrap_or_else(|| (data.len() as u64).saturating_sub(c.offset));
+                end = end.max(c.start + len);
+                clips.push(ClipSnap { data, start: c.start, offset: c.offset, len, gain: c.gain, fade_in: c.fade_in, fade_out: c.fade_out, reverse: c.reverse });
+            }
+            strips.push(StripSnap { name: tm.name.clone(), gain: tm.gain, pan: tm.pan, mute: tm.mute, solo: tm.solo, clips });
+        }
+        let d = self.project.drums.clone();
+        let mut drums = None;
+        if d.enabled && !d.sections.is_empty() {
+            if let Ok(mut t) = self.lib.build_track(&d, self.project.bpm) {
+                t.gain = 1.0; // the strip's level is the mixer track's gain
+                end = end.max(t.total_frames(rate));
+                drums = Some(t);
+            }
+        }
+        strips.push(StripSnap { name: "DRUMS".into(), gain: d.gain, pan: d.pan, mute: false, solo: d.solo, clips: vec![] });
+        if end == 0 {
+            return None;
+        }
+        // the drums repeat to cover the longest clip, then stop on the last frame; hits already sounding ring into the tail
+        if let Some(t) = drums.as_mut() {
+            t.end_frame = Some(end);
+        }
+        Some(Snapshot { rate, strips, drums, end })
+    }
+
+    /// Start exporting the mixdown (and stems if asked) on a background thread.
+    pub fn start_export(&mut self) {
+        if self.export_job.is_some() {
+            self.toast.say("An export is already running");
+            return;
+        }
+        if self.recorder.is_none() {
+            self.toast.say("Export needs the project storage");
+            return;
+        }
+        let Some(snap) = self.export_snapshot() else {
+            self.toast.say("Nothing to export yet");
+            return;
+        };
+        let opts = self.project.export.clone();
+        let base = export::slug(&self.project.name);
+        let mut names: Vec<(String, Option<usize>)> = vec![(format!("{base}-mixdown"), None)];
+        if opts.stems {
+            for i in 0..snap.strips.len() {
+                if snap.has_audio(i) {
+                    let n = if i == 8 { format!("{base}-stem-drums") } else { format!("{base}-stem-{}-{}", i + 1, export::slug(&snap.strips[i].name)) };
+                    names.push((n, Some(i)));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        for (name, strip) in names {
+            match self.recorder.as_mut().map(|r| r.create_export(&name)) {
+                Some(Ok((file, path))) => files.push(OutFile { file, path, strip }),
+                Some(Err(e)) => {
+                    self.toast.say(&hill_core::fb::clip(&e, 28));
+                    return;
+                }
+                None => return,
+            }
+        }
+        self.export_report = None;
+        self.export_job = Some(export::spawn(snap, opts, files));
+        self.toast.say("Exporting");
+    }
+
+    pub fn export_running(&self) -> bool {
+        self.export_job.is_some()
+    }
+
+    pub fn export_progress(&self) -> Option<f32> {
+        self.export_job.as_ref().map(|j| j.fraction())
+    }
+
+    pub fn export_report(&self) -> Option<&Result<ExportReport, String>> {
+        self.export_report.as_ref()
+    }
+
+    /// Collect a finished export (called every UI tick).
+    fn export_poll(&mut self) {
+        if !self.export_job.as_ref().is_some_and(|j| j.finished()) {
+            return;
+        }
+        let Some(mut job) = self.export_job.take() else { return };
+        let r = job.take_result();
+        match &r {
+            Ok(rep) if rep.cancelled => self.toast.say("Export cancelled"),
+            Ok(rep) if rep.clipped > 0 => self.toast.say("Exported, but some peaks clipped"),
+            Ok(_) => self.toast.say("Export finished"),
+            Err(e) => self.toast.say(&hill_core::fb::clip(e, 28)),
+        }
+        self.export_report = Some(r);
+    }
+
+    fn export_act(&mut self, b: Btn) {
+        const ROWS: usize = 5;
+        match b {
+            Btn::Up => self.export_row = self.export_row.saturating_sub(1),
+            Btn::Down => self.export_row = (self.export_row + 1).min(ROWS - 1),
+            Btn::A => self.start_export(),
+            Btn::B => {
+                if let Some(j) = &self.export_job {
+                    j.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            Btn::Left | Btn::Right => {
+                let e = &mut self.project.export;
+                match self.export_row {
+                    0 => e.bits = if e.bits == 24 { 16 } else { 24 },
+                    1 => e.dither = !e.dither,
+                    2 => e.normalize = !e.normalize,
+                    3 => e.stems = !e.stems,
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -919,6 +1067,12 @@ impl HillDaw {
         if self.quit_ms >= QUIT_HOLD_MS && self.rec.is_some() {
             self.stop_recording(); // quitting mid-take keeps the take
         }
+        if self.quit_ms >= QUIT_HOLD_MS {
+            if let Some(j) = &self.export_job {
+                j.cancel.store(true, std::sync::atomic::Ordering::Relaxed); // quitting stops an export
+            }
+        }
+        self.export_poll();
         if !self.help.open {
             if let Some(b) = self.rep.tick(dt_ms) {
                 self.act(b);
@@ -1017,7 +1171,7 @@ impl App for HillDaw {
                 self.toast.say(if self.project.count_in { "Count-in on" } else { "Count-in off" });
             }
             Btn::L1 | Btn::R1 => {
-                const ORDER: [View; 3] = [View::Mixer, View::Arrange, View::Fm1];
+                const ORDER: [View; 4] = [View::Mixer, View::Arrange, View::Fm1, View::Export];
                 let i = ORDER.iter().position(|v| *v == self.view).unwrap_or(0);
                 self.view = ORDER[(i + if b == Btn::R1 { 1 } else { ORDER.len() - 1 }) % ORDER.len()];
                 self.rep.clear();

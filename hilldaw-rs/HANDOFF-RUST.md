@@ -219,3 +219,19 @@ Now: the **drums repeat** (`DrumTrack::looping`, stateless: every cycle that can
 - The owner's three test recordings (rec-001 about 49 s, rec-002, rec-003) were made with the old behaviour; rec-001 was probably five takes. Their audio files are valid.
 
 First recording test on the SP (2026-11-08): the owner reports the take "seemed to be on-time" against the drums with the default offset (`latency_offset_frames` = 563, the measured MIDI-to-capture latency, nothing for the SP's output latency). By ear, one listener, one session: not measured. No nudge control is needed yet; revisit if a later take sounds early or late.
+
+## Gain up to +24 dB (2026-11-08, owner request)
+
+Strip gain (tracks and drums) now goes to **+24 dB** (`MAX_STRIP_GAIN` = 16.0 in the project, `MAX_DB` in the app; it was +6 dB in the app, +12 dB in the file). Up/Down is 1 dB, **Y+Up/Down is 6 dB**. The meters and faders share a -60..+24 dB scale with a 0 dB tick; meter colours: green below -9 dBFS, amber to -1, red above. The master limiter (ceiling 0.98) is the safety net; boosting a recording also boosts its noise.
+
+## Mixdown and stem export (2026-11-08)
+
+Fourth screen (L1/R1): **Export**. Options (stored in `project.export`): WAV 24-bit or 16-bit, dither (16-bit only, TPDF, deterministic), normalize the mixdown's peak to -1 dBFS (stems get the same gain), stems on/off. A starts, B cancels, quitting cancels.
+- Core (`core/src/export.rs`, pure): `render_offline` (identical for any chunk size), `encode_pcm` (16/24-bit, dither, clip counting), `normalize_gain`, `Dither`.
+- App (`app/src/export.rs`): the UI thread builds a `Snapshot` (clip audio shared as `Arc`, drum track cloned) and creates the files; a worker thread renders it through a fresh `Mixer` and writes with `StreamingWav`, so playback is untouched and the UI stays responsive (progress bar, cancel).
+- **Mixdown** = every strip with level/pan/mute/solo through the master limiter. **Stems** = one file per track that has audio and one for the drums, through their own level and pan but **not** muted/soloed and **without** the limiter: they add up to the mixdown only while the mix itself is not being limited (the starter groove alone peaks above the limiter's 0.98, so turn things down for a clean sum). Clipped samples (past full scale, in any file) are counted and reported on screen.
+- Length = the longest of the last clip's end and one pass of the drum arrangement, plus a 2 s tail. Looping drums repeat to cover a longer take, then stop at the end (`DrumTrack::end_frame`); hits already sounding ring into the tail.
+- Files go to `<project>/export/`: `song-mixdown.wav`, `song-stem-1-track-1.wav`, `song-stem-drums.wav`; a number is added instead of overwriting (`song-mixdown-2.wav`). Names are made file-safe.
+- Tested: the exported drums equal the live render to 1e-5 (24-bit); a recorded take is at the right place (stem = file frame 563+p through gain and pan); stems add up to the mixdown; mute/solo shape the mixdown only; normalize hits -1.00 dBFS; 16-bit is the rounded 24-bit value (within 1 LSB) and dither changes it (within 2 LSB); cancel; nothing-to-export; a refused file.
+- **Not done:** MP3/FLAC (ffmpeg, lame and flac exist on the SP; a later step can run them on the WAV), a cancelled export leaves its partly written file, memory: recordings stay in memory as mono f32 (see Recording), no export of a loop region or a selection, no per-export file name.
+- **Not run on the SP yet.** Render time is not measured on the device: the mixer benchmark was 3.8 ms per 23 ms of audio (about 6x real time), so a 5-minute song should take about a minute, twice with normalize.

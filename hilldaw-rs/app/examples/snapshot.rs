@@ -75,4 +75,12 @@ fn main() {
         press(&mut a, Btn::R2);
     }
     save(&a, &format!("{dir}/fm1_delay.ppm"));
+    // export screen: a few options changed, no export run
+    press(&mut a, Btn::R1);
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::Right);
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::Right);
+    save(&a, &format!("{dir}/export.ppm"));
 }

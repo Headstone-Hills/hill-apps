@@ -11,6 +11,7 @@
 pub mod drift;
 pub mod drums;
 pub mod edit;
+pub mod export;
 pub mod fm1;
 pub mod effects;
 pub mod mixer;

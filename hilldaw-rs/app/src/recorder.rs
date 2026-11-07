@@ -14,7 +14,7 @@ use hilldaw_usb::dev::{find_devices, SYSFS_USB};
 use hilldaw_usb::iso::IsoCapture;
 use hilldaw_usb::{FM1_PID, FM1_VID};
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
@@ -32,6 +32,10 @@ pub struct RecInfo {
     pub overruns: u64,
 }
 
+/// A file an export is written to.
+pub trait ExportFile: Write + Seek + Send {}
+impl<T: Write + Seek + Send> ExportFile for T {}
+
 /// Capture + storage for recordings. Files live under the project folder, addressed by a relative path (`audio/rec-001.wav`).
 pub trait Recorder: Send {
     /// Start one continuous capture. Returns the new file's path relative to the project folder.
@@ -42,6 +46,20 @@ pub trait Recorder: Send {
     fn finish(&mut self, min_frames: u64) -> Result<RecInfo, String>;
     /// A recording as mono float, for playback.
     fn load(&mut self, rel: &str) -> Option<Vec<f32>>;
+    /// A new file for an export, named after `stem` (a number is added rather than overwriting an earlier export).
+    /// Returns the file and a path to show the user.
+    fn create_export(&mut self, _stem: &str) -> Result<(Box<dyn ExportFile>, String), String> {
+        Err("this storage cannot export".into())
+    }
+}
+
+/// `song-mixdown.wav`, then `song-mixdown-2.wav`, ...: the first name not yet used in `dir`.
+pub fn unique_export_name(dir: &Path, stem: &str) -> String {
+    let first = format!("{stem}.wav");
+    if !dir.join(&first).exists() {
+        return first;
+    }
+    (2u32..).map(|n| format!("{stem}-{n}.wav")).find(|n| !dir.join(n).exists()).unwrap_or(first)
 }
 
 /// Recordings longer than this are not loaded for playback (they are held in memory as 32-bit floats).
@@ -203,6 +221,16 @@ impl Recorder for UsbRecorder {
     fn load(&mut self, rel: &str) -> Option<Vec<f32>> {
         load_recording(&self.project_dir, rel)
     }
+
+    fn create_export(&mut self, stem: &str) -> Result<(Box<dyn ExportFile>, String), String> {
+        // the stem comes from the project name and track names: keep it to a plain file name
+        let stem: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' }).collect();
+        let dir = self.project_dir.join("export");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        let path = dir.join(unique_export_name(&dir, &stem));
+        let f = File::create(&path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+        Ok((Box::new(BufWriter::with_capacity(256 * 1024, f)), path.display().to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +273,20 @@ mod tests {
         assert!(load_recording(&d, "audio/rec-002.wav").is_none(), "wrong sample rate");
         std::fs::write(d.join("audio/rec-003.wav"), b"not a wav").unwrap();
         assert!(load_recording(&d, "audio/rec-003.wav").is_none());
+    }
+
+    #[test]
+    fn export_files_are_named_uniquely_and_never_leave_the_export_folder() {
+        let d = tmp("export");
+        let mut r = UsbRecorder::new(&d);
+        let (mut f, path) = r.create_export("song-mixdown").unwrap();
+        f.write_all(b"x").unwrap();
+        drop(f);
+        assert!(path.ends_with("export/song-mixdown.wav"), "{path}");
+        let (_, path2) = r.create_export("song-mixdown").unwrap();
+        assert!(path2.ends_with("song-mixdown-2.wav"), "{path2}");
+        let (_, path3) = r.create_export("../../etc/passwd").unwrap();
+        assert!(path3.starts_with(d.join("export").to_str().unwrap()) && !path3.contains(".."), "{path3}");
     }
 
     #[test]

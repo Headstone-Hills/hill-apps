@@ -57,6 +57,7 @@ impl HillDaw {
             View::Mixer => self.draw_mixer(fb),
             View::Arrange => self.draw_arrange(fb),
             View::Fm1 => self.draw_fm1(fb),
+            View::Export => self.draw_export(fb),
         }
         self.draw_footer(fb);
         self.draw_clock(fb);
@@ -283,18 +284,80 @@ impl HillDaw {
         }
     }
 
+    /// Export screen: the options, a progress bar while a job runs, and what the last export wrote.
+    fn draw_export(&self, fb: &mut Fb) {
+        fb.rect(10, 138, 620, 262, PANEL);
+        fb.text(22, 146, "EXPORT", 2, DRUM);
+        let e = &self.project.export;
+        let onoff = |b: bool| if b { "on" } else { "off" };
+        let rows: [(&str, String, &str, bool); 5] = [
+            ("Format", format!("WAV {}-bit", e.bits), "", true),
+            ("Dither", onoff(e.dither).to_string(), "16-bit only", e.bits == 16),
+            ("Normalize", onoff(e.normalize).to_string(), "mixdown peak to -1 dBFS", true),
+            ("Stems", onoff(e.stems).to_string(), "one file per track + the drums", true),
+            ("Export now", "press A".to_string(), "", true),
+        ];
+        for (r, (label, value, note, live)) in rows.iter().enumerate() {
+            let y = 176 + r as i32 * 28;
+            if r == self.export_row {
+                fb.rect(16, y - 6, 608, 26, rgb(34, 42, 58));
+            }
+            fb.text(26, y, label, 2, if r == 4 { ACCENT } else { TEXT });
+            let x = fb.text(250, y, value, 2, if *live { WHITE } else { DIM });
+            fb.text(x + 16, y + 4, note, 1, DIM);
+        }
+        let y = 330;
+        if let Some(f) = self.export_progress() {
+            fb.frame(22, y, 400, 16, 2, DIM);
+            fb.rect(24, y + 2, (396.0 * f) as i32, 12, ACCENT);
+            fb.text(434, y + 4, &format!("{:.0}%   B cancels", f * 100.0), 1, TEXT);
+            return;
+        }
+        match self.export_report() {
+            Some(Ok(r)) if r.cancelled => {
+                fb.text(22, y, "Cancelled. A partly written file may be left in the export folder.", 1, AMBER);
+            }
+            Some(Ok(r)) => {
+                let secs = r.seconds.round() as u64;
+                let mut line = format!("Done: {} file{}, {}:{:02}, peak {:.1} dBFS", r.files.len(), if r.files.len() == 1 { "" } else { "s" }, secs / 60, secs % 60, r.peak_db);
+                if r.gain_db != 0.0 {
+                    line += &format!(", normalized {:+.1} dB", r.gain_db);
+                }
+                fb.text(22, y, &line, 1, ACCENT);
+                if r.clipped > 0 {
+                    fb.text(22, y + 12, &format!("{} samples went past full scale and were clipped: lower the levels", r.clipped), 1, WARN);
+                }
+                for (i, p) in r.files.iter().take(5).enumerate() {
+                    let name = std::path::Path::new(p).file_name().map_or(p.clone(), |n| n.to_string_lossy().into_owned());
+                    fb.text(22, y + 28 + i as i32 * 10, &hill_core::fb::clip(&name, 60), 1, DIM);
+                }
+                if let Some(dir) = r.files.first().and_then(|p| std::path::Path::new(p).parent()) {
+                    fb.text(22, y + 28 + 5 * 10, &hill_core::fb::clip(&dir.display().to_string(), 74), 1, DIM);
+                }
+            }
+            Some(Err(e)) => {
+                fb.text(22, y, &hill_core::fb::clip(&format!("Export failed: {e}"), 74), 1, WARN);
+            }
+            None => {
+                fb.text(22, y, "Writes the mix of everything on the Mixer and Arrange screens.", 1, DIM);
+            }
+        }
+    }
+
     fn draw_footer(&self, fb: &mut Fb) {
         fb.rect(0, 446, 640, 34, PANEL);
         let tab = |fb: &mut Fb, x: i32, name: &str, on: bool| {
             fb.text(x, 454, name, 2, if on { ACCENT } else { DIM });
         };
         tab(fb, 12, "MIXER", self.view == View::Mixer);
-        tab(fb, 124, "ARRANGE", self.view == View::Arrange);
-        tab(fb, 268, "FM-1", self.view == View::Fm1);
+        tab(fb, 108, "ARRANGE", self.view == View::Arrange);
+        tab(fb, 236, "FM-1", self.view == View::Fm1);
+        tab(fb, 316, "EXPORT", self.view == View::Export);
         let hint = match self.view {
-            View::Mixer => "L/R strip U/D level X mute A arm",
-            View::Arrange => "U/D section L/R pattern A add X del",
-            View::Fm1 => "L2/R2 tab U/D row L/R value A on/off",
+            View::Mixer => "L/R strip U/D level",
+            View::Arrange => "U/D section L/R pattern",
+            View::Fm1 => "L2/R2 tab U/D L/R val",
+            View::Export => "U/D option L/R change",
         };
         fb.text_right(630, 452, hint, 1, DIM);
         fb.text_right(630, 464, "START play   FN+SELECT help", 1, DIM);

@@ -69,6 +69,7 @@ pub struct DrumSection {
     pub cycles: u32,
 }
 
+#[derive(Clone)]
 pub struct DrumTrack {
     /// Sections play back to back starting at `start`.
     pub sections: Vec<DrumSection>,
@@ -82,11 +83,13 @@ pub struct DrumTrack {
     pub gain: f32,
     /// The whole chain of sections repeats forever instead of ending (the timeline keeps counting; only the drums come round again).
     pub looping: bool,
+    /// No hit may begin at or after this frame (an export stops the drums at the song's end; hits already sounding ring out).
+    pub end_frame: Option<u64>,
 }
 
 impl DrumTrack {
     pub fn new(bpm: f64) -> Self {
-        DrumTrack { sections: vec![], bpm, swing: 0.0, start: 0, vol: [1.0; VOICES], mute: [false; VOICES], gain: 1.0, looping: false }
+        DrumTrack { sections: vec![], bpm, swing: 0.0, start: 0, vol: [1.0; VOICES], mute: [false; VOICES], gain: 1.0, looping: false, end_frame: None }
     }
 
     fn step_len(&self, p: &DrumPattern, rate: u32) -> f64 {
@@ -176,6 +179,9 @@ impl DrumTrack {
                 for s in 0..p.steps {
                     let t = s0 + c as f64 * cyc + s as f64 * sl + if s % 2 == 1 { swing * sl } else { 0.0 };
                     let hit = t.round() as i64;
+                    if self.end_frame.is_some_and(|e| hit >= e as i64) {
+                        continue;
+                    }
                     for vi in 0..VOICES.min(p.cells.len()) {
                         let cell = p.cells[vi].get(s).copied().unwrap_or(0);
                         let vel = cell & !FLAM_BIT;
@@ -479,5 +485,23 @@ mod tests {
         let o = render(&mut t, 0, 66150 * 2);
         let hits: Vec<usize> = (0..o.len() / 2).filter(|&i| o[i * 2] != 0.0 && (i == 0 || o[(i - 1) * 2] == 0.0)).collect();
         assert_eq!(hits, vec![0, 22050, 55125, 66150, 88200, 121275]);
+    }
+
+    #[test]
+    fn end_frame_stops_new_hits_but_lets_the_ringing_ones_finish() {
+        let mut p = DrumPattern::silent(4, 4);
+        p.voices[0] = Some(DrumVoice { data: Arc::new(vec![0.5; 2 * 30000]), rate: R });
+        p.cells[0][0] = 127;
+        let mut t = DrumTrack::new(120.0);
+        t.looping = true;
+        t.sections.push(DrumSection { name: "A".into(), pattern: Arc::new(p), cycles: 1 });
+        t.end_frame = Some(30_000); // cycle = 22050: hits at 0 and 22050 begin; the one at 44100 does not
+        let o = render(&mut t, 0, 100_000);
+        let on = |f: usize| o[2 * f] != 0.0;
+        assert!(on(0) && on(22_049 + 100) && on(29_999), "hits before the end sound");
+        assert!(!on(52_049 + 1), "the 22050 hit is 30000 long: over by 52050");
+        assert!(!(60_000..100_000).any(on), "no hit begins after the end");
+        let clone = t.clone();
+        assert_eq!(clone.end_frame, Some(30_000));
     }
 }
