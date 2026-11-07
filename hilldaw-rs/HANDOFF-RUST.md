@@ -165,4 +165,4 @@ Keys: L2/R2 section, Up/Down row (voice: +-10), Left/Right value (Y: +-10), A ef
 - Only what the user chose is stored (`project.fm1`) and sent; untouched controls show `--`. A never-set parameter starts from the middle of its range. On connect (status poll sees the FM-1) the stored values are resent once; again after an unplug/replug.
 - `app/src/fm1link.rs`: a thread owns the USB MIDI port, opened lazily on the first message and reopened after a failed write. **While HillDAW has the port open, `fm1tool`/`hdtool` cannot claim it** (usbfs: one claim per interface): quit HillDAW first, or use the tools before touching the FM-1 screen.
 - Controls marked `?` (reverb decay, delay decay, phaser freq/depth) could not be measured; the screen says so.
-- 25 app tests + 3 link tests; screens checked by snapshot. **Not run on the SP yet.**
+- 25 app tests + 3 link tests; screens checked by snapshot. **Run on the SP 2026-11-08: the owner ran the checklist (voice steps change the sound, effect switch and value audible, test note, settings restored after restart) and reports everything works.** Not measured: how long the first message takes after opening the port.
