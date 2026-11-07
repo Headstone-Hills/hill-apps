@@ -23,15 +23,19 @@ Legend: DONE+TESTED (unit tests / host) · WRITTEN (compiles, **not run on hardw
 
 | Item | State |
 |---|---|
-| USB-MIDI out/in layer, discovery by VID/PID, reconnect (`fm1_usb.py`) | WRITTEN. MIDI-out ioctl numbers match the device-verified values (asserted at import on 64-bit). MIDI **in** (`UsbMidiDevice.read`, ep 0x84) never run on hardware. |
-| UAC1 descriptor parser (`usb_desc.py`) | DONE+TESTED against a **synthetic** fixture built from the brief's decoded values. **Replace with the real dump**: `fm1_descriptors.bin` (see Phase 0). |
-| Iso capture helper (`helper/isocap.c`, `build_helper.sh`) | WRITTEN. Compiles clean with `-Wall -Wextra` for host and aarch64. **Never run against a device.** Uses the kernel's `linux/usbdevice_fs.h`, so struct layouts are correct by construction. |
+| USB-MIDI out/in layer, discovery by VID/PID, reconnect (`fm1_usb.py`) | Discovery + sysfs endpoint lookup PROVEN on hardware (found `/dev/bus/usb/008/002`, ep 0x04/0x84). MIDI out PROVEN (middle C played during capture). MIDI **in** ran but received nothing in 8 s: inconclusive. |
+| UAC1 descriptor parser (`usb_desc.py`) | PROVEN on the real device: parsed output matches the brief exactly. Unit tests still use a **synthetic** fixture; swap in the real 334-byte `fm1_descriptors.bin` from the SP (`/mnt/sdcard/ports/pocketdaw/`). |
+| Iso capture helper (`helper/isocap.c`, `build_helper.sh`) | PROVEN on hardware (`docs/PHASE0_RESULTS.md`): 4 s capture, 0 bad/empty packets, exactly 176,400 frames. Not yet tested for 60 s+ or under UI load. |
 | `fm1tool.py` (`list`, `descriptors`, `note`, `midi-in`, `capture`, `wavcheck`) | WRITTEN; `capture --mock`, `wavcheck`, `list` verified off-device. `latency-test` from the brief **not written yet**. |
 | `wavcheck.py` numeric analysis (peak/RMS/silence/L-R identical) | DONE+TESTED |
 | `deploy.sh` (tar-over-ssh deploy, `phase0` runner) | WRITTEN, never run |
 | Everything in brief sections 5-9 beyond Phase 0 | TODO |
 
 Test command: `cd pocketdaw && python3 -m unittest discover -s tests` (stdlib only; 9 tests).
+
+## Phase 0 result (2026-11-08): capture WORKS
+See [`docs/PHASE0_RESULTS.md`](docs/PHASE0_RESULTS.md). Remaining Phase 0 items: re-test MIDI IN with a longer window and confirm keys are pressed;
+long-capture soak test; then proceed to brief section 9 step 2 onward. The numbered "IMMEDIATE NEXT STEP" below is now historical.
 
 ## Device facts learned from the user's SSH session (iPhone/Termius, root on the SP)
 - Tools on the SP: `curl`, `wget`, `tar`, **no `git`**. Python **3.11.8**. **numpy not installed** (vendor into `pylibs/` like the Hill apps).
