@@ -827,7 +827,7 @@ impl App for HillDaw {
     fn save(&mut self) {
         let json = self.project.to_json();
         self.lib.host_mut().save_state(STATE_KEY, &json);
-        // the measured output clock, for the drift test (read it from hilldaw-drift.json next to the program)
+        // the measured output clock, for the drift test (read it from hilldaw-drift_state.txt next to the program)
         if let Some(f) = self.out_clock() {
             let text = format!("output clock {:.3} Hz = {:+.1} ppm over {:.0} s, {} samples, timestamp jitter {:.1} ms\n", f.rate_hz, f.ppm, f.span_s, f.samples, f.jitter_ms);
             self.lib.host_mut().save_state("hilldaw-drift", &text);

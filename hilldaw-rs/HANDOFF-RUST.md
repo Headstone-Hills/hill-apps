@@ -172,7 +172,7 @@ Keys: L2/R2 section, Up/Down row (voice: +-10), Left/Right value (Y: +-10), A ef
 Question: the FM-1 records on its clock, the SP plays on its own; do they agree well enough to record against the drums?
 Method (`core/src/drift.rs`): each clock is compared with the system's monotonic clock by a least-squares fit of frames against time (precise to a few ppm even with 20 ms timestamp jitter; tested).
 - `hdtool drift-cap [--secs 300]`: FM-1 capture clock. Prints a running figure every 30 s and saves `/root/drift-capture.txt`.
-- HillDAW itself counts the frames its audio callback delivers; after 30 s a line "AUDIO OUT 44100.xx Hz +n ppm" appears above the footer, and on quit the figures are saved to `hilldaw-drift.json` (state store) next to the program.
+- HillDAW itself counts the frames its audio callback delivers; after 30 s a line "AUDIO OUT 44100.xx Hz +n ppm" appears above the footer, and on quit the figures are saved to `hilldaw-drift_state.txt` (state store) next to the program.
 - Relative drift = capture rate / output rate - 1. Rule of thumb: under ~20 ppm is negligible for a few-minute song (1.2 ms per minute); 50 ppm is 3 ms per minute (30 ms per 10 minutes).
 Run both together for 5+ minutes (HillDAW on the Mixer screen with the drums playing, `hdtool drift-cap --secs 300` in Termius). Not yet run on the SP.
 
@@ -180,3 +180,15 @@ Run both together for 5+ minutes (HillDAW on the Mixer screen with the drums pla
 
 Cause: the starter groove is one section of 4 cycles (= 4 bars) and the transport had no loop, so the arrangement simply ended. Fix: `project.drums.loop_arrangement` (default true, old files get it too) makes the transport wrap at the end of the drum arrangement (`apply_loop`, sample-exact via `Transport::loop_region`); FN+Y toggles it; the Mixer shows "loop on/off". An edit that shortens the song wraps the playhead instead of leaving it past the end.
 Regression tests: `the_drums_keep_going_past_the_end_of_the_arrangement_while_looping`, `fn_y_turns_the_loop_off...`, `looping_is_identical_for_any_buffer_size...`.
+
+### Clock drift result (2026-11-08, the SP, FM-1 plugged in, HillDAW running)
+
+| Clock | Rate | vs system clock | Basis |
+|---|---|---|---|
+| FM-1 capture (`hdtool drift-cap`, 300 s) | 44101.885 Hz | +42.8 ppm | 2679 samples, timestamp jitter 0.4 ms; running figures stayed within 41.5-42.4 ppm; 300016 packets, 0 empty/bad |
+| SP sound output (HillDAW readout, 329 s) | 44101.83 Hz | +42 ppm | read from the screen (photo), 2 decimals |
+
+**Relative drift = capture / output - 1 = about +1.2 ppm** (0.07 ms per minute, about 4 ms per hour). Negligible: **no drift correction is needed in the recording code.** Still store `captured_frames` and `elapsed_transport_frames` per take (`drift_ratio`) as a cheap sanity check.
+Both clocks read +42 ppm against the monotonic clock, so most likely the SP's system clock is the one that is ~42 ppm slow; only the difference matters here. The two readings were taken in separate runs (the FM-1 figure at the same time as an earlier, shorter output reading of +42 ppm at 44 s that agreed); a fully simultaneous long run was not repeated.
+Not yet checked: drift while the SP is hot after a long session, and over 30+ minutes.
+Note: the saved drift file is `hilldaw-drift_state.txt` (the host appends `_state.txt` to the key).
