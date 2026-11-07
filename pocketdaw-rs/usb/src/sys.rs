@@ -69,7 +69,9 @@ pub const DISCARDURB: u32 = ioc(IOC_NONE, b'U', 11, 0);
 /// # Safety
 /// `arg` must point to the structure the request expects.
 pub unsafe fn ioctl<T>(fd: c_int, req: u32, arg: *mut T) -> c_int {
-    libc::ioctl(fd, req as libc::Ioctl, arg)
+    // `as _` rather than `libc::Ioctl`: that alias exists only on Linux targets, and inferring the request type
+    // lets the crate (and its host-side tests) compile on macOS too. usbfs itself is Linux-only at run time.
+    libc::ioctl(fd, req as _, arg)
 }
 
 pub fn errno() -> i32 {
