@@ -1282,14 +1282,17 @@ impl HillDaw {
         }
         let d = self.project.drums.clone();
         let mut drums = None;
-        if d.enabled && !d.sections.is_empty() {
+        // the drums are left out of the export entirely when the option is off: no stem, no length, and a soloed drum strip must not
+        // silence everything else
+        let with_drums = self.project.export.drums;
+        if with_drums && d.enabled && !d.sections.is_empty() {
             if let Ok(mut t) = self.lib.build_track(&d, self.project.bpm) {
                 t.gain = 1.0; // the strip's level is the mixer track's gain
                 end = end.max(t.total_frames(rate));
                 drums = Some(t);
             }
         }
-        strips.push(StripSnap { name: "DRUMS".into(), gain: d.gain, pan: d.pan, mute: false, solo: d.solo, fx: d.fx.clone(), clips: vec![] });
+        strips.push(StripSnap { name: "DRUMS".into(), gain: d.gain, pan: d.pan, mute: false, solo: d.solo && with_drums, fx: d.fx.clone(), clips: vec![] });
         if end == 0 {
             return None;
         }
@@ -1385,7 +1388,7 @@ impl HillDaw {
     }
 
     fn export_act(&mut self, b: Btn) {
-        const ROWS: usize = 5;
+        const ROWS: usize = 6;
         match b {
             Btn::Up => self.export_row = self.export_row.saturating_sub(1),
             Btn::Down => self.export_row = (self.export_row + 1).min(ROWS - 1),
@@ -1408,6 +1411,7 @@ impl HillDaw {
                     1 => e.dither = !e.dither,
                     2 => e.normalize = !e.normalize,
                     3 => e.stems = !e.stems,
+                    4 => e.drums = !e.drums,
                     _ => {}
                 }
             }

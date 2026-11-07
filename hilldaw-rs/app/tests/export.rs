@@ -362,3 +362,74 @@ fn the_export_screen_shows_options_progress_and_results() {
     wait_export(&mut a);
     a.render(&mut fb);
 }
+
+#[test]
+fn the_drums_can_be_left_out_of_the_mixdown_and_the_stems() {
+    let (mut a, fake) = new_app();
+    record_take(&mut a, 2.0);
+    for _ in 0..24 {
+        press(&mut a, Btn::Down); // the ramp is loud: leave headroom
+    }
+    a.project.export.stems = true;
+    a.project.export.drums = false;
+    export_now(&mut a);
+    // no drum stem; the mixdown is the take alone (file frame 563 + p through -24 dB and the centre pan law), and as long as the take plus the tail
+    let names: Vec<String> = fake.0.lock().unwrap().exports.keys().map(|k| k.rsplit('/').next().unwrap().to_string()).collect();
+    assert_eq!(names, vec!["song-mixdown.wav", "song-stem-1-track-1.wav"], "{names:?}");
+    let mix = decode(&fake.file("song-mixdown.wav")).unwrap();
+    let take = a.project.tracks[0].clips[0].len.unwrap() as usize;
+    assert!((88_200..90_000).contains(&take));
+    assert_eq!(mix.frames(), take + 88_200, "the take plus the 2 s tail: the 9.6 s drum arrangement does not stretch it");
+    let g = 10f32.powf(-24.0 / 20.0);
+    for p in [0usize, 1000, 40_000] {
+        let want = (563 + p) as f32 * SLOPE * g * PAN_CENTRE;
+        assert!((mix.data[2 * p] - want).abs() < 2e-6, "frame {p}: {} vs {want}", mix.data[2 * p]);
+    }
+    // turning it back on puts the drums (and their stem) back, and the song is as long as the drum arrangement
+    a.project.export.drums = true;
+    press(&mut a, Btn::A);
+    wait_export(&mut a);
+    let names: Vec<String> = fake.0.lock().unwrap().exports.keys().map(|k| k.rsplit('/').next().unwrap().to_string()).collect();
+    assert!(names.iter().any(|n| n.contains("stem-drums")), "{names:?}");
+}
+
+#[test]
+fn a_song_of_only_drums_has_nothing_to_export_without_them_and_a_soloed_drum_strip_does_not_mute_the_rest() {
+    let (mut a, _fake) = new_app();
+    a.project.export.drums = false;
+    to_view(&mut a, View::Export);
+    press(&mut a, Btn::A);
+    assert!(a.toast_text().contains("Nothing to export"), "{}", a.toast_text());
+    assert!(!a.export_running());
+
+    // solo on the drum strip, drums left out: the take must still be heard in the mixdown
+    let (mut a, fake) = new_app();
+    record_take(&mut a, 1.0);
+    for _ in 0..8 {
+        press(&mut a, Btn::Right);
+    }
+    a.event(Btn::Y, true);
+    press(&mut a, Btn::X); // solo the drums
+    a.event(Btn::Y, false);
+    assert!(a.project.drums.solo);
+    a.project.export.drums = false;
+    export_now(&mut a);
+    let mix = decode(&fake.file("song-mixdown.wav")).unwrap();
+    assert!(mix.data.iter().any(|x| x.abs() > 0.05), "the take is in the mixdown");
+}
+
+#[test]
+fn the_drums_option_is_a_row_on_the_export_screen() {
+    let (mut a, _f) = new_app();
+    to_view(&mut a, View::Export);
+    assert!(a.project.export.drums);
+    for _ in 0..4 {
+        press(&mut a, Btn::Down);
+    }
+    press(&mut a, Btn::Right);
+    assert!(!a.project.export.drums, "row 5 toggles the drums");
+    press(&mut a, Btn::Left);
+    assert!(a.project.export.drums);
+    let mut fb = Fb::new();
+    a.render(&mut fb);
+}

@@ -320,19 +320,20 @@ impl HillDaw {
         fb.text(22, 146, "EXPORT", 2, DRUM);
         let e = &self.project.export;
         let onoff = |b: bool| if b { "on" } else { "off" };
-        let rows: [(&str, String, &str, bool); 5] = [
+        let rows: [(&str, String, &str, bool); 6] = [
             ("Format", FORMATS.iter().find(|f| (f.0, f.1) == (e.format, e.bits)).map_or("?", |f| f.2).to_string(), "", true),
             ("Dither", onoff(e.dither).to_string(), "16-bit only", e.bits == 16),
             ("Normalize", onoff(e.normalize).to_string(), "mixdown peak to -1 dBFS", true),
             ("Stems", onoff(e.stems).to_string(), "one file per track + the drums", true),
+            ("Drums", onoff(e.drums).to_string(), "off: mixdown and stems without the drum track", true),
             ("Export now", "press A".to_string(), "", true),
         ];
         for (r, (label, value, note, live)) in rows.iter().enumerate() {
-            let y = 176 + r as i32 * 28;
+            let y = 166 + r as i32 * 25;
             if r == self.export_row {
-                fb.rect(16, y - 6, 608, 26, rgb(34, 42, 58));
+                fb.rect(16, y - 4, 608, 24, rgb(34, 42, 58));
             }
-            fb.text(26, y, label, 2, if r == 4 { ACCENT } else { TEXT });
+            fb.text(26, y, label, 2, if r == 5 { ACCENT } else { TEXT });
             let x = fb.text(250, y, value, 2, if *live { WHITE } else { DIM });
             fb.text(x + 16, y + 4, note, 1, DIM);
         }

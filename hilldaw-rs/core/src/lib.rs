@@ -24,6 +24,7 @@ pub mod session;
 pub mod settings;
 pub mod tempo;
 pub mod transport;
+pub mod waveform;
 pub mod wav;
 
 /// Project sample rate: the FM-1's native capture rate, so no resampling on record.

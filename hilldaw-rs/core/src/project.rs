@@ -179,11 +179,13 @@ pub struct ExportModel {
     pub normalize: bool,
     /// also write one file per track and one for the drums
     pub stems: bool,
+    /// include the drum track (off: the mixdown and the stems are made without it)
+    pub drums: bool,
 }
 
 impl Default for ExportModel {
     fn default() -> Self {
-        ExportModel { format: ExportFormat::Wav, bits: 24, dither: true, normalize: false, stems: false }
+        ExportModel { format: ExportFormat::Wav, bits: 24, dither: true, normalize: false, stems: false, drums: true }
     }
 }
 
@@ -441,7 +443,7 @@ mod tests {
     fn export_settings_roundtrip_default_to_24_bit_and_bad_bit_depths_are_fixed() {
         let mut p = Project::default();
         assert_eq!((p.export.bits, p.export.dither, p.export.normalize, p.export.stems), (24, true, false, false));
-        p.export = ExportModel { format: ExportFormat::Mp3, bits: 16, dither: false, normalize: true, stems: true };
+        p.export = ExportModel { format: ExportFormat::Mp3, bits: 16, dither: false, normalize: true, stems: true, drums: false };
         assert_eq!(Project::from_json(&p.to_json()).unwrap(), p);
         p.export.bits = 8;
         assert_eq!(Project::from_json(&p.to_json()).unwrap().export.bits, 24);
