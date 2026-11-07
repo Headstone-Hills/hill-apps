@@ -3,7 +3,7 @@
 
 use hill_core::fb::Fb;
 use hill_core::{App, Btn, MemHost};
-use hilldaw_app::status::Status;
+use hilldaw_app::status::{InputSummary, Status};
 use hilldaw_app::HillDaw;
 use std::sync::{Arc, Mutex};
 
@@ -24,7 +24,7 @@ fn save(a: &HillDaw, path: &str) {
 
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
-    let st = Arc::new(Mutex::new(Status { battery_pct: Some(45), charging: true, battery_low: false, free_bytes: Some(100 << 30), fm1: true, ..Default::default() }));
+    let st = Arc::new(Mutex::new(Status { battery_pct: Some(45), charging: true, battery_low: false, free_bytes: Some(100 << 30), fm1: true, inputs: vec![InputSummary { id: "1234:00ab".into(), name: "Studio Mic".into(), summary: "1ch 16-bit 48 kHz".into(), rate: 48_000 }, InputSummary { id: "4c4a:c755".into(), name: "FM-1".into(), summary: "2ch 24-bit 44.1 kHz".into(), rate: 44_100 }] }));
     let mut a = HillDaw::new(Box::new(MemHost::default()), st);
     // mixer: some levels, a mute, a solo, an arm, then play so meters move
     press(&mut a, Btn::Down);
@@ -103,6 +103,8 @@ fn main() {
     }
     save(&a, &format!("{dir}/track_fx.ppm"));
     press(&mut a, Btn::R2);
+    a.tick(600); // pick up the device list
+    press(&mut a, Btn::Right); // choose the first listed input: the mic
     save(&a, &format!("{dir}/track_input.ppm"));
     press(&mut a, Btn::R2);
     press(&mut a, Btn::Right);

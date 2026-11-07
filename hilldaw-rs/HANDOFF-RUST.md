@@ -251,3 +251,21 @@ Screens (L1/R1 cycle): **Mixer, Track, Arrange, FM-1, Export**. **Track** works 
 - **Not run on the SP yet.**
 
 Owner test on the SP (2026-11-08) of the 38c16a8 batch (+24 dB gain, mixdown/stem export, Track screen, input meter, loop/punch, effects, FLAC/MP3): "everything seems to be working fine". By ear and by use, one session; the owner did not report per-step details (for example whether the FLAC/MP3 encoders were present), so treat the encoder path as seen working but unmeasured. Owner asked how to go back to bar 1 (answer: FN+B, no single-button shortcut yet).
+
+## Generic USB audio input and undo/redo (2026-11-08)
+
+### Any USB audio input, not just the FM-1 (owner request; audio only, no MIDI)
+- `hilldaw-usb::audio` finds every attached **USB Audio Class 1.0** device with a capture stream (from `/sys/bus/usb/devices/*/descriptors`) and chooses a format: prefers 44.1 kHz, then 48 kHz, then the lowest rate above CD quality, then the highest; among equals the smallest frame. 8-bit and non-PCM streams are skipped. **USB Audio 2.0 (most high-speed USB-C interfaces) is not decoded and does not appear.**
+- `MonoMixer` (core) turns any capture format (1..N channels, 16/24/32-bit) into mono 24-bit, identical to the old FM-1 downmixer for 2ch/24-bit (tested). The recorder writes mono 24-bit files **at the device's own rate**; a take at another rate (48 kHz usually) is **resampled to 44.1 kHz when it is loaded** (4-point Hermite, `resample_mono`), so the app keeps counting in project frames. Linear/Hermite resampling is "good", not studio-grade.
+- For a device that offers several rates the recorder sends the UAC1 `SET_CUR` sampling-frequency request (`dev::set_sampling_rate`, `IsoCapture::open_with_rate`). The new usbfs control-transfer struct and `USBDEVFS_CONTROL = 0xC0185500` were proven with `_Static_assert` against the real `linux/usbdevice_fs.h` (zig cc, aarch64-linux-musl). **The request itself has not run on any device.**
+- Choice: `Settings.input_device` (`vid:pid` or Auto), stored under its own key `hilldaw-settings` (a device setting, not part of a song). Auto = the FM-1 if attached, else the first input. **A chosen device that is unplugged is shown as "not connected" and is never silently replaced by another.** Input tab row 0 steps Auto/devices with Left/Right; changing it while recording is refused; the meter reopens on the new input. The top bar now names the input in use (was an FM-1 dot); the FM-1 screen shows "FM-1 MIDI: connected / not found".
+- `hdtool inputs` lists inputs; `hdtool drift-cap --input VID:PID` measures any device's clock (the 1.2 ppm result is for the FM-1 only; **other devices have not been measured**).
+- Latency: the default 563 frames is the FM-1's measured figure; other devices will differ: use the latency nudge on the Input tab.
+- Not verified on hardware: any non-FM-1 device. Two identical devices share an id; the first is used.
+
+### Undo / redo
+- **Whole-project snapshots** (not the core `edit.rs` command history, which the app does not use): every edit calls `checkpoint(label, key)` before changing anything; the snapshot is kept only if the project really changed by the end of the button press (`settle`). Same key within 700 ms = one step (holding a button changes a level in one step); a new edit clears redo; 100 steps.
+- Keys: **Y+B undo, Y+A redo** (a toast names the edit, e.g. "Undo: level"). Refused while recording. Covers levels, pan, mute, solo, tempo, swing, drum patterns/sections/cycles/loop, FM-1 voice and effects, per-track effects and reverb room, loop and punch, latency and count-in, takes (choose/remove) and a recording (one step: undo removes the take from the track, the audio file stays on the card; redo brings it back).
+- `restore` rebuilds everything built from the project (click, drums, mixer, effects, clips, loop) and **resends changed FM-1 settings** (the unit keeps what it was last told). Export options are settings, not edits: undo leaves them alone.
+- Not covered: arming, view/selection, export option changes, anything not in `Project`.
+- Tests: `app/tests/undo.rs` (11), generic input tests in `app/tests/track.rs`, usb/core/recorder tests. **Not run on the SP yet.**

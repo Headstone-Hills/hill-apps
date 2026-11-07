@@ -82,6 +82,8 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("START", "play / stop"),
     ("SELECT", "record on the armed track / stop"),
     ("FN + L1", "count-in on / off"),
+    ("Y + B", "undo the last edit"),
+    ("Y + A", "redo"),
     ("L1 / R1", "previous / next screen"),
     ("FN + Left/Right", "tempo -1 / +1  (Up/Down: +-5)"),
     ("FN + A", "tap tempo"),
@@ -127,6 +129,26 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("A", "add a section after this one"),
     ("X", "delete the section"),
 ];
+
+/// The project as it was before an edit, with a name for the toast.
+#[derive(Clone)]
+struct UndoEntry {
+    project: Project,
+    label: &'static str,
+}
+
+/// A snapshot taken before an edit, kept only if the edit really changed something.
+struct Pending {
+    project: Project,
+    label: &'static str,
+    key: u32,
+}
+
+/// Edits with this key never merge into the previous undo step.
+const NO_COALESCE: u32 = u32::MAX;
+/// Repeated edits with the same key inside this long form one undo step (holding a button to change a level).
+const COALESCE_MS: u64 = 700;
+const MAX_UNDO: usize = 100;
 
 /// A recording in progress (count-in or recording).
 pub(crate) struct ActiveRec {
@@ -183,6 +205,12 @@ pub struct HillDaw {
     fm1_out: Option<Box<dyn Fm1Out>>,
     recorder: Option<Box<dyn Recorder>>,
     export_job: Option<Job>,
+    undo: Vec<UndoEntry>,
+    redo: Vec<UndoEntry>,
+    pending: Option<Pending>,
+    /// the key and time of the last committed edit, to merge a burst of the same edit
+    last_commit: Option<(u32, u64)>,
+    coalesce_touch: Option<u32>,
     pub(crate) track_tab: TrackTab,
     pub(crate) track_row: usize,
     pub(crate) take_sel: usize,
@@ -316,6 +344,11 @@ impl HillDaw {
             fm1_out: None,
             recorder: None,
             export_job: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            pending: None,
+            last_commit: None,
+            coalesce_touch: None,
             track_tab: TrackTab::Takes,
             track_row: 0,
             take_sel: 0,
@@ -458,6 +491,13 @@ impl HillDaw {
         if i == DRUMS { self.project.drums.solo } else { self.project.tracks[i].solo }
     }
     fn set_strip(&mut self, i: usize, gain: Option<f32>, pan: Option<f32>, mute: Option<bool>, solo: Option<bool>) {
+        match (gain, pan, mute, solo) {
+            (Some(_), Some(_), _, _) => self.checkpoint("reset", 10_000 + i as u32),
+            (Some(_), ..) => self.checkpoint("level", 1000 + i as u32),
+            (_, Some(_), ..) => self.checkpoint("pan", 1100 + i as u32),
+            (_, _, Some(_), _) => self.checkpoint("mute", 1200 + i as u32),
+            _ => self.checkpoint("solo", 1300 + i as u32),
+        }
         if i == DRUMS {
             let d = &mut self.project.drums;
             d.gain = gain.unwrap_or(d.gain);
@@ -477,6 +517,7 @@ impl HillDaw {
     // ---- tempo / transport -----------------------------------------------------------------------------------------
 
     fn set_bpm(&mut self, bpm: f64) {
+        self.checkpoint("tempo", 2000);
         let bpm = bpm.clamp(MIN_BPM, MAX_BPM);
         // keep the musical position when the tempo changes while playing
         let beats = self.transport.pos as f64 / self.transport.frames_per_beat();
@@ -497,6 +538,117 @@ impl HillDaw {
             // a stopped transport renders nothing; let the meters fall
             self.hold = [0.0; STRIPS];
             self.hold_master = 0.0;
+        }
+    }
+
+    // ---- undo / redo --------------------------------------------------------------------------------------------------
+    //
+    // Whole-project snapshots: every edit calls `checkpoint` before it changes anything; the snapshot is kept only if the project really
+    // changed by the end of the button press (`settle`). Edits with the same key within `COALESCE_MS` share one step.
+
+    fn checkpoint(&mut self, label: &'static str, key: u32) {
+        if self.pending.is_some() {
+            return; // one step per button press: the first snapshot is the one that matters
+        }
+        if key != NO_COALESCE && self.last_commit.is_some_and(|(k, t)| k == key && self.ms.saturating_sub(t) <= COALESCE_MS) {
+            self.coalesce_touch = Some(key);
+            return;
+        }
+        self.pending = Some(Pending { project: self.project.clone(), label, key });
+    }
+
+    /// Keep or drop the snapshot of the edit that just happened.
+    fn settle(&mut self) {
+        if let Some(p) = self.pending.take() {
+            if p.project != self.project {
+                self.undo.push(UndoEntry { project: p.project, label: p.label });
+                if self.undo.len() > MAX_UNDO {
+                    self.undo.remove(0);
+                }
+                self.redo.clear();
+                self.last_commit = Some((p.key, self.ms));
+            }
+        } else if let Some(k) = self.coalesce_touch.take() {
+            self.last_commit = Some((k, self.ms));
+        }
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty() || self.pending.as_ref().is_some_and(|p| p.project != self.project)
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    pub fn undo_depth(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// Go back one edit.
+    pub fn undo(&mut self) {
+        self.settle();
+        if self.rec.is_some() {
+            self.toast.say("Stop recording first");
+            return;
+        }
+        let Some(e) = self.undo.pop() else {
+            self.toast.say("Nothing to undo");
+            return;
+        };
+        self.redo.push(UndoEntry { project: self.project.clone(), label: e.label });
+        self.toast.say(&format!("Undo: {}", e.label));
+        self.restore(e.project);
+        self.last_commit = None;
+    }
+
+    /// Go forward again after an undo.
+    pub fn redo(&mut self) {
+        self.settle();
+        if self.rec.is_some() {
+            self.toast.say("Stop recording first");
+            return;
+        }
+        let Some(e) = self.redo.pop() else {
+            self.toast.say("Nothing to redo");
+            return;
+        };
+        self.undo.push(UndoEntry { project: self.project.clone(), label: e.label });
+        self.toast.say(&format!("Redo: {}", e.label));
+        self.restore(e.project);
+        self.last_commit = None;
+    }
+
+    /// Make `new` the project and bring everything that is built from it (the click, the drums, the mixer, effects, clips) into line.
+    fn restore(&mut self, mut new: Project) {
+        new.export = self.project.export.clone(); // export options are settings, not edits: undo leaves them as they are
+        let old = std::mem::replace(&mut self.project, new);
+        if old.bpm != self.project.bpm || old.beats_per_bar != self.project.beats_per_bar {
+            // keep the musical position when the tempo comes back
+            let beats = self.transport.pos as f64 / self.transport.frames_per_beat();
+            self.transport.bpm = self.project.bpm;
+            self.transport.beats_per_bar = self.project.beats_per_bar;
+            self.transport.pos = self.transport.beat_to_frame(beats);
+        }
+        self.rebuild_click();
+        self.rebuild_drums();
+        self.apply_mixer();
+        self.apply_all_fx();
+        self.apply_loop();
+        for i in 0..MAX_TRACKS {
+            self.rebuild_track(i);
+        }
+        let strip_takes = self.project.tracks.get(self.sel).map_or(0, |t| t.takes.len());
+        self.take_sel = self.take_sel.min(strip_takes.saturating_sub(1));
+        // the FM-1 keeps whatever it was last told: send what this change put back
+        let n = self.project.fm1.clone();
+        let o = &old.fm1;
+        if n.program_set && (!o.program_set || o.program != n.program) {
+            self.fm1_send(Fm1Msg::Program(n.program));
+        }
+        let changed: Vec<(u8, u8)> = n.fx.iter().filter(|(cc, v)| o.fx.get(cc) != Some(v)).map(|(a, b)| (*a, *b)).collect();
+        for (cc, value) in changed {
+            self.fm1_send(Fm1Msg::FxCc { cc, value });
         }
     }
 
@@ -575,6 +727,7 @@ impl HillDaw {
             }
         };
         let track = rec.track;
+        self.checkpoint("recording", NO_COALESCE);
         let mut added = 0;
         for t in &takes {
             let offset = base + t.cap_start;
@@ -650,6 +803,7 @@ impl HillDaw {
             Btn::Down => self.set_bpm(self.project.bpm - 5.0),
             Btn::Up => self.set_bpm(self.project.bpm + 5.0),
             Btn::L2 | Btn::R2 => {
+                self.checkpoint("swing", 2100);
                 let d = if b == Btn::L2 { -0.01 } else { 0.01 };
                 self.project.drums.swing = (self.project.drums.swing + d).clamp(0.0, 0.25);
                 self.project.drums.swing = (self.project.drums.swing * 100.0).round() / 100.0;
@@ -673,6 +827,7 @@ impl HillDaw {
                 self.toast.say("Back to start");
             }
             Btn::Y => {
+                self.checkpoint("drum loop", NO_COALESCE);
                 self.project.drums.loop_arrangement = !self.project.drums.loop_arrangement;
                 self.rebuild_drums();
                 self.toast.say(if self.project.drums.loop_arrangement { "Drums loop on" } else { "Drums loop off" });
@@ -689,6 +844,7 @@ impl HillDaw {
 
     /// Set or clear the loop region (frames). Recording over a loop region makes each pass its own take.
     pub fn set_loop_region(&mut self, r: Option<(u64, u64)>) {
+        self.checkpoint("loop", 6000 + self.track_row as u32);
         self.project.loop_region = r;
         self.apply_loop();
     }
@@ -738,6 +894,7 @@ impl HillDaw {
             Btn::Up => self.arr_sel = self.arr_sel.saturating_sub(1),
             Btn::Down => self.arr_sel = (self.arr_sel + 1).min(n.saturating_sub(1)),
             Btn::Left | Btn::Right if self.held.is(Btn::Y) => {
+                self.checkpoint("cycles", 3100 + self.arr_sel as u32);
                 if let Some(s) = self.project.drums.sections.get_mut(self.arr_sel) {
                     let c = s.cycles as i64 + if b == Btn::Left { -1 } else { 1 };
                     s.cycles = c.clamp(1, MAX_SECTION_CYCLES as i64) as u32;
@@ -766,6 +923,7 @@ impl HillDaw {
                 if n >= MAX_DRUM_SECTIONS {
                     self.toast.say("Section limit reached");
                 } else {
+                    self.checkpoint("add section", NO_COALESCE);
                     let new = self.project.drums.sections.get(self.arr_sel).cloned().or_else(|| {
                         all.first().map(|x| DrumSectionModel { name: x.name.clone(), preset: x.id.clone(), cycles: 4 })
                     });
@@ -779,6 +937,7 @@ impl HillDaw {
                 }
             }
             Btn::X if n > 0 => {
+                self.checkpoint("delete section", NO_COALESCE);
                 self.project.drums.sections.remove(self.arr_sel);
                 self.rebuild_drums();
                 self.toast.say("Section deleted");
@@ -819,11 +978,12 @@ impl HillDaw {
 
     /// Make a take from the history the one that plays (its clip is rebuilt from where it was recorded).
     pub fn set_active_take(&mut self, track: usize, idx: usize) -> Result<(), String> {
-        let tm = self.project.tracks.get_mut(track).ok_or("no such track")?;
-        let t = tm.takes.get(idx).ok_or("no such take")?.clone();
+        let t = self.project.tracks.get(track).ok_or("no such track")?.takes.get(idx).ok_or("no such take")?.clone();
         if !t.placed {
             return Err("older take: its place was not saved".into());
         }
+        self.checkpoint("take", NO_COALESCE);
+        let tm = &mut self.project.tracks[track];
         tm.active_take = Some(idx);
         tm.clips = vec![ClipModel { file: t.file, start: t.start, offset: t.offset, len: Some(t.frames), ..Default::default() }];
         self.rebuild_track(track);
@@ -832,10 +992,11 @@ impl HillDaw {
 
     /// Take `idx` leaves the list (its audio stays on the card). If it was playing, the newest remaining take plays instead.
     pub fn remove_take(&mut self, track: usize, idx: usize) {
-        let Some(tm) = self.project.tracks.get_mut(track) else { return };
-        if idx >= tm.takes.len() {
+        if self.project.tracks.get(track).is_none_or(|t| idx >= t.takes.len()) {
             return;
         }
+        self.checkpoint("remove take", NO_COALESCE);
+        let tm = &mut self.project.tracks[track];
         tm.takes.remove(idx);
         match tm.active_take {
             Some(a) if a == idx => {
@@ -892,13 +1053,18 @@ impl HillDaw {
                         let dir = if b == Btn::Right { 1i64 } else { -1 };
                         if self.track_row == 1 {
                             // about 1 ms (44 frames) a step, 5 ms with Y; never earlier than the capture (0) or later than 100 ms
+                            self.checkpoint("latency", 7000);
                             let step = if big { 220 } else { 44 };
                             self.project.latency_offset_frames = (self.project.latency_offset_frames + dir * step).clamp(0, 4410);
                         } else {
+                            self.checkpoint("count-in", 7001);
                             self.project.count_in = !self.project.count_in;
                         }
                     }
-                    Btn::A if self.track_row == 2 => self.project.count_in = !self.project.count_in,
+                    Btn::A if self.track_row == 2 => {
+                        self.checkpoint("count-in", 7001);
+                        self.project.count_in = !self.project.count_in;
+                    }
                     _ => {}
                 }
             }
@@ -970,6 +1136,7 @@ impl HillDaw {
     /// One edit step of the effect row `self.track_row` on strip `i`.
     fn fx_edit(&mut self, i: usize, dir: i32, big: bool) {
         let row = self.track_row;
+        self.checkpoint("effect", 5000 + i as u32 * 16 + row as u32);
         let q = |v: f32| (v * 100.0).round() / 100.0;
         if row == 6 {
             self.project.reverb_room = q((self.project.reverb_room + dir as f32 * 0.05).clamp(0.0, 1.0));
@@ -1032,6 +1199,7 @@ impl HillDaw {
                 if is_loop {
                     self.set_loop_region(new);
                 } else {
+                    self.checkpoint("punch", 6200 + self.track_row as u32);
                     self.project.punch = new;
                 }
             }
@@ -1181,6 +1349,7 @@ impl HillDaw {
     /// Set a strip's effect chain from a model (strip 8 is the drums); values are pulled into range.
     pub fn set_strip_fx(&mut self, strip: usize, mut m: TrackFxModel) {
         if strip < STRIPS {
+            self.checkpoint("effect", 5000 + strip as u32 * 16);
             m.sanitize();
             *self.strip_fx_mut(strip) = m;
             self.apply_fx(strip);
@@ -1255,6 +1424,7 @@ impl HillDaw {
     }
 
     fn fm1_set_program(&mut self, p: u8) {
+        self.checkpoint("FM-1 voice", 4000);
         self.project.fm1.program = p.min(127);
         self.project.fm1.program_set = true;
         self.fm1_send(Fm1Msg::Program(self.project.fm1.program));
@@ -1262,6 +1432,7 @@ impl HillDaw {
 
     fn fm1_set_fx(&mut self, cc: u8, v: u8) {
         let Some(p) = fx_map().by_cc(cc) else { return };
+        self.checkpoint("FM-1 effect", 4100 + cc as u32);
         let v = p.clamp(v);
         self.project.fm1.fx.insert(cc, v);
         self.fm1_send(Fm1Msg::FxCc { cc, value: v });
@@ -1354,6 +1525,7 @@ impl HillDaw {
     }
 
     fn set_section_preset(&mut self, idx: usize) {
+        self.checkpoint("pattern", 3000 + self.arr_sel as u32);
         let all = &presets::builtin().patterns;
         if let (Some(s), Some(p)) = (self.project.drums.sections.get_mut(self.arr_sel), all.get(idx)) {
             s.preset = p.id.clone();
@@ -1563,12 +1735,8 @@ impl HillDaw {
 
 }
 
-impl App for HillDaw {
-    fn name(&self) -> &'static str {
-        "hilldaw"
-    }
-
-    fn event(&mut self, b: Btn, down: bool) {
+impl HillDaw {
+    fn event_body(&mut self, b: Btn, down: bool) {
         self.held.set(b, down);
         if !down {
             self.rep.stop(b);
@@ -1619,7 +1787,10 @@ impl App for HillDaw {
             return;
         }
         match b {
+            Btn::B if self.held.is(Btn::Y) => self.undo(),
+            Btn::A if self.held.is(Btn::Y) => self.redo(),
             Btn::L1 if self.held.is(Btn::Fn) => {
+                self.checkpoint("count-in", 7001);
                 self.project.count_in = !self.project.count_in;
                 self.toast.say(if self.project.count_in { "Count-in on" } else { "Count-in off" });
             }
@@ -1637,6 +1808,17 @@ impl App for HillDaw {
             }
         }
     }
+}
+
+impl App for HillDaw {
+    fn name(&self) -> &'static str {
+        "hilldaw"
+    }
+
+    fn event(&mut self, b: Btn, down: bool) {
+        self.event_body(b, down);
+        self.settle(); // keep the undo snapshot of this press only if it changed something
+    }
 
     fn audio(&mut self, out: &mut [f32]) {
         let now = std::time::Instant::now();
@@ -1650,6 +1832,7 @@ impl App for HillDaw {
 
     fn tick(&mut self, dt_ms: u32) {
         self.tick_inner(dt_ms);
+        self.settle();
     }
 
     fn set_rate(&mut self, rate: f32) {

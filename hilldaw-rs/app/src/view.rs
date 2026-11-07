@@ -385,7 +385,7 @@ impl HillDaw {
             fb.text(x, 449, name, 2, if self.view == v { ACCENT } else { DIM });
         }
         let hint = match self.view {
-            View::Mixer => "L/R strip  U/D level (Y 6dB)  X mute  A arm",
+            View::Mixer => "L/R strip U/D level X mute A arm  Y+B undo Y+A redo",
             View::Track => "L2/R2 tab  U/D row  L/R value (Y: big)  B mixer",
             View::Arrange => "U/D section  L/R pattern  L2/R2 style  A add  X del",
             View::Fm1 => "L2/R2 section  U/D row  L/R value  A on/off  X note",
@@ -498,14 +498,14 @@ impl HillDaw {
                 }
                 if let Some(i) = self.current_input() {
                     let note = if i.rate == 44100 { i.summary.clone() } else { format!("{}  (resampled to 44.1 kHz)", i.summary) };
-                    fb.text(300, 266, &hill_core::fb::clip(&note, 40), 1, DIM);
+                    fb.text(300, 266, &hill_core::fb::clip(&note, 42), 1, DIM);
                 } else {
                     fb.text(300, 266, "plug in a USB audio input (mic, interface, FM-1)", 1, DIM);
                 }
                 fb.text(22, 346, "The meter runs while a track is armed or this tab is open.", 1, DIM);
                 fb.text(22, 358, "Play your loudest part; set the input volume so peaks reach about -6.", 1, DIM);
                 fb.text(22, 370, "Raising the latency offset moves takes earlier (use it if takes sit late).", 1, DIM);
-                fb.text(22, 382, "Input: Left/Right picks Auto or a device. Class-compliant USB mics work; USB 2.0 audio is not supported yet.", 1, DIM);
+                fb.text(22, 382, "Input: Left/Right picks Auto or a device. USB Audio 2.0 is not supported.", 1, DIM);
             }
             TrackTab::Loop => {
                 let bar = self.bar_frames();
