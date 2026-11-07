@@ -61,3 +61,25 @@ class DescTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RealDeviceTests(unittest.TestCase):
+    """tests/fixtures/fm1_descriptors.bin is the REAL 334-byte blob read from the user's FM-1
+    (/sys/bus/usb/devices/8-1/descriptors, pasted as base64 on 2026-11-08)."""
+
+    def setUp(self):
+        self.blob = open(os.path.join(os.path.dirname(__file__), "fixtures", "fm1_descriptors.bin"), "rb").read()
+
+    def test_device_header(self):
+        self.assertEqual(len(self.blob), 334)
+        self.assertEqual((self.blob[8] | self.blob[9] << 8, self.blob[10] | self.blob[11] << 8), (0x4C4A, 0xC755))
+        self.assertEqual(self.blob[20] | self.blob[21] << 8, 316)      # wTotalLength of the configuration
+
+    def test_capture_and_playback(self):
+        s = ud.parse_audio_streams(self.blob)
+        cap = ud.pick_capture(s)
+        self.assertEqual((cap.iface, cap.alt, cap.ep, cap.max_packet, cap.sync),
+                         (2, 1, 0x83, 270, "async"))
+        self.assertEqual((cap.channels, cap.subframe, cap.bits, cap.rates), (2, 3, 24, [44100]))
+        play = [x for x in s if x.direction == "out"]
+        self.assertEqual([(x.iface, x.ep, x.sync) for x in play], [(1, 0x03, "adaptive")])

@@ -12,10 +12,14 @@ Source: the user's pasted terminal output from `phase0.sh` (SSH from iPhone). mu
 | Signal | Peak -20.0 dBFS, RMS -33.5 dBFS; 21% of frames below -70 dBFS (the note plays for ~2 s of the 4 s). |
 | Idle capture, 3 s | **Exactly digital silence** (every sample 0). 132,652 frames in 3.01 s. Clean noise floor, nothing leaks into the stream when the synth is quiet. |
 | Left vs right | Not bit-identical while sounding: max difference 3253 LSB of 2^23 = about **-68 dBFS**, peaks -20.0 / -20.1 dBFS. Effectively mirrored; mono downmix by averaging is safe (loses nothing audible). Idle capture was identical. |
-| MIDI IN (ep 0x84), 8 s | **INVALID RESULT.** `UsbMidiDevice.read()` had a bug: `fcntl.ioctl()` with a bytes arg returns the buffer, not the byte count, so every read looked empty. Fixed (`_ioctl` helper + `tests/test_ioctl.py`). The user reports the FM-1 has sent MIDI to a computer over USB-C before, so a real answer is still needed. Rerun `midi-in` with the fixed build. |
+| MIDI IN (ep 0x84), 8 s | **WORKS.** The first run (nothing received) was invalid: `UsbMidiDevice.read()` had a bug (`fcntl.ioctl()` with a bytes arg returns the buffer, not the byte count). After the fix (`_ioctl` helper, `tests/test_ioctl.py`), a 20 s run read 306 times (107 timeouts, 0 errors) and received **212 MIDI packets**: `ch1 NOTE ON/OFF`, **every velocity exactly 90**, notes 42-78, often 2-3 overlapping notes with note-offs arriving out of order. Whether those came from the keys or the FM-1's internal sequencer was not stated by the user; constant velocity 90 suggests fixed-velocity keys or a sequence. No CCs/program changes seen. |
 | VBUS | `regulator.20 axp2202-drivevbus` reads **disabled** while the FM-1 is attached and fully working. So that regulator is not what the kernel reports as supplying the FM-1; 5 V arrives by some other path. `/sys/devices/platform/soc/usbc0` has `otg_role` (rw) and `usb_host`/`usb_device`/`usb_null` (mode 0400), driven by an "otg manager" driver. Unexplored; nothing was written. |
 
+## Also learned
+- `/sys/devices/platform/soc/usbc0/otg_role` reads `usb_host`. `/sys/class/power_supply/` has `axp2202-battery` and `axp2202-usb`; there is **no `current_now`** attribute, so battery draw cannot be measured that way.
+- The real descriptor blob is saved as `tests/fixtures/fm1_descriptors.bin` and checked by `RealDeviceTests`.
+
 ## Not yet shown
-- Longer captures (60 s+), and capture while the UI/mixer is also running (CPU contention).
+- Longer captures (60 s+): the user's 60 s run was interrupted (three commands pasted at once). Rerun it on its own. Also capture under UI/mixer load.
 - Whether recorded audio's timing relative to MIDI/playback is stable (latency calibration, feature 3).
 - UAC2 / generic USB mics.
