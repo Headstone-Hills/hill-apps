@@ -146,3 +146,10 @@ Install on the SP: binary to `/mnt/sdcard/ports/hilldaw/hilldaw`, `ports/HillDAW
 Found: the vendor's "MIDI CONTROL EN" guide and the release note are on <https://www.m-vave.com/download.html>. Transcribed with sources in `docs/FM1_MIDI.md`.
 Key points: CC for FX goes on the **FX channel (default 2), not the note channel**; Program Change 0-127 selects voices; **the guide lists FX CCs 0-23 but the V16 release note says they became CC 70-93**, with no per-number table, so which applies is unverified.
 Verified on the owner's V16 unit (2026-11-08): FX CCs are 70-93 on channel 2; the old 0-23 do nothing. The order within 70-93 is still only inferred (old number + 70) apart from 70 and 72. Nothing is coded from it yet.
+
+## FM-1 CC probe (2026-11-08)
+
+`hdtool probe-cc [--ch 2] [--from 70] [--to 93] [--out FILE]` measures what each CC does, from the FM-1's own USB audio (so room noise is irrelevant).
+Logic is pure and tested in `core/src/probe.rs` (FFT centroid, level, tail; thresholds learned from repeated baselines; a fake FM-1 with a hidden mapping is used to test the two passes).
+Pass 1 raises each CC alone from all-off; pass 2 lowers each CC alone from all-on (finds parameters that only matter while their switch is on). ~54 trials, ~3 min. Leaves the probed CCs at 0.
+A trial that captures no sound when the baseline had sound counts as a change ("silenced"). Not yet run on the real unit.

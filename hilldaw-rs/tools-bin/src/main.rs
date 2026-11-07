@@ -5,6 +5,8 @@
 //!   hdtool drums list [TEXT]                   the HillBeat presets (id, name, style), optionally filtered
 //!   hdtool drums render ID OUT.wav [--cycles N] [--bpm B] [--swing S] [--samples DIR]
 //!                                              render a preset through the DAW mixer and limiter, so it can be heard with `aplay`
+//!   hdtool probe-cc [--ch 2] [--from 70] [--to 93] [--out FILE]
+//!                                              play a note while changing each MIDI CC and measure, from the FM-1's own audio, what it does
 //!   hdtool record SECS OUT.wav --synthetic     no FM-1: a real-time tone source (to test the writer on any machine)
 
 use hilldaw_core::record::{detect_onset, mono24_to_f32, Downmixer, StreamingWav};
@@ -190,6 +192,82 @@ fn latency(args: &[String]) {
     println!("= {:.0} frames at 44.1 kHz. Capture time origin is the submit of the first isochronous transfer, accurate to a couple of ms.", med * 44.1);
 }
 
+/// `hdtool probe-cc`: measure what MIDI CCs do to the sound (see `hilldaw_core::probe`). About 3 minutes.
+fn probe_cc(args: &[String]) {
+    use hilldaw_core::probe::{run, Config, State, Timing};
+    use std::collections::BTreeMap;
+    let ch = opt(args, "--ch", 2u8).clamp(1, 16) - 1;
+    let note_ch = opt(args, "--note-ch", 1u8).clamp(1, 16) - 1;
+    let (from, to): (u8, u8) = (opt(args, "--from", 70u8), opt(args, "--to", 93u8));
+    let note: u8 = opt(args, "--note", 60);
+    let out: String = opt(args, "--out", "/root/probe-cc.txt".to_string());
+    if from > to || to > 127 {
+        eprintln!("--from must be <= --to, both 0..127");
+        exit(1);
+    }
+    let hold_s = 0.6;
+    let total_s = 2.4;
+    let d = device();
+    let midi_dev = Arc::new(MidiDevice::open(&d).unwrap_or_else(|e| { eprintln!("{e}"); exit(2) }));
+    let ccs: Vec<u8> = (from..=to).collect();
+    let n_trials = 3 + ccs.len() + 3 + ccs.len();
+    println!("Probing CC {from}..{to} on MIDI channel {} with note {note} on channel {}: {n_trials} trials, about {} s.", ch + 1, note_ch + 1, (n_trials as f64 * (total_s + 0.5)) as u32);
+    println!("Keep the FM-1 volume UP and leave its controls alone until it says DONE. The CCs are left at 0 afterwards.");
+
+    let mut sent: BTreeMap<u8, u8> = BTreeMap::new();
+    let mut trial = |state: &State| -> Vec<f32> {
+        // send only what changed since the last trial, then let the FM-1 settle
+        for (cc, v) in state {
+            if sent.get(cc) != Some(v) {
+                let _ = midi_dev.write(&midi::cc(ch, *cc, *v));
+                sent.insert(*cc, *v);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        let mut cp = open_capture(&d);
+        let md = midi_dev.clone();
+        let h = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = md.write(&midi::note_on(note_ch, note, 110));
+            std::thread::sleep(Duration::from_secs_f64(hold_s));
+            let _ = md.write(&midi::note_off(note_ch, note));
+        });
+        let mut pcm: Vec<u8> = Vec::new();
+        let mut dm = Downmixer::default();
+        cp.run(&AtomicBool::new(false), total_s, |p| dm.push(p, &mut pcm)).unwrap_or_else(|e| { eprintln!("{e}"); exit(2) });
+        h.join().unwrap();
+        std::thread::sleep(Duration::from_millis(250));
+        mono24_to_f32(&pcm)
+    };
+    let cfg = Config { ccs: ccs.clone(), low: 0, high: 127, timing: Timing { rate: RATE, hold_s }, baseline_reps: 3 };
+    let mut n = 0;
+    let result = run(&cfg, &mut trial, &mut |m| {
+        n += 1;
+        println!("[{n}/{n_trials}] {m}");
+    });
+    // leave the unit with these CCs at 0 and nothing sounding
+    for cc in &ccs {
+        let _ = midi_dev.write(&midi::cc(ch, *cc, 0));
+    }
+    let _ = midi_dev.write(&midi::panic([note_ch]));
+    match result {
+        Ok(rep) => {
+            let text = rep.render();
+            println!("\n{text}");
+            match std::fs::write(&out, &text) {
+                Ok(()) => println!("saved to {out}"),
+                Err(e) => println!("(could not save {out}: {e})"),
+            }
+            println!("DONE");
+        }
+        Err(e) => {
+            eprintln!("probe failed: {e}");
+            exit(2);
+        }
+    }
+}
+
 fn status(args: &[String]) {
     use hilldaw_device::{battery, fmt_bytes, fmt_duration, record_seconds_left, storage, POWER_SUPPLY};
     let path = args.first().cloned().unwrap_or_else(|| "/mnt/sdcard".into());
@@ -279,6 +357,7 @@ fn main() {
         Some("record") => record(&args[1..]),
         Some("latency") => latency(&args[1..]),
         Some("drums") => drums(&args[1..]),
-        _ => println!("usage: hdtool record SECS OUT.wav [--note N] [--synthetic] | latency [--runs N] [--note N] | status [PATH]"),
+        Some("probe-cc") => probe_cc(&args[1..]),
+        _ => println!("usage: hdtool record SECS OUT.wav [--note N] [--synthetic] | latency [--runs N] [--note N] | probe-cc [--ch 2] [--from 70] [--to 93] [--out FILE] | drums list|render ... | status [PATH]"),
     }
 }
