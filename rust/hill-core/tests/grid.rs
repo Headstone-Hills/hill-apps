@@ -107,6 +107,28 @@ fn velocity_scales_volume() {
 }
 
 #[test]
+fn voice_volume_boosts_above_100_percent_in_hillbeat_only() {
+    // hold Y and press Up n times, then play one step and measure the peak
+    let play = |name: &str, ups: usize| {
+        let mut app = apps::create(name, Box::new(MemHost::default())).unwrap();
+        tap(app.as_mut(), Btn::A); // step on
+        app.event(Btn::Y, true);
+        for _ in 0..ups {
+            tap(app.as_mut(), Btn::Up);
+        }
+        app.event(Btn::Y, false);
+        run(app.as_mut(), 0.5);
+        tap(app.as_mut(), Btn::Start);
+        peak(&run(app.as_mut(), 0.4))
+    };
+    // 0.8 default: 4 ticks of 0.05 reach 100%, 4 more of 0.25 reach 200%
+    let (full, boosted, max) = (play("hillbeat", 4), play("hillbeat", 8), play("hillbeat", 40));
+    assert!(boosted > full * 1.2, "full {} boosted {}", full, boosted);
+    assert!(max <= 1.0, "limited: {}", max);
+    assert!(play("hillband", 40) <= play("hillband", 4) * 1.01, "other apps stay capped at 100%");
+}
+
+#[test]
 fn mute_silences_track() {
     let mut a = apps::create("hillbeat", Box::new(MemHost::default())).unwrap();
     tap(a.as_mut(), Btn::A);

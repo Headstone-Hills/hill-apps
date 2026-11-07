@@ -40,7 +40,12 @@ pub struct Mixer {
     pub beat_secs: Option<f32>,
     /// Sequencer sounds longer than a beat follow this envelope (see `Envelope`); None = off.
     pub env: Option<EnvParams>,
+    /// Boosted levels saturate softly (linear to `SOFT_KNEE`, tanh above) instead of hard-clipping.
+    pub soft_limit: bool,
 }
+
+/// Fraction of full scale below which the soft limiter leaves the signal alone.
+const SOFT_KNEE: f32 = 0.8;
 
 /// Fade out by how long the sound plays (`beats` at the current tempo), however it
 /// ends: its own end, release, the next note, pause or the cap.
@@ -170,6 +175,7 @@ impl Mixer {
             max_secs: None,
             beat_secs: None,
             env: None,
+            soft_limit: false,
         }
     }
 
@@ -349,15 +355,35 @@ impl Mixer {
                 v.sample = None;
             }
         }
+        let soft = self.soft_limit;
         for x in out.iter_mut() {
-            *x = x.clamp(-1.0, 1.0);
+            *x = if soft { soft_clip(*x) } else { x.clamp(-1.0, 1.0) };
         }
     }
+}
+
+/// Linear below `SOFT_KNEE`, then tanh toward full scale: peaks saturate, not hard-clip.
+pub fn soft_clip(x: f32) -> f32 {
+    let m = x.abs();
+    if m <= SOFT_KNEE {
+        return x;
+    }
+    let room = 1.0 - SOFT_KNEE;
+    x.signum() * (SOFT_KNEE + room * ((m - SOFT_KNEE) / room).tanh())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn soft_clip_is_linear_below_the_knee_and_bounded_above() {
+        assert_eq!(soft_clip(0.5), 0.5);
+        assert_eq!(soft_clip(-0.79), -0.79);
+        let (a, b) = (soft_clip(1.0), soft_clip(3.0));
+        assert!(a > 0.8 && a < b && b <= 1.0, "{} {}", a, b);
+        assert!(soft_clip(-3.0) >= -1.0);
+    }
 
     fn ramp(n: usize) -> Arc<Sample> {
         let mut data = Vec::new();

@@ -13,6 +13,7 @@ static CONFIG: GridConfig = GridConfig {
     drum_filter: true,
     decay: true,
     presets: false,
+    vol_boost: false,
     help: &[
         ("PLAYBACK", ""),
         ("START", "play / pause"),

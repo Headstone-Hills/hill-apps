@@ -44,8 +44,14 @@ pub struct GridConfig {
     pub decay: bool,
     /// The preset drum pattern menu (PRESET_MENU_COMBO).
     pub presets: bool,
+    /// Track volume goes up to `VOL_WARN_MAX` (+12 dB), through a soft-knee limiter.
+    pub vol_boost: bool,
     pub help: &'static [(&'static str, &'static str)],
 }
+
+/// Track volume ceiling when `vol_boost` is on (4.0 = +12 dB), and the step per tick above 100%.
+const VOL_WARN_MAX: f32 = 4.0;
+const VOL_WARN_STEP: f32 = 0.25;
 
 struct Track {
     kind: TrackKind,
@@ -200,6 +206,7 @@ impl GridApp {
             ms: 0,
             last_vel: 100,
         };
+        app.mixer.soft_limit = cfg.vol_boost;
         app.defaults();
         if cfg.presets {
             app.kits = app
@@ -516,7 +523,7 @@ impl GridApp {
                 t.note = v.clamp(0, 127) as u8;
             }
             t.mute = k.bool(&format!("t{}.mute", i)).unwrap_or(false);
-            t.vol = k.f32(&format!("t{}.vol", i)).unwrap_or(0.8).clamp(0.0, 1.0);
+            t.vol = k.f32(&format!("t{}.vol", i)).unwrap_or(0.8).clamp(0.0, if self.cfg.vol_boost { VOL_WARN_MAX } else { 1.0 });
             t.chord = k.usize(&format!("t{}.chord", i)).unwrap_or(0).min(CHORD_TYPES.len() - 1);
             t.scale = k.usize(&format!("t{}.scale", i)).unwrap_or(0).min(SCALE_MODES.len() - 1);
             if !self.cfg.chords {
@@ -1073,8 +1080,14 @@ impl GridApp {
                 } else if self.held.is(Btn::Y) {
                     self.plain.y = false;
                     if ud != 0 {
+                        let max = if self.cfg.vol_boost { VOL_WARN_MAX } else { 1.0 };
                         let t = &mut self.tracks[self.cur_track];
-                        t.vol = (t.vol + ud as f32 * 0.05).clamp(0.0, 1.0);
+                        // above 100% the ticks are bigger (like the 0.25 steps of the Python app)
+                        let step = if (ud > 0 && t.vol >= 0.999) || (ud < 0 && t.vol > 1.001) { VOL_WARN_STEP } else { 0.05 };
+                        let v = t.vol + ud as f32 * step;
+                        // land exactly on 100% when crossing it, then round off float drift
+                        let v = if (t.vol - 1.0) * (v - 1.0) < 0.0 { 1.0 } else { v };
+                        t.vol = ((v * 100.0).round() / 100.0).clamp(0.0, max);
                     }
                 } else if self.held.is(Btn::X) {
                     self.plain.x = false;
@@ -1272,9 +1285,15 @@ impl GridApp {
             }
             fb.text(28, y + 16, &sub, 1, DIM);
             // volume bar
-            let vb = (t.vol * 100.0) as i32;
+            // above 100% the bar shows the boost amount in a warning colour
             fb.rect(10, y + rh - 8, 100, 4, CELL_OFF);
-            fb.rect(10, y + rh - 8, vb, 4, scale(base, if t.mute { 0.3 } else { 0.8 }));
+            if t.vol > 1.0 {
+                let vb = ((t.vol - 1.0) / (VOL_WARN_MAX - 1.0) * 100.0) as i32;
+                fb.rect(10, y + rh - 8, vb, 4, if t.mute { scale(WARN, 0.3) } else { WARN });
+            } else {
+                let vb = (t.vol * 100.0) as i32;
+                fb.rect(10, y + rh - 8, vb, 4, scale(base, if t.mute { 0.3 } else { 0.8 }));
+            }
 
             for s in 0..len {
                 let x = col_x(s);

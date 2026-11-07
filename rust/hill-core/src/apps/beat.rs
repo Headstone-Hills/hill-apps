@@ -11,6 +11,7 @@ static CONFIG: GridConfig = GridConfig {
     drum_filter: true,
     decay: false,
     presets: true,
+    vol_boost: true,
     help: &[
         ("PLAYBACK", ""),
         ("START", "play / pause"),
@@ -25,7 +26,7 @@ static CONFIG: GridConfig = GridConfig {
         ("A (tap)", "toggle step"),
         ("A (hold) + U/D", "step velocity"),
         ("Y (tap)", "mute / unmute voice"),
-        ("Y (hold) + U/D", "voice volume"),
+        ("Y (hold) + U/D", "voice volume (to 400%)"),
         ("SELECT+L1", "clear pattern"),
         ("SOUNDS & LOOP", ""),
         ("START+B", "drum sounds (X: show all). [KIT] fills all voices"),
