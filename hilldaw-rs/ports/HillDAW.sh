@@ -1,0 +1,54 @@
+#!/bin/bash
+# PORTMASTER: hilldaw.zip, HillDAW.sh
+# HillDAW - 8-track recorder, drum arranger and sampler for the RG35XXSP and FM-1 (Rust build; RG35XXSP / R36S, aarch64)
+
+XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
+
+if [ -d "/opt/system/Tools/PortMaster/" ]; then
+  controlfolder="/opt/system/Tools/PortMaster"
+elif [ -d "/opt/tools/PortMaster/" ]; then
+  controlfolder="/opt/tools/PortMaster"
+elif [ -d "$XDG_DATA_HOME/PortMaster/" ]; then
+  controlfolder="$XDG_DATA_HOME/PortMaster"
+else
+  controlfolder="/roms/ports/PortMaster"
+fi
+
+source $controlfolder/control.txt
+source $controlfolder/device_info.txt
+
+[ -f "${controlfolder}/mod_${CFW_NAME}.txt" ] && source "${controlfolder}/mod_${CFW_NAME}.txt"
+get_controls
+
+GAMEDIR=/$directory/ports/hilldaw
+
+> "$GAMEDIR/log.txt" && exec > >(tee "$GAMEDIR/log.txt") 2>&1
+
+cd $GAMEDIR
+
+# --- Runtime: the device's own SDL2 (the binary links libSDL2-2.0.so.0) -------
+export LD_LIBRARY_PATH="/usr/lib:$GAMEDIR/libs:$LD_LIBRARY_PATH"
+export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
+export SDL_AUDIODRIVER=alsa
+export HILL_FULLSCREEN=1
+export HILL_DATA="$GAMEDIR"
+# One button map shared by all Hill apps (HillMap writes it, the others read it).
+export HILL_BUTTONS="${HILL_BUTTONS:-$GAMEDIR/../hill-buttons.cfg}"
+
+# Shared sample library. HILL_SAMPLES wins if you set it yourself; otherwise the
+# first folder below that exists is used (the /roms ones are guesses for ArkOS).
+if [ -z "$HILL_SAMPLES" ]; then
+  for d in "/mnt/sdcard/ROMS/Hill Apps/Samples" /mnt/sdcard/ROMs/Samples /mnt/sdcard/ROMS/Samples /mnt/mmc/ROMS/Samples \
+           /roms/Samples /roms/samples /roms2/Samples /roms2/samples "$GAMEDIR/samples"; do
+    if [ -d "$d" ]; then export HILL_SAMPLES="$d"; break; fi
+  done
+fi
+
+# Buttons are read straight from the joystick API (see buttons.cfg / HillMap).
+# gptokeyb is deliberately not used: its key translation would double-fire.
+chmod +x "./hilldaw" 2>/dev/null
+./hilldaw
+
+# --- Cleanup (mirrors the Python ports) ---------------------------------------
+command -v systemctl >/dev/null && $ESUDO systemctl restart oga_events &
+printf "\033c" > /dev/tty0

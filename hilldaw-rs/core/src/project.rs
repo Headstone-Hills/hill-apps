@@ -102,13 +102,16 @@ pub struct DrumsModel {
     pub vol: [f32; 8],
     pub mute: [bool; 8],
     pub gain: f32,
+    /// the drum strip's pan and solo (`enabled == false` is its mute)
+    pub pan: f32,
+    pub solo: bool,
     /// where the first section starts on the timeline (frames)
     pub start: u64,
 }
 
 impl Default for DrumsModel {
     fn default() -> Self {
-        DrumsModel { enabled: true, sections: vec![], swing: 0.0, vol: [1.0; 8], mute: [false; 8], gain: 1.0, start: 0 }
+        DrumsModel { enabled: true, sections: vec![], swing: 0.0, vol: [1.0; 8], mute: [false; 8], gain: 1.0, pan: 0.0, solo: false, start: 0 }
     }
 }
 
@@ -192,6 +195,7 @@ impl Project {
         }
         d.swing = if d.swing.is_finite() { d.swing.clamp(0.0, 0.25) } else { 0.0 };
         d.gain = if d.gain.is_finite() { d.gain.clamp(0.0, 4.0) } else { 1.0 };
+        d.pan = if d.pan.is_finite() { d.pan.clamp(-1.0, 1.0) } else { 0.0 };
         for v in d.vol.iter_mut() {
             *v = if v.is_finite() { v.clamp(0.0, 4.0) } else { 1.0 };
         }

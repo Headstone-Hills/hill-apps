@@ -1,3 +1,7 @@
 [target.aarch64-unknown-linux-musl]
 linker = "tools/zigcc-aarch64-musl.sh"
 rustflags = ["-C", "link-self-contained=no"]
+
+# desktop builds of the SDL program find Homebrew's libSDL2
+[target.aarch64-apple-darwin]
+rustflags = ["-L", "/opt/homebrew/lib"]

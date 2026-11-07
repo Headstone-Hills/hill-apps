@@ -119,3 +119,24 @@ Decisions / limits to know about:
 
 Known nit: `hdtool drums list | head` panics with Broken pipe (println! on a closed pipe, panic=abort). Harmless; fix with the next change.
 Build without the pip zig: `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=<shim running 'zig cc -target aarch64-linux-musl'> cargo build --release --target aarch64-unknown-linux-musl -p hilldaw-tools` (Homebrew zig works).
+
+## HillDAW app skeleton (2026-11-08, local session)
+
+The project is now called **HillDAW** (was PocketDAW): dirs `hilldaw-rs/`, `hilldaw/` (Python reference), crates `hilldaw-*`, tool `hdtool`. The git branch name was left as is.
+
+- `app/` (`hilldaw-app`): `HillDaw` implements `hill_core::App`. No SDL, so it is tested on any computer (`app/tests/app.rs`, 18 tests: audio, controls, quit chord, save/restore, drawing).
+  Screens: **Mixer** (transport, 8 tracks + drums, level/pan/mute/solo/arm, meters, master) and **Arrange** (drum sections: pattern, style, cycles, mini step grid). Status bar: FM-1 on the USB bus, battery, free space + recording time.
+  Status comes from a background thread (`status::spawn_poller`) so the UI/audio mutex never waits on sysfs.
+- `sp/` (`hilldaw`): the SDL program = `hill_device::run_with("hilldaw", ...)`. **`run_with` is the one change made to the owner's `rust/hill-device`** (additive; `run` now calls it). Tell the owner so they can take it upstream.
+- Plain `cargo test` / `clippy` skip `sp` (`default-members`) so no SDL is needed; build it with `-p hilldaw`. Desktop link flags for Homebrew SDL2 are in `.cargo/config.toml`.
+- Controls follow the Hill apps: START play/stop, SELECT record (not wired: says so), L1/R1 screens, FN+SELECT help, START+SELECT hold quit, FN+Left/Right tempo, FN+A tap, FN+X click, FN+B rewind, FN+L2/R2 swing.
+  Mixer: Left/Right strip, Up/Down level (1 dB), L2/R2 pan, X mute, Y+X solo, A arm, B reset. Arrange: Up/Down section, Left/Right pattern, L2/R2 style, Y+Left/Right cycles, A add, X delete.
+- The project is saved through the host's state store under key `hilldaw` (autosave every 30 s by the runner and on quit). Project *folders* (`project.json` + `audio/`), the browser UI and recovery are still to do.
+- Honest gaps: no recording, no FM-1 keys/MIDI, no sampler, no export, no loop/punch UI, no count-in. The REC lamp reads "n/a". Track strips 1-8 are empty (no clips can be loaded yet).
+- Decisions: the click track is hidden and stays audible while something is soloed; changing tempo while playing keeps the musical position; drum strip pan/solo/mute live in `project.drums` (`pan`, `solo`, `enabled`);
+  a project that names a preset that no longer exists loses that section (with a toast) instead of failing to load; output rate other than 44.1 kHz is accepted (positions are frames at the output rate).
+
+Build for the SP (needs `cargo-zigbuild`, Homebrew `zig`, the arm64 libSDL2 cached by the owner's `rust/build.sh`):
+`RUSTFLAGS="-L <rust/.cache/arm64sdl/lib> -C link-arg=-Wl,--allow-shlib-undefined" cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28 -p hilldaw`
+Install on the SP: binary to `/mnt/sdcard/ports/hilldaw/hilldaw`, `ports/HillDAW.sh` to `/mnt/sdcard/ROMS/ports/Hill Apps/HillDAW.sh` (a launcher generated from `rust/ports/launcher.sh.in`).
+**Not run on the SP yet.** Verified on the Mac: tests, screenshots of every screen, and the SDL window launches and stays up.

@@ -51,6 +51,11 @@ impl DrumLibrary {
         DrumLibrary { host, kits, sounds: HashMap::new(), patterns: HashMap::new() }
     }
 
+    /// The sample/state host this library reads from (the app saves its project through it).
+    pub fn host_mut(&mut self) -> &mut dyn Host {
+        self.host.as_mut()
+    }
+
     pub fn kit_names(&self) -> Vec<&str> {
         self.kits.iter().map(|k| k.name.as_str()).collect()
     }

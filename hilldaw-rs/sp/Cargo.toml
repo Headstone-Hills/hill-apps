@@ -1,0 +1,14 @@
+[package]
+name = "hilldaw"
+version = "0.1.0"
+edition = "2021"
+description = "The HillDAW program for the RG35XXSP (and desktop): hilldaw-app inside the Hill apps' SDL runner."
+
+[dependencies]
+hill-core = { path = "../../rust/hill-core" }
+hill-device = { path = "../../rust/hill-device" }
+hilldaw-app = { path = "../app" }
+
+[[bin]]
+name = "hilldaw"
+path = "src/main.rs"

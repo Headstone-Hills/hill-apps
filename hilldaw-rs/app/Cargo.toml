@@ -1,0 +1,12 @@
+[package]
+name = "hilldaw-app"
+version = "0.1.0"
+edition = "2021"
+description = "HillDAW as a hill_core::App: the screens, controls and audio callback. No SDL here, so it is testable on any computer."
+
+[dependencies]
+hill-core = { path = "../../rust/hill-core" }
+hilldaw-core = { path = "../core" }
+hilldaw-drums = { path = "../drums" }
+hilldaw-device = { path = "../device" }
+hilldaw-usb = { path = "../usb" }

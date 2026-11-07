@@ -1,5 +1,7 @@
 [workspace]
-members = ["usb", "core", "device", "drums", "tools-bin"]
+members = ["usb", "core", "device", "drums", "app", "sp", "tools-bin"]
+# plain `cargo test` skips the SDL program so it needs no SDL installed; build it with `-p hilldaw`
+default-members = ["usb", "core", "device", "drums", "app", "tools-bin"]
 resolver = "2"
 
 [profile.release]
