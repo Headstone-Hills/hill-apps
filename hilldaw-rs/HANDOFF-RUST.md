@@ -249,3 +249,5 @@ Screens (L1/R1 cycle): **Mixer, Track, Arrange, FM-1, Export**. **Track** works 
 - Tests: 16 in `app/tests/track.rs` plus updated navigation tests. Not exercised without hardware: the real `UsbRecorder` monitor/level, and the real `flac`/`lame` (the converter is tested with `cp` and `false` standing in).
 - Not done: undo/redo, trimming/fades/split on clips, sampler, FM-1 keys as notes, project browser, recovery of recordings left by a crash during a take, MIDI/automation.
 - **Not run on the SP yet.**
+
+Owner test on the SP (2026-11-08) of the 38c16a8 batch (+24 dB gain, mixdown/stem export, Track screen, input meter, loop/punch, effects, FLAC/MP3): "everything seems to be working fine". By ear and by use, one session; the owner did not report per-step details (for example whether the FLAC/MP3 encoders were present), so treat the encoder path as seen working but unmeasured. Owner asked how to go back to bar 1 (answer: FN+B, no single-button shortcut yet).
