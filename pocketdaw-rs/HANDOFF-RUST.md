@@ -100,7 +100,7 @@ Python numbers (~58 ms pygame, ~146 ms aplay) carry over.
 
 ## Drum track (2026-11-07, local session)
 
-Done and host-tested; **not yet heard on the SP**.
+Done, host-tested, and **verified on the SP (2026-11-08)**: `pdtool drums render afro-cuban-r1 ... --cycles 4` picked the owner's `04. LM Vinyl` kit from `/mnt/sdcard/ROMS/Hill Apps/Samples`, played through `aplay`, owner confirmed audio quality is fine.
 
 - `core/src/drums.rs`: stateless `DrumTrack` (a mixer `Source`). Sections chain back to back; each is a pattern repeated `cycles` times. Hit time is a pure
   function of section start, cycle, step, bpm, swing, so output is bit-identical for chunk sizes 1..9999 (tested). Mirrors HillBeat: step = 1/`div` beat, odd steps
@@ -117,5 +117,5 @@ Decisions / limits to know about:
 4. Once a `DrumTrack` is boxed into a mixer `Track` its vol/mute can't be changed live. The app needs a shared handle (atomics or `Arc<Mutex>`) when it is wired in.
 5. `libc::Ioctl` is Linux-only; `usb/src/sys.rs` now uses `req as _` so the crate also compiles on macOS. Type-checked for `aarch64-unknown-linux-gnu`; the musl release binaries were not rebuilt.
 
-Not verified: the aarch64-musl build of `pdtool`, and what the kits sound like on the SP. Next on the SP: `wget`/`scp` the new `pdtool`, then
-`pdtool drums render <id> /root/d.wav --cycles 4 && aplay /root/d.wav`.
+Known nit: `pdtool drums list | head` panics with Broken pipe (println! on a closed pipe, panic=abort). Harmless; fix with the next change.
+Build without the pip zig: `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=<shim running 'zig cc -target aarch64-linux-musl'> cargo build --release --target aarch64-unknown-linux-musl -p pocketdaw-tools` (Homebrew zig works).
