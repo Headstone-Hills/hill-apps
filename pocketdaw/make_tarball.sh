@@ -5,5 +5,5 @@ set -e
 cd "$(dirname "$0")"
 bash build_helper.sh
 OUT="${1:-pocketdaw-phase0.tar}"
-tar --exclude="__pycache__" -cf "$OUT" *.py phase0.sh check_env.sh tests dist/isocap build_helper.sh helper
+tar --exclude="__pycache__" -cf "$OUT" *.py phase0.sh check_env.sh audio_test.sh tests dist/isocap build_helper.sh helper
 echo "wrote $OUT ($(du -h "$OUT" | cut -f1))"
