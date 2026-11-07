@@ -9,9 +9,12 @@
 //! output is identical no matter how the host chops it into chunks.
 
 pub mod edit;
+pub mod effects;
 pub mod mixer;
 pub mod project;
 pub mod record;
+pub mod sampler;
+pub mod tempo;
 pub mod transport;
 pub mod wav;
 

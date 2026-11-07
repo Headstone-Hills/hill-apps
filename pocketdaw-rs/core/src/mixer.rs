@@ -4,6 +4,7 @@
 //! chunks the work. Per track: gain, pan (standard -3 dB pan law), mute/solo. Then master gain and a
 //! brickwall limiter whose state is carried sample by sample (so it is chunk-size independent too).
 
+use crate::effects::{Reverb, TrackFx};
 use std::f32::consts::PI;
 use std::sync::Arc;
 
@@ -150,13 +151,14 @@ pub struct Track {
     pub mute: bool,
     pub solo: bool,
     pub sources: Vec<Box<dyn Source>>,
+    pub fx: TrackFx,
     /// peak of the last rendered chunk, after gain and pan (for meters)
     pub peak: f32,
 }
 
 impl Track {
     pub fn new(name: &str) -> Self {
-        Track { name: name.into(), gain: 1.0, pan: 0.0, mute: false, solo: false, sources: Vec::new(), peak: 0.0 }
+        Track { name: name.into(), gain: 1.0, pan: 0.0, mute: false, solo: false, sources: Vec::new(), fx: TrackFx::default(), peak: 0.0 }
     }
 }
 
@@ -201,12 +203,16 @@ pub struct Mixer {
     pub master: f32,
     pub limiter: Limiter,
     pub master_peak: f32,
+    /// shared send reverb (None = off, nothing is processed)
+    pub reverb: Option<Reverb>,
+    pub reverb_return: f32,
     scratch: Vec<f32>,
+    bus: Vec<f32>,
 }
 
 impl Mixer {
     pub fn new(rate: u32, max_frames: usize) -> Self {
-        Mixer { rate, tracks: Vec::new(), master: 1.0, limiter: Limiter::new(0.98, 0.05, rate), master_peak: 0.0, scratch: vec![0.0; max_frames * 2] }
+        Mixer { rate, tracks: Vec::new(), master: 1.0, limiter: Limiter::new(0.98, 0.05, rate), master_peak: 0.0, reverb: None, reverb_return: 1.0, scratch: vec![0.0; max_frames * 2], bus: vec![0.0; max_frames * 2] }
     }
 
     /// Solo overrides mute: if any track is soloed only soloed tracks sound.
@@ -224,6 +230,11 @@ impl Mixer {
         if self.scratch.len() < out.len() {
             self.scratch.resize(out.len(), 0.0); // only the first oversized call allocates
         }
+        if self.bus.len() < out.len() {
+            self.bus.resize(out.len(), 0.0);
+        }
+        let bus = &mut self.bus[..out.len()];
+        bus.fill(0.0);
         let any_solo = self.tracks.iter().any(|t| t.solo);
         let rate = self.rate;
         for t in self.tracks.iter_mut() {
@@ -237,6 +248,13 @@ impl Mixer {
             for s in t.sources.iter_mut() {
                 s.render_add(start, sc, rate);
             }
+            t.fx.process(sc);
+            if t.fx.send > 0.0 {
+                let k = t.fx.send * t.gain; // post-fader, pre-pan send
+                for (b, i) in bus.iter_mut().zip(sc.iter()) {
+                    *b += i * k;
+                }
+            }
             let (gl, gr) = pan_gains(t.pan);
             let (gl, gr) = (gl * t.gain, gr * t.gain);
             let mut peak = 0.0f32;
@@ -247,6 +265,12 @@ impl Mixer {
                 peak = peak.max(l.abs()).max(r.abs());
             }
             t.peak = peak;
+        }
+        if let Some(rv) = self.reverb.as_mut() {
+            rv.process(bus); // bus becomes the wet signal
+            for (o, w) in out.iter_mut().zip(bus.iter()) {
+                *o += w * self.reverb_return;
+            }
         }
         for s in out.iter_mut() {
             *s *= self.master;
@@ -307,6 +331,50 @@ mod tests {
         assert!(a == b, "1024 vs 777");
         assert!(a == c, "1024 vs 4096");
         assert!(a[..6000] == d[..], "1024 vs 1");
+    }
+
+    #[test]
+    fn effects_and_reverb_send_keep_output_independent_of_chunk_size() {
+        use crate::effects::{Biquad, Delay, FilterKind, Reverb};
+        let build = || {
+            let mut m = song();
+            m.tracks[1].fx.lowpass = Some(Biquad::new(FilterKind::LowPass, 1500.0, 0.9, RATE));
+            let mut d = Delay::new(400.0, RATE);
+            d.set_time_frames(5000);
+            m.tracks[0].fx.delay = Some(d);
+            m.tracks[0].fx.send = 0.4;
+            m.tracks[2].fx.send = 0.25;
+            m.reverb = Some(Reverb::new(RATE));
+            m
+        };
+        let run = |chunk: usize, total: usize| {
+            let mut m = build();
+            let mut out = Vec::new();
+            let mut buf = vec![0.0f32; chunk * 2];
+            let mut pos = 0;
+            while pos < total {
+                let n = chunk.min(total - pos);
+                m.render(pos as u64, &mut buf[..n * 2]);
+                out.extend_from_slice(&buf[..n * 2]);
+                pos += n;
+            }
+            out
+        };
+        let a = run(1024, RATE as usize);
+        assert!(a == run(333, RATE as usize), "1024 vs 333");
+        assert!(a[..4000] == run(1, 2000)[..], "1024 vs 1");
+        assert!(a.iter().all(|x| x.is_finite()));
+        // the reverb actually contributes: switching it off changes the output
+        let mut dry = build();
+        dry.reverb = None;
+        let mut o = vec![0.0f32; 2048];
+        let mut w = vec![0.0f32; 2048];
+        let mut wet = build();
+        for k in 0..20 {
+            dry.render(k * 1024, &mut o);
+            wet.render(k * 1024, &mut w);
+        }
+        assert!(o != w);
     }
 
     #[test]

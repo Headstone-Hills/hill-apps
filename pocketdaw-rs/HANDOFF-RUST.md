@@ -32,6 +32,30 @@ framebuffer UI `fb.rs`/`ui.rs`, WAV decoder, kv state; `hill-device`: SDL2 runne
 HillBeat's presets can only be reused from that newer source (or from the user's README/state files). Ask the user where the current Rust
 source lives (local checkout? another repo?) before integrating. Do not rebase onto the stale branch blindly.
 
+## Feature checklist (brief section 7) as of 2026-11-08
+All logic below is in `core/` with host tests only unless noted. Nothing here has a UI yet.
+| # | Feature | State |
+|---|---|---|
+| 1 | Click, count-in, time signature, tap tempo | `Click`, `Transport.beats_per_bar`, `TapTempo` done. **Count-in / record state machine TODO.** |
+| 2 | Loop region + punch in/out | Loop wrap done (sample-exact). **Punch in/out TODO.** |
+| 3 | Latency calibration | Measurement done and run on the SP (`pdtool latency`, 12.8 ms median); `placed_start` applies the offset. In-app flow TODO. |
+| 4 | Gain/pan/mute/solo, limiter, meters | Done. |
+| 5 | Trim, fades, normalize, reverse | Non-destructive, rendered by `TrimmedClip`; `normalize_gain` needs the file peak (needs loaded audio). |
+| 6 | Undo/redo | Done (`Edit` returns its inverse). |
+| 7 | Snap-to-grid, slice | `Transport::snap`, `split`, `slice_on_grid` done. |
+| 8 | Filter, delay, reverb | `effects.rs`: LP/HP biquad, delay, shared send reverb. Done. |
+| 9 | Sample pitch-shift across keyboard, root note | `sampler.rs`: stateless, seekable, Hermite interpolation, loop, polyphony cap. Done. |
+| 10 | Arrangement view, sections | **TODO** (needs the drum track / HillBeat presets). |
+| 11 | MIDI note recording from FM-1 keys | Note list model = `sampler::Note`; USB MIDI-in works (proven). **Capture-to-note-list TODO.** |
+| 12 | FM-1 program/CC control + patch browser | MIDI out proven. **Browser TODO; needs the M-VAVE CC guide (never supplied).** |
+| 13 | BPM detection, fit to tempo | `tempo.rs`: ranked candidates incl. octave alternatives (audio cannot always settle half/double time; the UI must offer x2 and /2), `varispeed`, `fit_to_bars_ratio`. Done. |
+| 14 | WAV import with sample-rate conversion | `wav.rs` decode + linear resample. Done. |
+| 15 | Project browser | **TODO.** |
+| 16 | Battery and storage indicators | **TODO** (read `/sys/class/power_supply/axp2202-battery/capacity`, statvfs; no `current_now` exists on the SP). |
+
+Bench (`examples/bench.rs`): 8 clip tracks each with LP+HP+delay+reverb send + click/tone + 12-voice sampler = 0.58 ms avg / 2.8 ms worst per 23.2 ms chunk
+on the dev box (~2.5% of budget). **SP not yet measured with this load** (`release/mixbench-aarch64`).
+
 ## Editing (done in core, host tests only)
 `core/src/edit.rs` (8 tests) + `mixer::TrimmedClip`: non-destructive trim / linear fades / gain / reverse rendered at playback; `Edit` enum where every
 edit returns its inverse (so undo/redo is two stacks; atomic `Batch`, redo cleared on a new edit, depth capped at 100), `split` (a split plays
