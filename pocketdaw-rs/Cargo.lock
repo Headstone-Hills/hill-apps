@@ -31,6 +31,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "font8x8"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875488b8711a968268c7cf5d139578713097ca4635a76044e8fe8eedf831d07e"
+
+[[package]]
 name = "getrandom"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -39,6 +45,13 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi",
+]
+
+[[package]]
+name = "hill-core"
+version = "0.1.0"
+dependencies = [
+ "font8x8",
 ]
 
 [[package]]
@@ -89,11 +102,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pocketdaw-drums"
+version = "0.1.0"
+dependencies = [
+ "hill-core",
+ "pocketdaw-core",
+]
+
+[[package]]
 name = "pocketdaw-tools"
 version = "0.1.0"
 dependencies = [
  "pocketdaw-core",
  "pocketdaw-device",
+ "pocketdaw-drums",
  "pocketdaw-usb",
 ]
 

@@ -2,6 +2,9 @@
 //!
 //!   pdtool record SECS OUT.wav [--note N]      capture -> mono 24-bit -> bounded queue -> SD card, with overrun counts
 //!   pdtool latency [--runs N] [--note N]       MIDI note-on -> first audible sample in the capture, median/min/max
+//!   pdtool drums list [TEXT]                   the HillBeat presets (id, name, style), optionally filtered
+//!   pdtool drums render ID OUT.wav [--cycles N] [--bpm B] [--swing S] [--samples DIR]
+//!                                              render a preset through the DAW mixer and limiter, so it can be heard with `aplay`
 //!   pdtool record SECS OUT.wav --synthetic     no FM-1: a real-time tone source (to test the writer on any machine)
 
 use pocketdaw_core::record::{detect_onset, mono24_to_f32, Downmixer, StreamingWav};
@@ -200,12 +203,78 @@ fn status(args: &[String]) {
     }
 }
 
+/// `pdtool drums ...`: lets the owner hear their HillBeat presets and kits through the DAW's own drum path.
+fn drums(args: &[String]) {
+    use pocketdaw_core::drums::DrumSection;
+    use pocketdaw_core::mixer::{Mixer, Track};
+    use pocketdaw_core::wav::{encode, Audio};
+    use pocketdaw_drums::host::DirHost;
+    use pocketdaw_drums::{all_presets, DrumLibrary};
+
+    match args.first().map(String::as_str) {
+        Some("list") => {
+            let q = args.get(1).map(|s| s.to_lowercase());
+            for (id, name, style) in all_presets() {
+                if q.as_ref().is_none_or(|q| id.contains(q.as_str()) || name.to_lowercase().contains(q.as_str()) || style.to_lowercase().contains(q.as_str())) {
+                    println!("{id:28} {name:28} {style}");
+                }
+            }
+        }
+        Some("render") => {
+            let (Some(id), Some(out)) = (args.get(1), args.get(2)) else {
+                eprintln!("usage: pdtool drums render ID OUT.wav [--cycles N] [--bpm B] [--swing S] [--samples DIR]");
+                exit(1)
+            };
+            let cycles: u32 = opt(args, "--cycles", 4u32).clamp(1, 256);
+            let bpm: f64 = opt(args, "--bpm", 100.0f64).clamp(40.0, 240.0);
+            let swing: f32 = opt(args, "--swing", 0.0f32).clamp(0.0, 0.25);
+            let host = match args.iter().position(|a| a == "--samples").and_then(|i| args.get(i + 1)) {
+                Some(d) => Some(DirHost::new(d)),
+                None => DirHost::detect(),
+            };
+            match &host {
+                Some(h) => println!("samples: {}", h.root().display()),
+                None => println!("samples: none found, using the built-in sounds (set HILL_SAMPLES or --samples DIR for your kits)"),
+            }
+            let boxed: Box<dyn pocketdaw_drums::Host> = match host {
+                Some(h) => Box::new(h),
+                None => Box::new(pocketdaw_drums::MemHost::default()),
+            };
+            let mut lib = DrumLibrary::new(boxed);
+            let lp = lib.pattern(id).unwrap_or_else(|e| { eprintln!("{e} (see: pdtool drums list)"); exit(2) });
+            println!("preset {id}: kit = {}", lp.kit.as_deref().unwrap_or("built-in sounds"));
+            let mut t = pocketdaw_core::drums::DrumTrack::new(bpm);
+            t.swing = swing;
+            t.sections.push(DrumSection { name: id.clone(), pattern: lp.pattern, cycles });
+            let frames = t.total_frames(RATE) as usize + 2 * RATE as usize; // two seconds for the last hit to ring out
+            let mut mixer = Mixer::new(RATE, 1024);
+            let mut track = Track::new("DRUMS");
+            track.sources.push(Box::new(t));
+            mixer.tracks.push(track);
+            let mut audio = Audio { rate: RATE, data: Vec::with_capacity(frames * 2) };
+            let mut buf = vec![0.0f32; 2048];
+            let mut at = 0usize;
+            while at < frames {
+                let n = 1024.min(frames - at);
+                mixer.render(at as u64, &mut buf[..n * 2]);
+                audio.data.extend_from_slice(&buf[..n * 2]);
+                at += n;
+            }
+            let peak = audio.data.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            std::fs::write(out, encode(&audio, 16)).unwrap_or_else(|e| { eprintln!("{out}: {e}"); exit(2) });
+            println!("wrote {out}: {:.1} s, {cycles} cycles at {bpm} bpm, swing {swing}, peak {peak:.2}", frames as f64 / RATE as f64);
+        }
+        _ => println!("usage: pdtool drums list [TEXT] | render ID OUT.wav [--cycles N] [--bpm B] [--swing S] [--samples DIR]"),
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("status") => status(&args[1..]),
         Some("record") => record(&args[1..]),
         Some("latency") => latency(&args[1..]),
+        Some("drums") => drums(&args[1..]),
         _ => println!("usage: pdtool record SECS OUT.wav [--note N] [--synthetic] | latency [--runs N] [--note N] | status [PATH]"),
     }
 }

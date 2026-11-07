@@ -8,6 +8,7 @@
 //! One absolute frame counter positions every source, so tracks cannot drift against each other and the
 //! output is identical no matter how the host chops it into chunks.
 
+pub mod drums;
 pub mod edit;
 pub mod effects;
 pub mod mixer;

@@ -71,6 +71,47 @@ impl Default for TrackModel {
     }
 }
 
+/// One arrangement section: a HillBeat preset repeated `cycles` times. The preset is stored by its **id**
+/// (a string), never by index, so adding presets upstream cannot silently change an old project.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct DrumSectionModel {
+    pub name: String,
+    pub preset: String,
+    pub cycles: u32,
+}
+
+impl Default for DrumSectionModel {
+    fn default() -> Self {
+        DrumSectionModel { name: String::new(), preset: String::new(), cycles: 1 }
+    }
+}
+
+pub const MAX_DRUM_SECTIONS: usize = 64;
+pub const MAX_SECTION_CYCLES: u32 = 256;
+
+/// The drum track. Tempo is the project's (constant per project; tempo automation is out of scope).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct DrumsModel {
+    pub enabled: bool,
+    pub sections: Vec<DrumSectionModel>,
+    /// 0..=0.25: fraction of a step by which odd steps are delayed
+    pub swing: f32,
+    /// per drum voice, 0..=4 (up to 400%, like HillBeat)
+    pub vol: [f32; 8],
+    pub mute: [bool; 8],
+    pub gain: f32,
+    /// where the first section starts on the timeline (frames)
+    pub start: u64,
+}
+
+impl Default for DrumsModel {
+    fn default() -> Self {
+        DrumsModel { enabled: true, sections: vec![], swing: 0.0, vol: [1.0; 8], mute: [false; 8], gain: 1.0, start: 0 }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct Project {
@@ -83,6 +124,7 @@ pub struct Project {
     pub latency_offset_frames: i64,
     pub loop_region: Option<(u64, u64)>,
     pub tracks: Vec<TrackModel>,
+    pub drums: DrumsModel,
 }
 
 impl Default for Project {
@@ -96,6 +138,7 @@ impl Default for Project {
             latency_offset_frames: 0,
             loop_region: None,
             tracks: (1..=MAX_TRACKS).map(|i| TrackModel { name: format!("TRACK {i}"), ..Default::default() }).collect(),
+            drums: DrumsModel::default(),
         }
     }
 }
@@ -141,6 +184,16 @@ impl Project {
                     return Err(format!("unsafe path in project: {f:?}"));
                 }
             }
+        }
+        let d = &mut self.drums;
+        d.sections.truncate(MAX_DRUM_SECTIONS);
+        for sec in d.sections.iter_mut() {
+            sec.cycles = sec.cycles.clamp(1, MAX_SECTION_CYCLES);
+        }
+        d.swing = if d.swing.is_finite() { d.swing.clamp(0.0, 0.25) } else { 0.0 };
+        d.gain = if d.gain.is_finite() { d.gain.clamp(0.0, 4.0) } else { 1.0 };
+        for v in d.vol.iter_mut() {
+            *v = if v.is_finite() { v.clamp(0.0, 4.0) } else { 1.0 };
         }
         if let Some((s, e)) = self.loop_region {
             if e <= s {
@@ -208,6 +261,35 @@ mod tests {
         assert_eq!(q.tracks[3].notes, vec![NoteModel { start: 0, len: 22050, note: 60, vel: 90 }]);
         let old = Project::from_json(r#"{"version":1,"tracks":[{"name":"A"}]}"#).unwrap();
         assert!(old.tracks[0].notes.is_empty());
+    }
+
+    #[test]
+    fn drum_sections_roundtrip_by_preset_id_and_old_files_have_none() {
+        let mut p = Project::default();
+        p.drums.sections = vec![
+            DrumSectionModel { name: "Verse".into(), preset: "basic-rock".into(), cycles: 4 },
+            DrumSectionModel { name: "Fill".into(), preset: "funk-1".into(), cycles: 1 },
+        ];
+        p.drums.vol[2] = 2.5;
+        p.drums.mute[5] = true;
+        p.drums.swing = 0.12;
+        assert_eq!(Project::from_json(&p.to_json()).unwrap(), p);
+        let old = Project::from_json(r#"{"version":1,"name":"OLD"}"#).unwrap();
+        assert!(old.drums.sections.is_empty() && old.drums.vol == [1.0; 8]);
+    }
+
+    #[test]
+    fn drum_settings_are_clamped() {
+        let mut p = Project::default();
+        p.drums.sections = vec![DrumSectionModel { cycles: 0, ..Default::default() }; 100];
+        p.drums.sections[1].cycles = 99999;
+        p.drums.swing = 0.9;
+        p.drums.vol[0] = 50.0;
+        p.drums.vol[1] = -3.0;
+        let q = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!(q.drums.sections.len(), MAX_DRUM_SECTIONS);
+        assert_eq!((q.drums.sections[0].cycles, q.drums.sections[1].cycles), (1, MAX_SECTION_CYCLES));
+        assert_eq!((q.drums.swing, q.drums.vol[0], q.drums.vol[1]), (0.25, 4.0, 0.0));
     }
 
     #[test]

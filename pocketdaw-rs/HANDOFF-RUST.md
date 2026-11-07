@@ -97,3 +97,25 @@ Python numbers (~58 ms pygame, ~146 ms aplay) carry over.
 3. DONE in core: mixer + transport + project model (above). NEXT: (user) run `mixbench` on the SP; then recording (capture thread -> ring buffer -> disk, mono
    downmix, take management), count-in, latency calibration (MIDI note -> capture onset), then the device app (SDL2 audio callback + framebuffer UI),
    drums from HillBeat once the current Rust source/presets are available, then export (mixdown/stems; ffmpeg/lame/flac exist on the SP for MP3/FLAC).
+
+## Drum track (2026-11-07, local session)
+
+Done and host-tested; **not yet heard on the SP**.
+
+- `core/src/drums.rs`: stateless `DrumTrack` (a mixer `Source`). Sections chain back to back; each is a pattern repeated `cycles` times. Hit time is a pure
+  function of section start, cycle, step, bpm, swing, so output is bit-identical for chunk sizes 1..9999 (tested). Mirrors HillBeat: step = 1/`div` beat, odd steps
+  delayed by `swing*step` (0..0.25), gain `vel/127 * vol * 0.9`, flam grace note 30 ms early at 0.4, per-voice volume up to 4.0, tom pitch by resampling (linear interp).
+- `drums/` (`pocketdaw-drums`): the only crate depending on `hill-core` (path `../../rust/hill-core`). `DrumLibrary` finds kits like HillBeat (`library::kit_entries`),
+  calls `Preset::plan(kits, 8)`, loads sounds from a `Host`, caches. `DirHost` is a read-only folder host (no SDL). All 267 shipped presets load with built-in sounds (tested).
+- `project.json`: new `drums` block (`#[serde(default)]`, so old files load). Sections store the preset **id**, not an index. Values clamped in `sanitize`.
+- `pdtool drums list [TEXT]` and `pdtool drums render ID OUT.wav [--cycles N] [--bpm B] [--swing S] [--samples DIR]`: renders through the real `Mixer` + limiter to a 16-bit WAV.
+
+Decisions / limits to know about:
+1. A "cycle" is one pass of the pattern (`steps/div` beats), so for 4/4 sixteenths it is one bar; 3/4 and 12/8 presets have their own length. The UI should say "cycles" or compute bars.
+2. No choke: HillBeat limits 4 voices per drum and fades the oldest; `DrumTrack` lets every hit ring to the end of its sample (capped at 4 s). Retriggers of a long open hat will overlap. Add a choke only if it is audible.
+3. Tempo is the project's constant bpm; the grid does not change mid-song.
+4. Once a `DrumTrack` is boxed into a mixer `Track` its vol/mute can't be changed live. The app needs a shared handle (atomics or `Arc<Mutex>`) when it is wired in.
+5. `libc::Ioctl` is Linux-only; `usb/src/sys.rs` now uses `req as _` so the crate also compiles on macOS. Type-checked for `aarch64-unknown-linux-gnu`; the musl release binaries were not rebuilt.
+
+Not verified: the aarch64-musl build of `pdtool`, and what the kits sound like on the SP. Next on the SP: `wget`/`scp` the new `pdtool`, then
+`pdtool drums render <id> /root/d.wav --cycles 4 && aplay /root/d.wav`.
