@@ -46,7 +46,7 @@ Test command: `cd pocketdaw && python3 -m unittest discover -s tests` (stdlib on
 - **Audio test results (20 s each, SP):** aplay 0 underruns, est. latency ~146 ms; pygame queue 0 underruns, est. ~58 ms. Both stayed locked to the sound
   card clock (constant ~0.1 s / ~0.04 s lead of rendered audio over wall time, no growth). Render cost ~2 ms avg / 7 ms max per 23 ms chunk for click+tone.
   The aplay run printed `RESULT: PROBLEMS` only because aplay's start-up banner was logged as an error (fixed). **Provisional choice: pygame queue as the primary
-  backend (lower latency, no subprocess, same path as the Hill apps), aplay kept as fallback.** The user has not yet said what either sounded like.
+  backend (lower latency, no subprocess, same path as the Hill apps), aplay kept as fallback.** **User confirmed (2026-11-08): both backends sounded good, no audible issues.** The Python output backends are superseded by the Rust direction (see `../pocketdaw-rs/HANDOFF-RUST.md`); the Rust app should use the SDL2 audio callback like the Hill Rust apps. These results still validate the SP's ALSA path: 44.1 kHz stereo s16, 1024-frame periods, ~2 ms render per chunk for a trivial mix.
 
 ## Drum presets: where they are (and aren't)
 Searched every remote branch of `Headstone-Hills/hill-apps` (main, friendly-thompson, gracious-faraday, lucid-euler, relaxed-cerf): **no drum-pattern presets anywhere.**

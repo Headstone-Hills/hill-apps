@@ -32,6 +32,12 @@ framebuffer UI `fb.rs`/`ui.rs`, WAV decoder, kv state; `hill-device`: SDL2 runne
 HillBeat's presets can only be reused from that newer source (or from the user's README/state files). Ask the user where the current Rust
 source lives (local checkout? another repo?) before integrating. Do not rebase onto the stale branch blindly.
 
+## Audio output (decision)
+User confirmed the Python aplay and pygame-queue tests both sounded clean (0 underruns, no audible issues), so the SP's ALSA path and a
+44.1 kHz / s16 / 1024-frame period are known-good. In Rust, output through the **SDL2 audio callback** (what `hill-device` already does; the callback
+is the single mixing point driven by one transport clock). Re-measure underruns and latency on the SP once the Rust mixer exists; do not assume the
+Python numbers (~58 ms pygame, ~146 ms aplay) carry over.
+
 ## Next steps
 1. (user) run the Rust `fm1tool` on the SP: `list`, `midi-in --seconds 20`, `capture 4 x.wav --note 60`, `capture 60 y.wav`. Expect the same results as Python
    (60 s = 60000 packets, 2,646,000 frames, 0 bad). A difference means a Rust ABI/logic bug.
