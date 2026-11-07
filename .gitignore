@@ -24,11 +24,11 @@ log.txt
 .DS_Store
 ._*
 
-# pocketdaw
+# hilldaw
 .deploy.env
 *.raw
 phase0_*.wav
 
 # rust build output
-pocketdaw-rs/target/
-pocketdaw-rs/dist/
+hilldaw-rs/target/
+hilldaw-rs/dist/

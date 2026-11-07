@@ -1,0 +1,10 @@
+[package]
+name = "hilldaw-drums"
+version = "0.1.0"
+edition = "2021"
+description = "Turns the owner's HillBeat presets and drum kits (hill-core) into a HillDAW DrumTrack. The only crate here that depends on hill-core."
+
+[dependencies]
+hilldaw-core = { path = "../core" }
+# hill-core is I/O-free and has a single tiny dependency (font8x8); it lives in the owner's separate workspace
+hill-core = { path = "../../rust/hill-core" }

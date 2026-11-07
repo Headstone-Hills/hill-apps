@@ -1,0 +1,9 @@
+[package]
+name = "hilldaw-core"
+version = "0.1.0"
+edition = "2021"
+description = "HillDAW engine core: transport, multitrack mixer, project model. No I/O, no threads, no audio device."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
