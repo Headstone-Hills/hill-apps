@@ -147,18 +147,34 @@ fn level_pan_mute_and_solo_change_the_mix() {
 }
 
 #[test]
-fn gain_steps_stop_at_plus_six_and_at_silence() {
+fn gain_steps_stop_at_plus_24_and_at_silence_and_y_takes_six_db_at_a_time() {
     let mut a = app();
-    for _ in 0..20 {
+    for _ in 0..60 {
         press(&mut a, Btn::Up);
     }
-    assert!((a.project.tracks[0].gain - 1.9953).abs() < 0.01, "+6 dB max, got {}", a.project.tracks[0].gain);
-    for _ in 0..80 {
+    assert!((a.project.tracks[0].gain - 15.849).abs() < 0.01, "+24 dB max, got {}", a.project.tracks[0].gain);
+    for _ in 0..100 {
         press(&mut a, Btn::Down);
     }
     assert_eq!(a.project.tracks[0].gain, 0.0);
     press(&mut a, Btn::Up);
     assert!(a.project.tracks[0].gain > 0.0, "comes back up from silence");
+    // reset, then coarse steps: 0 dB -> +6 -> +12 -> +18 -> +24 -> stays at +24
+    press(&mut a, Btn::B);
+    a.event(Btn::Y, true);
+    let mut seen = Vec::new();
+    for _ in 0..5 {
+        press(&mut a, Btn::Up);
+        seen.push(gain_db(a.project.tracks[0].gain));
+    }
+    a.event(Btn::Y, false);
+    assert_eq!(seen, vec![6, 12, 18, 24, 24]);
+    // and the boosted level really is louder in the mix: a recording at -20 dBFS peak lifted 18 dB is about -2 dBFS
+    assert!((hilldaw_core::project::MAX_STRIP_GAIN - 16.0).abs() < 1e-6);
+}
+
+fn gain_db(g: f32) -> i32 {
+    (20.0 * g.log10()).round() as i32
 }
 
 #[test]

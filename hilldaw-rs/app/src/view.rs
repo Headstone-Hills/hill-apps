@@ -11,15 +11,22 @@ const METER_H: i32 = 170;
 const STRIP_W: i32 = 62;
 const STRIP_X0: i32 = 12;
 
-/// 0..1 position of a linear level on the shared -60..+6 dB scale (meters and fader marks use the same one).
+/// 0..1 position of a linear level on the shared -60..+24 dB scale (meters and fader marks use the same one, so a fader at +18 dB
+/// has somewhere to sit and a 0 dB tick marks unity).
 pub(crate) fn meter_frac(level: f32) -> f32 {
-    ((gain_to_db(level) + 60.0) / 66.0).clamp(0.0, 1.0)
+    ((gain_to_db(level) + 60.0) / (60.0 + MAX_DB)).clamp(0.0, 1.0)
+}
+
+/// Where a dB value sits on that scale.
+fn db_frac(db: f32) -> f32 {
+    ((db + 60.0) / (60.0 + MAX_DB)).clamp(0.0, 1.0)
 }
 
 /// Fill a meter from the bottom up to `frac`, green below -9 dBFS, amber to -1 dBFS, red above.
 fn fill_bar(fb: &mut Fb, x: i32, w: i32, frac: f32) {
     let h = (frac * METER_H as f32) as i32;
-    for (lo, hi, c) in [(0.0f32, 0.77f32, ACCENT), (0.77, 0.9, AMBER), (0.9, 1.0, WARN)] {
+    // green below -9 dBFS, amber to -1 dBFS, red above
+    for (lo, hi, c) in [(0.0f32, db_frac(-9.0), ACCENT), (db_frac(-9.0), db_frac(-1.0), AMBER), (db_frac(-1.0), 1.0, WARN)] {
         let lo = (lo * METER_H as f32) as i32;
         let hi = ((hi * METER_H as f32) as i32).min(h);
         if hi > lo {

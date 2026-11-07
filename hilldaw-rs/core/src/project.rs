@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 pub const FORMAT_VERSION: u32 = 1;
 pub const MAX_TRACKS: usize = 8;
+/// Highest strip gain: +24 dB. Quiet FM-1 recordings (peaks around -20 dBFS) need far more than the old +12 dB; the master limiter catches the rest.
+pub const MAX_STRIP_GAIN: f32 = 16.0;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(default)]
@@ -195,7 +197,7 @@ impl Project {
             self.tracks.push(TrackModel { name: format!("TRACK {}", self.tracks.len() + 1), ..Default::default() });
         }
         for t in self.tracks.iter_mut() {
-            t.gain = t.gain.clamp(0.0, 4.0);
+            t.gain = t.gain.clamp(0.0, MAX_STRIP_GAIN);
             t.pan = t.pan.clamp(-1.0, 1.0);
             if t.active_take.is_some_and(|a| a >= t.takes.len()) {
                 t.active_take = None;
@@ -213,7 +215,7 @@ impl Project {
             sec.cycles = sec.cycles.clamp(1, MAX_SECTION_CYCLES);
         }
         d.swing = if d.swing.is_finite() { d.swing.clamp(0.0, 0.25) } else { 0.0 };
-        d.gain = if d.gain.is_finite() { d.gain.clamp(0.0, 4.0) } else { 1.0 };
+        d.gain = if d.gain.is_finite() { d.gain.clamp(0.0, MAX_STRIP_GAIN) } else { 1.0 };
         self.fm1.program = self.fm1.program.min(127);
         // keep only known FX controls, each inside its own range
         let map = crate::fm1::fx_map();
@@ -325,6 +327,17 @@ mod tests {
         bad.fm1.fx.insert(5, 1); // not an FX CC
         let q = Project::from_json(&bad.to_json()).unwrap();
         assert_eq!((q.fm1.program, q.fm1.fx.get(&71).copied(), q.fm1.fx.contains_key(&5)), (127, Some(2), false));
+    }
+
+    #[test]
+    fn strip_gain_goes_up_to_plus_24_db_and_no_further() {
+        let mut p = Project::default();
+        p.tracks[0].gain = 15.0;
+        p.tracks[1].gain = 99.0;
+        p.drums.gain = 99.0;
+        let q = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!((q.tracks[0].gain, q.tracks[1].gain, q.drums.gain), (15.0, MAX_STRIP_GAIN, MAX_STRIP_GAIN));
+        assert!((20.0 * MAX_STRIP_GAIN.log10() - 24.08).abs() < 0.01);
     }
 
     #[test]

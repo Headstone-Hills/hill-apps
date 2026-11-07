@@ -60,7 +60,7 @@ impl Edit {
                 let t = track_mut(p, track)?;
                 let inv = track_params(t, track);
                 t.name = name;
-                t.gain = gain.clamp(0.0, 4.0);
+                t.gain = gain.clamp(0.0, crate::project::MAX_STRIP_GAIN);
                 t.pan = pan.clamp(-1.0, 1.0);
                 t.mute = mute;
                 t.solo = solo;

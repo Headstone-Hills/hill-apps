@@ -65,7 +65,8 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("START + SELECT hold", "quit"),
     ("Mixer", ""),
     ("Left / Right", "pick a strip"),
-    ("Up / Down", "level -1 / +1 dB  (hold to repeat)"),
+    ("Up / Down", "level -1 / +1 dB, up to +24  (hold to repeat)"),
+    ("Y + Up / Down", "level in 6 dB steps"),
     ("L2 / R2", "pan left / right"),
     ("X", "mute"),
     ("Y + X", "solo"),
@@ -176,13 +177,16 @@ pub(crate) fn gain_to_db(g: f32) -> f32 {
     20.0 * g.max(1e-6).log10()
 }
 
-/// One 1 dB step up or down from `g`; the bottom of the range is silence.
-fn step_gain(g: f32, dir: i32) -> f32 {
+/// Top of a strip's level range in dB (see `MAX_STRIP_GAIN`).
+pub(crate) const MAX_DB: f32 = 24.0;
+
+/// One step of `db` decibels up or down from `g`; the bottom of the range is silence.
+fn step_gain(g: f32, dir: i32, db: i32) -> f32 {
     if g <= 0.0 {
-        return if dir > 0 { db_to_gain(-59.0) } else { 0.0 };
+        return if dir > 0 { db_to_gain(-60.0 + db as f32) } else { 0.0 };
     }
-    let db = (gain_to_db(g).round() + dir as f32).clamp(-60.0, 6.0);
-    if db <= -60.0 { 0.0 } else { db_to_gain(db) }
+    let next = (gain_to_db(g).round() + (dir * db) as f32).clamp(-60.0, MAX_DB);
+    if next <= -60.0 { 0.0 } else { db_to_gain(next) }
 }
 
 impl HillDaw {
@@ -589,7 +593,8 @@ impl HillDaw {
             Btn::Left => self.sel = i.saturating_sub(1),
             Btn::Right => self.sel = (i + 1).min(STRIPS - 1),
             Btn::Up | Btn::Down => {
-                let g = step_gain(self.strip_gain(i), if b == Btn::Up { 1 } else { -1 });
+                // Y held: 6 dB at a time, to get across the +-24 dB range quickly
+                let g = step_gain(self.strip_gain(i), if b == Btn::Up { 1 } else { -1 }, if self.held.is(Btn::Y) { 6 } else { 1 });
                 self.set_strip(i, Some(g), None, None, None);
             }
             Btn::L2 | Btn::R2 => {
