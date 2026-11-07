@@ -1,0 +1,15 @@
+[package]
+name = "pocketdaw-usb"
+version = "0.1.0"
+edition = "2021"
+description = "FM-1 USB layer for PocketDAW: usbfs MIDI, UAC1 descriptor parsing, isochronous audio capture. No kernel audio driver needed."
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "fm1tool"
+path = "src/bin/fm1tool.rs"
