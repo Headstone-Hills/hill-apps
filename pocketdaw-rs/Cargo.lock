@@ -80,10 +80,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pocketdaw-device"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "pocketdaw-tools"
 version = "0.1.0"
 dependencies = [
  "pocketdaw-core",
+ "pocketdaw-device",
  "pocketdaw-usb",
 ]
 

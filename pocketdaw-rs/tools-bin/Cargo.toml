@@ -7,6 +7,7 @@ description = "Hardware-in-the-loop tools: record to disk and measure MIDI-to-au
 [dependencies]
 pocketdaw-usb = { path = "../usb" }
 pocketdaw-core = { path = "../core" }
+pocketdaw-device = { path = "../device" }
 
 [[bin]]
 name = "pdtool"

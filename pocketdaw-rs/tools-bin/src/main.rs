@@ -187,11 +187,25 @@ fn latency(args: &[String]) {
     println!("= {:.0} frames at 44.1 kHz. Capture time origin is the submit of the first isochronous transfer, accurate to a couple of ms.", med * 44.1);
 }
 
+fn status(args: &[String]) {
+    use pocketdaw_device::{battery, fmt_bytes, fmt_duration, record_seconds_left, storage, POWER_SUPPLY};
+    let path = args.first().cloned().unwrap_or_else(|| "/mnt/sdcard".into());
+    match battery(Path::new(POWER_SUPPLY)) {
+        Some(b) => println!("battery: {}% {}{}{}", b.capacity, b.status, b.voltage_mv.map_or(String::new(), |v| format!(" {v} mV")), if b.is_low(15) { "  LOW" } else { "" }),
+        None => println!("battery: not found under {POWER_SUPPLY}"),
+    }
+    match storage(Path::new(&path)) {
+        Some(s) => println!("storage {path}: {} free of {}  =  {} of mono 24-bit recording", fmt_bytes(s.free), fmt_bytes(s.total), fmt_duration(record_seconds_left(s.free, RATE, 3, 1))),
+        None => println!("storage {path}: cannot read"),
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("status") => status(&args[1..]),
         Some("record") => record(&args[1..]),
         Some("latency") => latency(&args[1..]),
-        _ => println!("usage: pdtool record SECS OUT.wav [--note N] [--synthetic] | latency [--runs N] [--note N]"),
+        _ => println!("usage: pdtool record SECS OUT.wav [--note N] [--synthetic] | latency [--runs N] [--note N] | status [PATH]"),
     }
 }

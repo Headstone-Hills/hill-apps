@@ -36,8 +36,8 @@ source lives (local checkout? another repo?) before integrating. Do not rebase o
 All logic below is in `core/` with host tests only unless noted. Nothing here has a UI yet.
 | # | Feature | State |
 |---|---|---|
-| 1 | Click, count-in, time signature, tap tempo | `Click`, `Transport.beats_per_bar`, `TapTempo` done. **Count-in / record state machine TODO.** |
-| 2 | Loop region + punch in/out | Loop wrap done (sample-exact). **Punch in/out TODO.** |
+| 1 | Click, count-in, time signature, tap tempo | `Click`, `Transport.beats_per_bar`, `TapTempo`, and the count-in in `session.rs` done. |
+| 2 | Loop region + punch in/out | Loop wrap (sample-exact) and punch in/out in `session.rs` (`RecordSession`: each loop pass = its own take, latency-shifted capture index, result independent of callback size). **App wiring TODO** (route `Segment`s from the capture stream to take files). |
 | 3 | Latency calibration | Measurement done and run on the SP (`pdtool latency`, 12.8 ms median); `placed_start` applies the offset. In-app flow TODO. |
 | 4 | Gain/pan/mute/solo, limiter, meters | Done. |
 | 5 | Trim, fades, normalize, reverse | Non-destructive, rendered by `TrimmedClip`; `normalize_gain` needs the file peak (needs loaded audio). |
@@ -51,10 +51,10 @@ All logic below is in `core/` with host tests only unless noted. Nothing here ha
 | 13 | BPM detection, fit to tempo | `tempo.rs`: ranked candidates incl. octave alternatives (audio cannot always settle half/double time; the UI must offer x2 and /2), `varispeed`, `fit_to_bars_ratio`. Done. |
 | 14 | WAV import with sample-rate conversion | `wav.rs` decode + linear resample. Done. |
 | 15 | Project browser | **TODO.** |
-| 16 | Battery and storage indicators | **TODO** (read `/sys/class/power_supply/axp2202-battery/capacity`, statvfs; no `current_now` exists on the SP). |
+| 16 | Battery and storage indicators | `device/` crate (`battery`, `storage`, `record_seconds_left`, formatting; 4 tests on a fake sysfs). `pdtool status` prints them; **not yet run on the SP** (battery attribute names unconfirmed). No `current_now` exists on the SP. |
 
 Bench (`examples/bench.rs`): 8 clip tracks each with LP+HP+delay+reverb send + click/tone + 12-voice sampler = 0.58 ms avg / 2.8 ms worst per 23.2 ms chunk
-on the dev box (~2.5% of budget). **SP not yet measured with this load** (`release/mixbench-aarch64`).
+on the dev box (~2.5% of budget). **SP measured (2026-11-08): 3.76 ms avg / 6.03 ms worst per 23.2 ms chunk = ~16% of one core, 6x headroom** for the heaviest load tested (~6.5x slower than the dev box). The Python mixer needed ~2 ms for just a click + tone.
 
 ## Editing (done in core, host tests only)
 `core/src/edit.rs` (8 tests) + `mixer::TrimmedClip`: non-destructive trim / linear fades / gain / reverse rendered at playback; `Edit` enum where every
