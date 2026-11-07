@@ -10,6 +10,8 @@ pub const SETTINGS_KEY: &str = "hilldaw-settings";
 pub struct Settings {
     /// The USB audio input to record from as `vid:pid` in hex; `None` = automatic (the FM-1 if it is attached, else the first input).
     pub input_device: Option<String>,
+    /// The USB audio device playback comes out of as `vid:pid`; `None` = the built-in output.
+    pub output_device: Option<String>,
 }
 
 impl Settings {
@@ -19,6 +21,9 @@ impl Settings {
         // keep only something that looks like an id, so a damaged value cannot select a device that does not exist
         if v.input_device.as_deref().is_some_and(|d| !is_device_id(d)) {
             v.input_device = None;
+        }
+        if v.output_device.as_deref().is_some_and(|d| !is_device_id(d)) {
+            v.output_device = None;
         }
         v
     }
@@ -41,12 +46,13 @@ mod tests {
 
     #[test]
     fn settings_roundtrip_and_damaged_ones_fall_back_to_automatic() {
-        let s = Settings { input_device: Some("1234:00ab".into()) };
+        let s = Settings { input_device: Some("1234:00ab".into()), output_device: Some("0b0e:00ff".into()) };
         assert_eq!(Settings::from_json(&s.to_json()), s);
         assert_eq!(Settings::from_json("{nope"), Settings::default());
         assert_eq!(Settings::from_json("{}"), Settings::default(), "an old file with nothing in it");
         assert_eq!(Settings::from_json(r#"{"input_device":"../../etc"}"#).input_device, None);
         assert_eq!(Settings::from_json(r#"{"input_device":"12:34"}"#).input_device, None);
+        assert_eq!(Settings::from_json(r#"{"output_device":"../x"}"#).output_device, None);
     }
 
     #[test]

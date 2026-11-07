@@ -16,7 +16,8 @@ fn main() {
     let result = hill_device::run_with("hilldaw", move |host| {
         let app = HillDaw::new(host, status)
             .with_fm1(Box::new(Fm1Link::spawn_usb(Channels::default())))
-            .with_recorder(Box::new(UsbRecorder::new(project_dir)));
+            .with_recorder(Box::new(UsbRecorder::new(project_dir)))
+            .with_audio_out(Box::new(hilldaw_app::usbout::UsbAudioOut::new()));
         Some(Box::new(app))
     });
     if let Err(e) = result {

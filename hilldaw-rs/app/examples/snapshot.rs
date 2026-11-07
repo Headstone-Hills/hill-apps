@@ -30,7 +30,7 @@ fn save(a: &HillDaw, path: &str) {
 
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
-    let st = Arc::new(Mutex::new(Status { battery_pct: Some(45), charging: true, battery_low: false, free_bytes: Some(100 << 30), fm1: true, inputs: vec![InputSummary { id: "1234:00ab".into(), name: "Studio Mic".into(), summary: "1ch 16-bit 48 kHz".into(), rate: 48_000 }, InputSummary { id: "4c4a:c755".into(), name: "FM-1".into(), summary: "2ch 24-bit 44.1 kHz".into(), rate: 44_100 }] }));
+    let st = Arc::new(Mutex::new(Status { battery_pct: Some(45), charging: true, battery_low: false, free_bytes: Some(100 << 30), fm1: true, inputs: vec![InputSummary { id: "1234:00ab".into(), name: "Studio Mic".into(), summary: "1ch 16-bit 48 kHz".into(), rate: 48_000 }, InputSummary { id: "4c4a:c755".into(), name: "FM-1".into(), summary: "2ch 24-bit 44.1 kHz".into(), rate: 44_100 }], outputs: vec![] }));
     let mut a = HillDaw::new(Box::new(MemHost::default()), st);
     // mixer: some levels, a mute, a solo, an arm, then play so meters move
     press(&mut a, Btn::Down);

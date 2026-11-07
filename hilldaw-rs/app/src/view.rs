@@ -112,6 +112,12 @@ impl HillDaw {
         };
         fb.text_right(x, 11, &fm, 1, fc);
         fb.rect(x - Fb::text_w(&fm, 1) - 12, 12, 7, 7, fc);
+        // playback through a USB device (the built-in output is then silent)
+        if let Some(n) = self.output_name() {
+            x -= Fb::text_w(&fm, 1) + 30;
+            let label = format!("OUT {}", hill_core::fb::clip(&n.to_uppercase(), 12));
+            fb.text_right(x, 11, &label, 1, ACCENT);
+        }
     }
 
     fn draw_transport(&self, fb: &mut Fb) {
@@ -618,8 +624,18 @@ impl HillDaw {
                     (Some(id), None) => format!("{id} (not connected)"),
                 };
                 let ms = self.project.latency_offset_frames as f64 / 44.1;
-                let rows = [("Input", hill_core::fb::clip(&device, 22)), ("Latency offset", format!("{ms:.0} ms")), ("Count-in", (if self.project.count_in { "on" } else { "off" }).to_string())];
-                let ys = [244, 280, 308];
+                let out_dev = match (&self.settings.output_device, self.status.outputs.iter().find(|o| Some(&o.id) == self.settings.output_device.as_ref())) {
+                    (None, _) => "Built-in".to_string(),
+                    (Some(_), Some(o)) => o.name.clone(),
+                    (Some(id), None) => format!("{id} (not connected)"),
+                };
+                let rows = [
+                    ("Input", hill_core::fb::clip(&device, 22)),
+                    ("Latency offset", format!("{ms:.0} ms")),
+                    ("Count-in", (if self.project.count_in { "on" } else { "off" }).to_string()),
+                    ("Output", hill_core::fb::clip(&out_dev, 22)),
+                ];
+                let ys = [244, 280, 308, 336];
                 for (r, (label, value)) in rows.iter().enumerate() {
                     let y = ys[r];
                     if r == self.track_row {
@@ -634,10 +650,17 @@ impl HillDaw {
                 } else {
                     fb.text(300, 266, "plug in a USB audio input (mic, interface, FM-1)", 1, DIM);
                 }
-                fb.text(22, 346, "The meter runs while a track is armed or this tab is open.", 1, DIM);
-                fb.text(22, 358, "Play your loudest part; set the input volume so peaks reach about -6.", 1, DIM);
-                fb.text(22, 370, "Raising the latency offset moves takes earlier (use it if takes sit late).", 1, DIM);
-                fb.text(22, 382, "Input: Left/Right picks Auto or a device. USB Audio 2.0 is not supported.", 1, DIM);
+                let out_note = match (&self.out_err, self.output_name()) {
+                    (Some(e), _) => (format!("failed: {e}"), WARN),
+                    (None, Some(n)) => (format!("playing through {n}"), DIM),
+                    (None, None) if self.settings.output_device.is_some() => ("waiting for the device".to_string(), DIM),
+                    (None, None) => ("the SP's own speaker / headphones".to_string(), DIM),
+                };
+                fb.text(300, 354, &hill_core::fb::clip(&out_note.0, 42), 1, out_note.1);
+                fb.text(22, 372, "The meter runs while a track is armed or this tab is open.", 1, DIM);
+                fb.text(22, 384, "Play your loudest part; set the input volume so peaks reach about -6.", 1, DIM);
+                fb.text(22, 396, "Raising the latency offset moves takes earlier (a USB output adds delay).", 1, DIM);
+                fb.text(22, 408, "Left/Right picks Auto/Built-in or a device. USB Audio 2.0 is not supported.", 1, DIM);
             }
             TrackTab::Loop => {
                 let bar = self.bar_frames();

@@ -2,7 +2,7 @@
 //! audio thread never wait on sysfs; the app only copies the latest values.
 
 use hilldaw_device::{battery, storage, POWER_SUPPLY};
-use hilldaw_usb::audio::list_inputs;
+use hilldaw_usb::audio::{list_inputs, list_outputs};
 use hilldaw_usb::dev::{find_devices, SYSFS_USB};
 use hilldaw_usb::{FM1_PID, FM1_VID};
 use std::path::{Path, PathBuf};
@@ -42,6 +42,8 @@ pub struct Status {
     pub fm1: bool,
     /// every attached USB audio input
     pub inputs: Vec<InputSummary>,
+    /// every attached USB audio output (same shape: id, name, format, rate)
+    pub outputs: Vec<InputSummary>,
 }
 
 pub type StatusHandle = Arc<Mutex<Status>>;
@@ -55,6 +57,7 @@ pub fn poll_once(storage_path: &Path) -> Status {
         free_bytes: storage(storage_path).map(|s| s.free),
         fm1: !find_devices(FM1_VID, FM1_PID, Path::new(SYSFS_USB)).is_empty(),
         inputs: list_inputs(Path::new(SYSFS_USB)).into_iter().map(|i| InputSummary { summary: i.summary(), rate: i.rate, id: i.id, name: i.name }).collect(),
+        outputs: list_outputs(Path::new(SYSFS_USB)).into_iter().map(|o| InputSummary { summary: o.summary(), rate: o.rate, id: o.id, name: o.name }).collect(),
     }
 }
 

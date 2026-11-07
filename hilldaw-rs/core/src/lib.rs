@@ -16,6 +16,7 @@ pub mod fm1;
 pub mod effects;
 pub mod mixer;
 pub mod notes;
+pub mod outstream;
 pub mod probe;
 pub mod project;
 pub mod record;

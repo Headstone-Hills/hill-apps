@@ -14,6 +14,7 @@ pub mod audio;
 pub mod desc;
 pub mod dev;
 pub mod iso;
+pub mod iso_out;
 pub mod midi;
 pub mod sys;
 pub mod wav;

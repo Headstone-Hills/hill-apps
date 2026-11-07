@@ -13,6 +13,7 @@ pub mod export;
 pub mod fm1link;
 pub mod recorder;
 pub mod status;
+pub mod usbout;
 mod view;
 
 use hill_core::input::{Held, Repeat, TapTempo};
@@ -32,6 +33,7 @@ use hilldaw_core::project::{ClipModel, DrumSectionModel, ExportFormat, Project, 
 use hilldaw_core::transport::Transport;
 use hilldaw_drums::{find_preset, DrumLibrary};
 use hilldaw_core::settings::{Settings, SETTINGS_KEY};
+use usbout::AudioOut;
 use status::{effective_input, InputSummary, Status, StatusHandle};
 use std::sync::Arc;
 
@@ -214,6 +216,12 @@ pub struct HillDaw {
     pub(crate) arr_sel: usize,
     fm1_out: Option<Box<dyn Fm1Out>>,
     recorder: Option<Box<dyn Recorder>>,
+    audio_out: Option<Box<dyn AudioOut>>,
+    /// the USB output is streaming right now (the built-in output is muted)
+    out_usb: bool,
+    /// the output the app tried to start and failed on (shown on screen), and when it last tried
+    pub(crate) out_err: Option<String>,
+    out_retry_ms: u64,
     export_job: Option<Job>,
     /// the Waves screen: the timeline frame at its left edge (always a whole bar), the zoom (index into `ZOOM_BARS`), and whether it follows the playhead
     pub(crate) waves_start: u64,
@@ -359,6 +367,10 @@ impl HillDaw {
             arr_sel: 0,
             fm1_out: None,
             recorder: None,
+            audio_out: None,
+            out_usb: false,
+            out_err: None,
+            out_retry_ms: 0,
             export_job: None,
             waves_start: 0,
             waves_zoom: 2,
@@ -434,6 +446,35 @@ impl HillDaw {
             self.rebuild_track(i);
         }
         self
+    }
+
+    /// Connect USB audio playback (the SDL program gives the real one, tests a fake). Starts the saved choice if its device is attached.
+    pub fn with_audio_out(mut self, o: Box<dyn AudioOut>) -> Self {
+        self.audio_out = Some(o);
+        self.start_output();
+        self
+    }
+
+    /// (Re)start the chosen USB output, or stop it when the choice is the built-in output.
+    fn start_output(&mut self) {
+        let id = self.settings.output_device.clone();
+        let attached = id.as_ref().is_none_or(|i| self.status.outputs.iter().any(|o| o.id == *i));
+        let Some(o) = self.audio_out.as_mut() else { return };
+        self.out_retry_ms = self.ms;
+        if id.is_some() && !attached {
+            let _ = o.select(None);
+            self.out_usb = false;
+            self.out_err = None; // not plugged in: the screen says so
+            return;
+        }
+        match o.select(id) {
+            Ok(()) => self.out_err = None,
+            Err(e) => {
+                self.out_err = Some(e);
+                let _ = o.select(None);
+            }
+        }
+        self.out_usb = false;
     }
 
     fn fresh_project() -> Project {
@@ -1122,11 +1163,12 @@ impl HillDaw {
                 }
             }
             TrackTab::Input => {
-                self.track_row = self.track_row.min(2);
+                self.track_row = self.track_row.min(3);
                 match b {
                     Btn::Up => self.track_row = self.track_row.saturating_sub(1),
-                    Btn::Down => self.track_row = (self.track_row + 1).min(2),
+                    Btn::Down => self.track_row = (self.track_row + 1).min(3),
                     Btn::Left | Btn::Right if self.track_row == 0 => self.change_input(if b == Btn::Right { 1 } else { -1 }),
+                    Btn::Left | Btn::Right if self.track_row == 3 => self.change_output(if b == Btn::Right { 1 } else { -1 }),
                     Btn::Left | Btn::Right => {
                         let dir = if b == Btn::Right { 1i64 } else { -1 };
                         if self.track_row == 1 {
@@ -1181,6 +1223,55 @@ impl HillDaw {
         self.in_hold = 0.0;
         let name = self.current_input().map_or_else(|| "none found".to_string(), |i| i.name.clone());
         self.toast.say(&hill_core::fb::clip(&format!("Input: {}", if self.settings.input_device.is_none() { format!("auto ({name})") } else { name }), 30));
+    }
+
+    /// The output in use: the chosen USB device if it is attached and streaming, else the built-in output.
+    pub fn output_name(&self) -> Option<String> {
+        self.audio_out.as_ref().and_then(|o| o.active())
+    }
+
+    /// The chosen output id, or `None` for the built-in output.
+    pub fn selected_output(&self) -> Option<&str> {
+        self.settings.output_device.as_deref()
+    }
+
+    /// Step the output through the built-in output and every attached USB output, remember it, and start it.
+    fn change_output(&mut self, dir: i32) {
+        if self.audio_out.is_none() {
+            self.toast.say("No USB output here");
+            return;
+        }
+        let mut opts: Vec<Option<String>> = vec![None];
+        opts.extend(self.status.outputs.iter().map(|i| Some(i.id.clone())));
+        let cur = opts.iter().position(|o| *o == self.settings.output_device).unwrap_or(if dir > 0 { 0 } else { 1 });
+        let next = (cur as i32 + dir).rem_euclid(opts.len() as i32) as usize;
+        self.settings.output_device = opts[next].clone();
+        let json = self.settings.to_json();
+        self.lib.host_mut().save_state(SETTINGS_KEY, &json);
+        self.start_output();
+        let msg = match (&self.settings.output_device, &self.out_err) {
+            (None, _) => "Output: built-in".to_string(),
+            (Some(_), Some(e)) => format!("Output failed: {e}"),
+            (Some(id), None) => format!("Output: {}", self.status.outputs.iter().find(|o| o.id == *id).map_or("USB", |o| o.name.as_str())),
+        };
+        self.toast.say(&hill_core::fb::clip(&msg, 30));
+    }
+
+    /// If the chosen USB output has appeared (plugged in) or its stream ended (unplugged), bring it up or let the built-in output take over.
+    fn output_tick(&mut self) {
+        if self.audio_out.is_none() || self.settings.output_device.is_none() {
+            return;
+        }
+        let streaming = self.audio_out.as_ref().is_some_and(|o| o.active().is_some());
+        if streaming || self.ms.saturating_sub(self.out_retry_ms) < 2000 {
+            return;
+        }
+        let id = self.settings.output_device.clone().unwrap_or_default();
+        if self.status.outputs.iter().any(|o| o.id == id) {
+            self.start_output();
+        } else {
+            self.out_retry_ms = self.ms;
+        }
     }
 
     fn takes_act(&mut self, b: Btn, strip: usize) {
@@ -1741,6 +1832,13 @@ impl HillDaw {
             at += len;
         }
         self.spans = spans;
+        // a USB output takes the finished block and the built-in output goes quiet; if it is gone the block plays here as usual
+        if let Some(o) = self.audio_out.as_mut() {
+            self.out_usb = o.push(out);
+            if self.out_usb {
+                out.fill(0.0);
+            }
+        }
     }
 
     /// Test hook: the clock recordings are aligned on, instead of the real one.
@@ -1827,6 +1925,7 @@ impl HillDaw {
         }
         // after the status refresh, so the meter reacts to the device list of this very tick
         self.monitor_tick(dt_ms);
+        self.output_tick();
     }
 
 }
