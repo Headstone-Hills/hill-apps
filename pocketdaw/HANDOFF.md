@@ -1,3 +1,5 @@
+> **Superseded by `../pocketdaw-rs/HANDOFF.md`.** Python-era notes, kept for the hardware results.
+
 # PocketDAW — session handoff
 
 Written so a **fresh local session** (or a person) can resume with no chat history.

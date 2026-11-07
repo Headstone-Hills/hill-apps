@@ -1,3 +1,5 @@
+> **Start with `HANDOFF.md` (this folder).** This file is running notes kept while building.
+
 # PocketDAW in Rust — status and decisions
 
 **Direction (2026-11-08): Rust is the target language.** The user asked for it ("ideal, unless another language is more efficient").
