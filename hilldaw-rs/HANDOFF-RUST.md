@@ -217,3 +217,5 @@ Now: the **drums repeat** (`DrumTrack::looping`, stateless: every cycle that can
 - The transport only wraps inside `project.loop_region` (none by default; `HillDaw::set_loop_region`, no UI yet). Recording over a loop region makes each pass its own take (tested).
 - Regression tests: `the_drums_keep_going_past_the_end_of_the_arrangement_and_the_bar_counter_keeps_counting`, `a_long_performance_over_the_repeating_drums_is_one_take_and_the_bar_counter_does_not_wrap`, and three DrumTrack looping tests.
 - The owner's three test recordings (rec-001 about 49 s, rec-002, rec-003) were made with the old behaviour; rec-001 was probably five takes. Their audio files are valid.
+
+First recording test on the SP (2026-11-08): the owner reports the take "seemed to be on-time" against the drums with the default offset (`latency_offset_frames` = 563, the measured MIDI-to-capture latency, nothing for the SP's output latency). By ear, one listener, one session: not measured. No nudge control is needed yet; revisit if a later take sounds early or late.
