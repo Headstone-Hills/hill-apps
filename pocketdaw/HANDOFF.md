@@ -29,9 +29,21 @@ Legend: DONE+TESTED (unit tests / host) · WRITTEN (compiles, **not run on hardw
 | `fm1tool.py` (`list`, `descriptors`, `note`, `midi-in`, `capture`, `wavcheck`) | WRITTEN; `capture --mock`, `wavcheck`, `list` verified off-device. `latency-test` from the brief **not written yet**. |
 | `wavcheck.py` numeric analysis (peak/RMS/silence/L-R identical) | DONE+TESTED |
 | `deploy.sh` (tar-over-ssh deploy, `phase0` runner) | WRITTEN, never run |
-| Everything in brief sections 5-9 beyond Phase 0 | TODO |
+| Mixer core (`mixer.py`), output backends (`audio_out.py`: aplay pipe, pygame queue, offline file), `audio_test.py/.sh` | WRITTEN, 30 host tests pass (chunk-size independence, sample-exact placement). **Not run on the SP**; backend choice pending the device test. |
+| Everything else in brief sections 5-9 | TODO |
 
 Test command: `cd pocketdaw && python3 -m unittest discover -s tests` (stdlib only; 9 tests).
+
+## Device survey (check_env.sh, 2026-11-08)
+- **numpy 2.4.6 + pygame 2.6.1 (SDL 2.28.5) are importable** from `/mnt/sdcard/ports/hillsynth/pylibs` (also `ps-client/pylibs`: pygame only) with
+  `LD_PRELOAD=/usr/lib/libSDL2-2.0.so.0`. System python has neither. `audio_test.sh` picks the first pylibs with numpy.
+- Tools present: `aplay arecord ffmpeg lame flac amixer`. **No gcc/cc/sox.** (So MP3/FLAC export is feasible via ffmpeg/lame/flac; build C helpers off-device.)
+- Sound cards: audiocodec (pcm 00-00, playback only), ahubdam (no pcm), ahubhdmi (pcm 02-00 playback). **No capture PCM: the SP has no audio input.**
+- 996 MB RAM total, ~850 MB available. SD: `/mnt/sdcard` exfat 233 GB, 100 GB free.
+- **The user's deployed Hill apps are Rust ports**: `/mnt/sdcard/ports/{hillbeat-rs,hillchord-rs,hillsequencer-rs,hillband-rs,hillmap-rs,hillsynth}`; there is no
+  `ports/hillbeat`. The Python HillBeat in this repo is NOT what runs on the device. HillBeat's drum presets are probably in `hillbeat-rs` (unverified).
+  There is also `/mnt/sdcard/ports/hill-buttons.cfg` (shared Hill button config; not yet read). ROMS folders include `Hill Apps` and `Ports`.
+- Next: run `bash audio_test.sh aplay 20` and `bash audio_test.sh pygame 20` on the SP and compare underruns/latency; then pick the output backend.
 
 ## Phase 0 result (2026-11-08): capture WORKS
 See [`docs/PHASE0_RESULTS.md`](docs/PHASE0_RESULTS.md). MIDI IN now proven too. Remaining Phase 0 items: (60 s soak now done); then proceed to brief section 9 step 2 onward. The numbered "IMMEDIATE NEXT STEP" below is now historical.
