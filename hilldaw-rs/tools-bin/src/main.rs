@@ -213,10 +213,14 @@ fn drums(args: &[String]) {
 
     match args.first().map(String::as_str) {
         Some("list") => {
+            use std::io::Write;
             let q = args.get(1).map(|s| s.to_lowercase());
+            // `println!` panics if the reader goes away (`| head`); a listing meant for pipes just stops instead
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
             for (id, name, style) in all_presets() {
-                if q.as_ref().is_none_or(|q| id.contains(q.as_str()) || name.to_lowercase().contains(q.as_str()) || style.to_lowercase().contains(q.as_str())) {
-                    println!("{id:28} {name:28} {style}");
+                if q.as_ref().is_none_or(|q| id.contains(q.as_str()) || name.to_lowercase().contains(q.as_str()) || style.to_lowercase().contains(q.as_str())) && writeln!(out, "{id:28} {name:28} {style}").is_err() {
+                    break;
                 }
             }
         }
