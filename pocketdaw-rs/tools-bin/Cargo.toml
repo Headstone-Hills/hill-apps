@@ -1,0 +1,13 @@
+[package]
+name = "pocketdaw-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Hardware-in-the-loop tools: record to disk and measure MIDI-to-audio latency."
+
+[dependencies]
+pocketdaw-usb = { path = "../usb" }
+pocketdaw-core = { path = "../core" }
+
+[[bin]]
+name = "pdtool"
+path = "src/main.rs"

@@ -80,6 +80,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pocketdaw-tools"
+version = "0.1.0"
+dependencies = [
+ "pocketdaw-core",
+ "pocketdaw-usb",
+]
+
+[[package]]
 name = "pocketdaw-usb"
 version = "0.1.0"
 dependencies = [

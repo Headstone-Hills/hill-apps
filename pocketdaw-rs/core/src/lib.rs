@@ -10,6 +10,7 @@
 
 pub mod mixer;
 pub mod project;
+pub mod record;
 pub mod transport;
 pub mod wav;
 

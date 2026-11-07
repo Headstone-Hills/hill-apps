@@ -1,5 +1,5 @@
 [workspace]
-members = ["usb", "core"]
+members = ["usb", "core", "tools-bin"]
 resolver = "2"
 
 [profile.release]
