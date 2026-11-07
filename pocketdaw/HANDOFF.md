@@ -1,0 +1,96 @@
+# PocketDAW — session handoff
+
+Written so a **fresh local session** (or a person) can resume with no chat history.
+Source of truth for requirements: [`docs/BRIEF.md`](docs/BRIEF.md) (verbatim). This file records
+what has been done, what was decided after the brief, and what is still unproven.
+
+- Repo: `headstone-hills/hill-apps`, branch `claude/fm1-tracker-rg35xxsp-c20kgw`
+- App dir: `pocketdaw/` (new). `fm1tracker/` is the **superseded** M8-style MIDI tracker; leave it,
+  do not extend it. `pocketdaw/fm1_usb.py` started as a copy of its USB layer.
+- Owner preferences: wants cited sources and detailed explanations; does **not** want offers to
+  write their work for them. Pronouns not stated: use they/them.
+
+## Decisions made after the brief
+| Decision | By | Notes |
+|---|---|---|
+| Ignore HillBeat's "built-in pattern presets" for now; add later | user | **None exist in the repo.** `hillbeat/state.py` creates 8 empty patterns; `grep -i preset` finds nothing. Presets, if they exist, live in the user's on-device `hillbeat_state.json` (gitignored) or an unpushed copy. Ask the user for it; do not invent presets. |
+| Drum track renders inside the DAW's single mix callback | Claude (proposed, not yet challenged) | HillBeat fires `pygame.mixer` channels from a thread, which can't be sample-accurate against recorded audio. Reuse its data model (4 voices x 16 steps x 8 patterns, velocity, swing, chain), sample library layout and button map; not its playback path. |
+| C helper for isochronous capture, cross-compiled with Zig | Claude | `pip install ziglang`; `zig cc -target aarch64-linux-musl -static` verified to produce a static aarch64 ELF here. |
+| Work is SSH-driven; session will move to the user's computer later | user | Everything needed is in the repo; commit often. |
+
+## Status
+Legend: DONE+TESTED (unit tests / host) · WRITTEN (compiles, **not run on hardware**) · TODO
+
+| Item | State |
+|---|---|
+| USB-MIDI out/in layer, discovery by VID/PID, reconnect (`fm1_usb.py`) | WRITTEN. MIDI-out ioctl numbers match the device-verified values (asserted at import on 64-bit). MIDI **in** (`UsbMidiDevice.read`, ep 0x84) never run on hardware. |
+| UAC1 descriptor parser (`usb_desc.py`) | DONE+TESTED against a **synthetic** fixture built from the brief's decoded values. **Replace with the real dump**: `fm1_descriptors.bin` (see Phase 0). |
+| Iso capture helper (`helper/isocap.c`, `build_helper.sh`) | WRITTEN. Compiles clean with `-Wall -Wextra` for host and aarch64. **Never run against a device.** Uses the kernel's `linux/usbdevice_fs.h`, so struct layouts are correct by construction. |
+| `fm1tool.py` (`list`, `descriptors`, `note`, `midi-in`, `capture`, `wavcheck`) | WRITTEN; `capture --mock`, `wavcheck`, `list` verified off-device. `latency-test` from the brief **not written yet**. |
+| `wavcheck.py` numeric analysis (peak/RMS/silence/L-R identical) | DONE+TESTED |
+| `deploy.sh` (tar-over-ssh deploy, `phase0` runner) | WRITTEN, never run |
+| Everything in brief sections 5-9 beyond Phase 0 | TODO |
+
+Test command: `cd pocketdaw && python3 -m unittest discover -s tests` (stdlib only; 9 tests).
+
+## IMMEDIATE NEXT STEP — Phase 0, needs the real device
+Cannot be done from a cloud session (no SP access). From a machine that can reach the SP:
+```
+cd pocketdaw
+pip install ziglang                      # once, for the aarch64 build
+echo 'POCKETDAW_HOST=<sp ip>' > .deploy.env     # IP is DHCP; password is never stored
+bash deploy.sh phase0                    # builds helper, deploys, runs 4 checks, prints a report
+scp root@<sp ip>:/mnt/sdcard/ports/pocketdaw/{fm1_descriptors.bin,phase0_capture.wav} .
+```
+What each step answers (all are open questions in the brief, section 11):
+1. `list` / `descriptors`: do real descriptors match the brief (iface 2 alt 1, ep 0x83, 270 B, 2ch/24-bit/44100)?
+2. `midi-in` (press keys and turn knobs): does the FM-1 transmit MIDI over USB at all?
+3. `capture 4 --note 60`: does isochronous capture work on OHCI/kernel 4.9.170, and does the stream
+   carry synth output? You should hear middle C from the FM-1; report must say `SIGNAL PRESENT`,
+   byte count near 100% of nominal (264 KB/s), `bad_status=0`.
+4. idle capture: noise floor, and whether L == R (decides the mono downmix).
+Interpreting failures: `claim interface: Device or resource busy` = something holds it; `set alt
+setting` error = alt number wrong; `bad_status` high or bytes far under 100% = scheduling/dropped
+frames (try `--urbs 16 --frames 32`); all-zero audio = stream open but not carrying the synth (check
+FM-1 volume, feature-unit mute in the audio-control interface). If capture cannot work, **stop and
+report with evidence** and offer the brief's fallbacks (a)-(c); do not silently change scope.
+
+## Layout
+```
+pocketdaw/
+  fm1_usb.py        MIDI transport + discovery (stdlib). Transports: Usb/Mock/Console.
+  usb_desc.py       UAC1 descriptor parser, pick_capture()
+  wavcheck.py       numeric audio analysis + WAV helpers + synth_tone()
+  fm1tool.py        diagnostics CLI
+  helper/isocap.c   iso IN capture; build with build_helper.sh -> dist/isocap (aarch64 static)
+  deploy.sh         SSH deploy / phase0 runner
+  tests/            unittest
+  docs/BRIEF.md     the requirements, verbatim
+```
+Hill-app conventions to follow when the UI starts (all read from `hillsequencer/`, `hillchord/`):
+- Launcher: PortMaster-style `.sh` in `ROMS/Ports/`, code in `ports/<name>/`; sets
+  `LD_PRELOAD=/usr/lib/libSDL2-2.0.so.0`, `PYTHONPATH=$GAMEDIR:$GAMEDIR/pylibs`, `SDL_AUDIODRIVER=alsa`;
+  deps vendored into `pylibs/` by `install_deps.sh` (pygame, numpy) on first run (needs wifi once).
+- Input: pygame joystick indices, A3 B4 Y5 X6 L1 7 R1 8 Select 9 Start 10 Fn 11 L2 12 R2 13,
+  D-pad as hat; **no gptokeyb**; quit = Start+Select hold ~1.2 s; keyboard fallback for desktop dev.
+- Do not break the muOS menu button; clean exit must release USB.
+
+## Known gaps / risks to keep in mind
+- numpy is **not** confirmed on the device; the Hill apps vendor it into `pylibs/`, so it probably can
+  be, but the DSP-heavy features (8, 9, 13) depend on it or on moving DSP into C.
+- Python `time.sleep` + GIL jitter was ~3 us avg on the cloud box with a mock transport (earlier tracker
+  work); that is **not** representative of the A53. Measure on the SP.
+- Iso capture while Python also draws pygame frames is untested; helper-as-subprocess is the isolation plan.
+- FM-1 behaviour that is unverified: key presses over MIDI IN, local-sound mute, whether bank/program
+  change works on the user's firmware, whether the unit is multitimbral (probably not).
+- UAC2 / generic mics: the parser flags nothing for UAC2 yet; build after FM-1 capture is proven.
+- Brief section 7 is large (16 features). Track each in a checklist as built and report simplifications.
+
+## Resuming locally
+```
+git clone https://github.com/headstone-hills/hill-apps && cd hill-apps
+git checkout claude/fm1-tracker-rg35xxsp-c20kgw
+cd pocketdaw && python3 -m unittest discover -s tests
+python3 fm1tool.py capture 1 /tmp/t.wav --mock      # full pipeline off-device
+./build_helper.sh                                    # needs a C compiler; aarch64 needs `pip install ziglang`
+```

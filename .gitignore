@@ -23,3 +23,8 @@ log.txt
 # macOS
 .DS_Store
 ._*
+
+# pocketdaw
+.deploy.env
+*.raw
+phase0_*.wav
