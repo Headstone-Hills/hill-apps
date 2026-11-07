@@ -14,7 +14,7 @@ use crate::recorder::ExportFile;
 use hilldaw_core::drums::DrumTrack;
 use hilldaw_core::export::{db, encode_pcm, normalize_gain, render_offline, Dither, Levels};
 use hilldaw_core::mixer::{Mixer, MonoClip, Source, Track};
-use hilldaw_core::project::ExportModel;
+use hilldaw_core::project::{ExportFormat, ExportModel, TrackFxModel};
 use hilldaw_core::record::StreamingWav;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -44,6 +44,7 @@ pub(crate) struct StripSnap {
     pub pan: f32,
     pub mute: bool,
     pub solo: bool,
+    pub fx: TrackFxModel,
     pub clips: Vec<ClipSnap>,
 }
 
@@ -52,6 +53,8 @@ pub(crate) struct Snapshot {
     /// the 8 tracks, then the drums (index 8; its audio is `drums`)
     pub strips: Vec<StripSnap>,
     pub drums: Option<DrumTrack>,
+    /// the shared reverb's size
+    pub reverb_room: f32,
     /// the last frame anything starts or sounds (before the tail)
     pub end: u64,
 }
@@ -81,6 +84,7 @@ impl Snapshot {
                     let mut t = Track::new(&st.name);
                     (t.gain, t.pan, t.mute, t.solo) = (st.gain, st.pan, st.mute, st.solo);
                     t.sources = self.sources(i);
+                    st.fx.apply(&mut t.fx, self.rate);
                     m.tracks.push(t);
                 }
             }
@@ -89,10 +93,12 @@ impl Snapshot {
                 let mut t = Track::new(&st.name);
                 (t.gain, t.pan) = (st.gain, st.pan);
                 t.sources = self.sources(i);
+                st.fx.apply(&mut t.fx, self.rate); // a stem is the strip as it is heard, effects included
                 m.tracks.push(t);
                 m.limiter.ceiling = 1.0e9; // a stem is the strip as it is; the master limiter belongs to the mixdown
             }
         }
+        hilldaw_core::effects::sync_reverb(&mut m, self.reverb_room);
         m
     }
 }
@@ -117,7 +123,12 @@ pub struct ExportReport {
     /// the normalization gain applied (0 when off)
     pub gain_db: f32,
     pub cancelled: bool,
+    /// things that did not go as asked (an encoder that was not found: the WAV was kept)
+    pub warnings: Vec<String>,
 }
+
+/// Turns a finished WAV into FLAC/MP3 and returns the final path (or why not).
+pub type Converter = Arc<dyn Fn(&str, ExportFormat) -> Result<String, String> + Send + Sync>;
 
 pub(crate) struct Job {
     handle: Option<JoinHandle<Result<ExportReport, String>>>,
@@ -148,20 +159,20 @@ pub(crate) fn total_frames(snap: &Snapshot) -> u64 {
     snap.end + (TAIL_S * snap.rate as f64) as u64
 }
 
-pub(crate) fn spawn(snap: Snapshot, opts: ExportModel, files: Vec<OutFile>) -> Job {
+pub(crate) fn spawn(snap: Snapshot, opts: ExportModel, files: Vec<OutFile>, convert: Converter) -> Job {
     let frames = total_frames(&snap);
     let passes = files.len() as u64 + u64::from(opts.normalize);
     let progress = Arc::new(AtomicU64::new(0));
     let cancel = Arc::new(AtomicBool::new(false));
     let (p2, c2) = (progress.clone(), cancel.clone());
-    let handle = std::thread::spawn(move || run(snap, opts, files, &p2, &c2));
+    let handle = std::thread::spawn(move || run(snap, opts, files, convert, &p2, &c2));
     Job { handle: Some(handle), progress, total: frames * passes, cancel }
 }
 
-fn run(snap: Snapshot, opts: ExportModel, files: Vec<OutFile>, progress: &AtomicU64, cancel: &AtomicBool) -> Result<ExportReport, String> {
+fn run(snap: Snapshot, opts: ExportModel, files: Vec<OutFile>, convert: Converter, progress: &AtomicU64, cancel: &AtomicBool) -> Result<ExportReport, String> {
     let frames = total_frames(&snap);
     let bits = if opts.bits == 16 { 16 } else { 24 };
-    let mut report = ExportReport { files: Vec::new(), seconds: frames as f64 / snap.rate as f64, peak_db: -120.0, clipped: 0, gain_db: 0.0, cancelled: false };
+    let mut report = ExportReport { files: Vec::new(), seconds: frames as f64 / snap.rate as f64, peak_db: -120.0, clipped: 0, gain_db: 0.0, cancelled: false, warnings: Vec::new() };
 
     // normalizing needs the mixdown's peak first: render it once without writing
     let mut gain = 1.0f32;
@@ -212,7 +223,18 @@ fn run(snap: Snapshot, opts: ExportModel, files: Vec<OutFile>, progress: &Atomic
             report.peak_db = db(levels.peak);
         }
         report.clipped += levels.clipped;
-        report.files.push(of.path);
+        // FLAC / MP3: convert the finished WAV; if no encoder works the WAV stays and the report says so
+        if opts.format != ExportFormat::Wav {
+            match convert(&of.path, opts.format) {
+                Ok(final_path) => report.files.push(final_path),
+                Err(e) => {
+                    report.warnings.push(e);
+                    report.files.push(of.path);
+                }
+            }
+        } else {
+            report.files.push(of.path);
+        }
     }
     Ok(report)
 }

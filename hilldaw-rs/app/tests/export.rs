@@ -103,6 +103,17 @@ fn press(a: &mut HillDaw, b: Btn) {
     a.event(b, false);
 }
 
+/// Go to a screen whatever the screen order is (R1 cycles through them).
+fn to_view(a: &mut HillDaw, v: View) {
+    for _ in 0..8 {
+        if a.view() == v {
+            return;
+        }
+        press(a, Btn::R1);
+    }
+    panic!("never reached {v:?}");
+}
+
 fn new_app() -> (HillDaw, Fake) {
     let fake = Fake::default();
     let a = HillDaw::new(Box::new(MemHost::default()), status()).with_recorder(Box::new(fake.clone()));
@@ -154,16 +165,14 @@ fn drums_down(a: &mut HillDaw, db: usize) {
 }
 
 fn remove_drums(a: &mut HillDaw) {
-    press(a, Btn::R1);
+    to_view(a, View::Arrange);
     press(a, Btn::X);
-    press(a, Btn::L1);
+    to_view(a, View::Mixer);
     assert!(a.project.drums.sections.is_empty());
 }
 
 fn export_now(a: &mut HillDaw) {
-    press(a, Btn::R1);
-    press(a, Btn::R1);
-    press(a, Btn::R1);
+    to_view(a, View::Export);
     assert_eq!(a.view(), View::Export);
     press(a, Btn::A);
     wait_export(a);
@@ -197,9 +206,7 @@ fn the_exported_drums_are_the_same_audio_as_what_plays_live_plus_a_tail() {
     // the same frames played live
     let mut live = Vec::new();
     let mut buf = vec![0.0f32; 2048];
-    press(&mut a, Btn::L1);
-    press(&mut a, Btn::L1);
-    press(&mut a, Btn::L1);
+    to_view(&mut a, View::Mixer);
     press(&mut a, Btn::Start);
     for _ in 0..(3 * 44100 / 1024) {
         a.audio(&mut buf);
@@ -316,14 +323,13 @@ fn sixteen_bit_export_is_dithered_unless_turned_off_and_reads_back_close_to_24_b
 fn an_export_can_be_cancelled_and_reports_it() {
     let (mut a, _fake) = new_app();
     // a very long song: 256 cycles of the starter groove (about 10 minutes)
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Arrange);
     a.event(Btn::Y, true);
     for _ in 0..300 {
         press(&mut a, Btn::Right);
     }
     a.event(Btn::Y, false);
-    press(&mut a, Btn::R1);
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Export);
     assert_eq!(a.view(), View::Export);
     press(&mut a, Btn::A);
     assert!(a.export_running());

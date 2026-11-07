@@ -3,7 +3,7 @@
 use hill_core::{App, Btn, Host, MemHost};
 use hilldaw_app::recorder::{RecInfo, Recorder};
 use hilldaw_app::status::{Status, StatusHandle};
-use hilldaw_app::{HillDaw, STATE_KEY};
+use hilldaw_app::{HillDaw, View, STATE_KEY};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -62,6 +62,17 @@ fn press(a: &mut HillDaw, b: Btn) {
     a.event(b, false);
 }
 
+/// Go to a screen whatever the screen order is (R1 cycles through them).
+fn to_view(a: &mut HillDaw, v: View) {
+    for _ in 0..8 {
+        if a.view() == v {
+            return;
+        }
+        press(a, Btn::R1);
+    }
+    panic!("never reached {v:?}");
+}
+
 fn with(a: &mut HillDaw, hold: Btn, b: Btn) {
     a.event(hold, true);
     press(a, b);
@@ -72,9 +83,9 @@ fn with(a: &mut HillDaw, hold: Btn, b: Btn) {
 fn ready(count_in: bool) -> (HillDaw, Fake) {
     let fake = Fake::default();
     let mut a = HillDaw::new(Box::new(MemHost::default()), status()).with_recorder(Box::new(fake.clone()));
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Arrange);
     press(&mut a, Btn::X); // delete the starter drum section
-    press(&mut a, Btn::L1);
+    to_view(&mut a, View::Mixer);
     assert!(a.project.drums.sections.is_empty());
     if a.project.count_in != count_in {
         with(&mut a, Btn::Fn, Btn::L1);
@@ -195,14 +206,14 @@ fn stopping_during_the_count_in_records_nothing() {
 fn each_loop_pass_is_its_own_take_and_the_latest_plays() {
     let (mut a, _fake) = ready(false);
     // a 2-bar loop so three passes fit: add one drum section back (cycles 2) so there is something to loop; mute its strip
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Arrange);
     press(&mut a, Btn::A);
     a.event(Btn::Y, true);
     for _ in 0..2 {
         press(&mut a, Btn::Left); // cycles 4 -> 2
     }
     a.event(Btn::Y, false);
-    press(&mut a, Btn::L1);
+    to_view(&mut a, View::Mixer);
     for _ in 0..8 {
         press(&mut a, Btn::Right);
     }
@@ -293,9 +304,9 @@ fn a_recorded_take_survives_quitting_and_plays_after_a_restart() {
     let host = Shared::default();
     let fake = Fake::default();
     let mut a = HillDaw::new(Box::new(host.clone()), status()).with_recorder(Box::new(fake.clone()));
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Arrange);
     press(&mut a, Btn::X);
-    press(&mut a, Btn::L1);
+    to_view(&mut a, View::Mixer);
     with(&mut a, Btn::Fn, Btn::L1); // count-in off
     press(&mut a, Btn::A);
     a.set_test_clock(Some(0.0));

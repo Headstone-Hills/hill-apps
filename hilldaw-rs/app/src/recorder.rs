@@ -46,6 +46,14 @@ pub trait Recorder: Send {
     fn finish(&mut self, min_frames: u64) -> Result<RecInfo, String>;
     /// A recording as mono float, for playback.
     fn load(&mut self, rel: &str) -> Option<Vec<f32>>;
+    /// Start or stop listening to the FM-1 without writing anything, so the input level can be shown before recording.
+    fn monitor(&mut self, _on: bool) -> Result<(), String> {
+        Ok(())
+    }
+    /// Loudest input sample since the last call, 0..1 (0 when nothing is being captured).
+    fn level(&mut self) -> f32 {
+        0.0
+    }
     /// A new file for an export, named after `stem` (a number is added rather than overwriting an earlier export).
     /// Returns the file and a path to show the user.
     fn create_export(&mut self, _stem: &str) -> Result<(Box<dyn ExportFile>, String), String> {
@@ -53,13 +61,14 @@ pub trait Recorder: Send {
     }
 }
 
-/// `song-mixdown.wav`, then `song-mixdown-2.wav`, ...: the first name not yet used in `dir`.
+/// `song-mixdown.wav`, then `song-mixdown-2.wav`, ...: the first name not yet used in `dir` **with any export extension**. A WAV that was
+/// converted to FLAC or MP3 is deleted, so checking only `.wav` would hand its name out again and overwrite the earlier export.
 pub fn unique_export_name(dir: &Path, stem: &str) -> String {
-    let first = format!("{stem}.wav");
-    if !dir.join(&first).exists() {
-        return first;
+    let taken = |n: &str| ["wav", "flac", "mp3"].iter().any(|e| dir.join(format!("{n}.{e}")).exists());
+    if !taken(stem) {
+        return format!("{stem}.wav");
     }
-    (2u32..).map(|n| format!("{stem}-{n}.wav")).find(|n| !dir.join(n).exists()).unwrap_or(first)
+    (2u32..).map(|n| format!("{stem}-{n}")).find(|n| !taken(n)).map_or_else(|| format!("{stem}.wav"), |n| format!("{n}.wav"))
 }
 
 /// Recordings longer than this are not loaded for playback (they are held in memory as 32-bit floats).
@@ -99,24 +108,100 @@ pub fn load_recording(project_dir: &Path, rel: &str) -> Option<Vec<f32>> {
     Some(mono)
 }
 
+/// The pieces of a running capture, before it is filed as the recording or the monitor.
+type Launched = (Arc<AtomicBool>, Arc<AtomicU64>, Arc<AtomicU64>, JoinHandle<Result<(), String>>);
+
 struct Active {
     stop: Arc<AtomicBool>,
     captured: Arc<AtomicU64>,
     overruns: Arc<AtomicU64>,
     capture: JoinHandle<Result<(), String>>,
-    writer: JoinHandle<u64>,
+    /// `None` while only monitoring
+    writer: Option<JoinHandle<u64>>,
 }
 
 /// The FM-1 over USB, written under `<project_dir>/audio/`.
 pub struct UsbRecorder {
     project_dir: PathBuf,
     active: Option<Active>,
+    /// listening only (no file)
+    monitor: Option<Active>,
+    /// loudest sample since the last `level()`, in 24-bit units
+    peak: Arc<AtomicU64>,
 }
 
 impl UsbRecorder {
     pub fn new(project_dir: impl Into<PathBuf>) -> Self {
-        UsbRecorder { project_dir: project_dir.into(), active: None }
+        UsbRecorder { project_dir: project_dir.into(), active: None, monitor: None, peak: Arc::new(AtomicU64::new(0)) }
     }
+}
+
+impl UsbRecorder {
+    /// Open the FM-1's capture stream and run it on its own thread. With a writer the audio goes to disk too; without one it is only
+    /// measured (the input meter). The iso handle is created on the capture thread and never leaves it.
+    fn launch(&self, tx: Option<mpsc::SyncSender<Vec<u8>>>) -> Result<Launched, String> {
+        let info = find_devices(FM1_VID, FM1_PID, Path::new(SYSFS_USB)).into_iter().next().ok_or("FM-1 not found")?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let captured = Arc::new(AtomicU64::new(0));
+        let overruns = Arc::new(AtomicU64::new(0));
+        let (st, cf, ov, pk) = (stop.clone(), captured.clone(), overruns.clone(), self.peak.clone());
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+        let capture = std::thread::spawn(move || {
+            let streams = parse_audio_streams(&info.descriptors().unwrap_or_default());
+            let opened = match pick_capture(&streams, RATE) {
+                Some(cap) => IsoCapture::open(&info, cap, 16, 8).map_err(|e| e.to_string()),
+                None => Err("no capture endpoint".to_string()),
+            };
+            let mut cp = match opened {
+                Ok(c) => {
+                    let _ = ready_tx.send(Ok(()));
+                    c
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e.clone()));
+                    return Err(e);
+                }
+            };
+            let mut dm = Downmixer::default();
+            let mut scratch = Vec::with_capacity(512);
+            cp.run(&st, 0.0, |p| {
+                scratch.clear();
+                dm.push(p, &mut scratch);
+                cf.fetch_add((scratch.len() / 3) as u64, Ordering::Relaxed);
+                pk.fetch_max(peak_24(&scratch), Ordering::Relaxed);
+                if let Some(tx) = &tx {
+                    if tx.try_send(scratch.clone()).is_err() {
+                        ov.fetch_add(1, Ordering::Relaxed); // the writer fell behind: a chunk was dropped
+                    }
+                }
+            })
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+        });
+        match ready_rx.recv_timeout(Duration::from_secs(3)) {
+            Ok(Ok(())) => Ok((stop, captured, overruns, capture)),
+            Ok(Err(e)) => {
+                let _ = capture.join();
+                Err(e)
+            }
+            Err(_) => {
+                stop.store(true, Ordering::Relaxed);
+                Err("the FM-1 did not start streaming".into())
+            }
+        }
+    }
+
+    fn stop_monitor(&mut self) {
+        if let Some(m) = self.monitor.take() {
+            m.stop.store(true, Ordering::Relaxed);
+            let _ = m.capture.join();
+        }
+    }
+}
+
+/// Loudest sample in a run of 24-bit little-endian mono bytes (absolute value, 24-bit units).
+pub(crate) fn peak_24(bytes: &[u8]) -> u64 {
+    bytes.chunks_exact(3).map(|p| (((p[2] as i8) as i32) << 16 | (p[1] as i32) << 8 | p[0] as i32).unsigned_abs() as u64).max().unwrap_or(0)
 }
 
 impl Recorder for UsbRecorder {
@@ -124,7 +209,7 @@ impl Recorder for UsbRecorder {
         if self.active.is_some() {
             return Err("already recording".into());
         }
-        let info = find_devices(FM1_VID, FM1_PID, Path::new(SYSFS_USB)).into_iter().next().ok_or("FM-1 not found")?;
+        self.stop_monitor(); // the interface can be claimed once: recording takes over from monitoring
         let audio_dir = self.project_dir.join("audio");
         std::fs::create_dir_all(&audio_dir).map_err(|e| format!("cannot create {}: {e}", audio_dir.display()))?;
         let name = next_take_name(&audio_dir);
@@ -148,56 +233,33 @@ impl Recorder for UsbRecorder {
             let _ = w.finish();
             frames
         });
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let captured = Arc::new(AtomicU64::new(0));
-        let overruns = Arc::new(AtomicU64::new(0));
-        let (st, cf, ov) = (stop.clone(), captured.clone(), overruns.clone());
-        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
-        let capture = std::thread::spawn(move || {
-            // the iso handle is created on this thread and never leaves it
-            let streams = parse_audio_streams(&info.descriptors().unwrap_or_default());
-            let opened = match pick_capture(&streams, RATE) {
-                Some(cap) => IsoCapture::open(&info, cap, 16, 8).map_err(|e| e.to_string()),
-                None => Err("no capture endpoint".to_string()),
-            };
-            let mut cp = match opened {
-                Ok(c) => {
-                    let _ = ready_tx.send(Ok(()));
-                    c
-                }
-                Err(e) => {
-                    let _ = ready_tx.send(Err(e.clone()));
-                    return Err(e);
-                }
-            };
-            let mut dm = Downmixer::default();
-            let mut scratch = Vec::with_capacity(512);
-            cp.run(&st, 0.0, |p| {
-                scratch.clear();
-                dm.push(p, &mut scratch);
-                cf.fetch_add((scratch.len() / 3) as u64, Ordering::Relaxed);
-                if tx.try_send(scratch.clone()).is_err() {
-                    ov.fetch_add(1, Ordering::Relaxed); // the writer fell behind: a chunk was dropped
-                }
-            })
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        });
-        match ready_rx.recv_timeout(Duration::from_secs(3)) {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                let _ = capture.join();
-                let _ = writer.join();
-                return Err(e);
+        match self.launch(Some(tx)) {
+            Ok((stop, captured, overruns, capture)) => {
+                self.active = Some(Active { stop, captured, overruns, capture, writer: Some(writer) });
+                Ok(format!("audio/{name}"))
             }
-            Err(_) => {
-                stop.store(true, Ordering::Relaxed);
-                return Err("the FM-1 did not start streaming".into());
+            Err(e) => {
+                let _ = writer.join(); // the sender went away with the failed launch
+                Err(e)
             }
         }
-        self.active = Some(Active { stop, captured, overruns, capture, writer });
-        Ok(format!("audio/{name}"))
+    }
+
+    fn monitor(&mut self, on: bool) -> Result<(), String> {
+        if !on {
+            self.stop_monitor();
+            return Ok(());
+        }
+        if self.monitor.is_some() || self.active.is_some() {
+            return Ok(());
+        }
+        let (stop, captured, overruns, capture) = self.launch(None)?;
+        self.monitor = Some(Active { stop, captured, overruns, capture, writer: None });
+        Ok(())
+    }
+
+    fn level(&mut self) -> f32 {
+        self.peak.swap(0, Ordering::Relaxed) as f32 / 8_388_608.0
     }
 
     fn frames(&self) -> u64 {
@@ -213,7 +275,10 @@ impl Recorder for UsbRecorder {
         }
         a.stop.store(true, Ordering::Relaxed);
         let cap = a.capture.join().map_err(|_| "capture thread panicked".to_string())?;
-        let frames = a.writer.join().map_err(|_| "writer thread panicked".to_string())?;
+        let frames = match a.writer {
+            Some(w) => w.join().map_err(|_| "writer thread panicked".to_string())?,
+            None => 0,
+        };
         cap?;
         Ok(RecInfo { frames, overruns: a.overruns.load(Ordering::Relaxed) })
     }

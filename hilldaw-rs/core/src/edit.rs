@@ -263,7 +263,7 @@ mod tests {
             Edit::SetClip { track: 0, clip: 0, new: ClipModel { gain: 0.5, fade_in: 10, reverse: true, ..p.tracks[0].clips[0].clone() } },
             Edit::InsertClip { track: 1, index: 0, clip: clip("audio/b.wav", 5) },
             Edit::SetTrack { track: 2, name: "BASS".into(), gain: 0.8, pan: -0.5, mute: true, solo: false },
-            Edit::AddTake { track: 0, take: TakeModel { file: "audio/t.wav".into(), frames: 10, latency_comp_frames: 3 } },
+            Edit::AddTake { track: 0, take: TakeModel { file: "audio/t.wav".into(), frames: 10, latency_comp_frames: 3, ..Default::default() } },
             Edit::SetTempo { bpm: 90.0 },
             Edit::SetNotes { track: 4, notes: vec![NoteModel { start: 10, len: 20, note: 60, vel: 90 }] },
             Edit::DeleteClip { track: 0, index: 0 },
@@ -291,7 +291,7 @@ mod tests {
         let mut p = project();
         let mut h = History::default();
         for f in ["audio/1.wav", "audio/2.wav"] {
-            h.apply(&mut p, Edit::AddTake { track: 0, take: TakeModel { file: f.into(), frames: 5, latency_comp_frames: 0 } }).unwrap();
+            h.apply(&mut p, Edit::AddTake { track: 0, take: TakeModel { file: f.into(), frames: 5, latency_comp_frames: 0, ..Default::default() } }).unwrap();
         }
         h.apply(&mut p, Edit::SetActiveTake { track: 0, take: Some(1) }).unwrap();
         let with_two = p.clone();

@@ -83,4 +83,34 @@ fn main() {
     press(&mut a, Btn::Down);
     press(&mut a, Btn::Right);
     save(&a, &format!("{dir}/export.ppm"));
+    // Track screen: effects (some values set), input, loop and punch
+    for _ in 0..3 {
+        press(&mut a, Btn::R1); // Export -> Mixer -> Track
+    }
+    press(&mut a, Btn::R2);
+    for _ in 0..12 {
+        press(&mut a, Btn::Left);
+    }
+    press(&mut a, Btn::Down);
+    for _ in 0..3 {
+        press(&mut a, Btn::Right);
+    }
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::Down);
+    for _ in 0..5 {
+        press(&mut a, Btn::Right);
+    }
+    save(&a, &format!("{dir}/track_fx.ppm"));
+    press(&mut a, Btn::R2);
+    save(&a, &format!("{dir}/track_input.ppm"));
+    press(&mut a, Btn::R2);
+    press(&mut a, Btn::Right);
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::Right);
+    for _ in 0..2 {
+        press(&mut a, Btn::Down);
+    }
+    press(&mut a, Btn::Right);
+    save(&a, &format!("{dir}/track_loop.ppm"));
 }

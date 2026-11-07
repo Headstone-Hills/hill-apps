@@ -39,6 +39,17 @@ fn press(a: &mut HillDaw, b: Btn) {
     a.event(b, false);
 }
 
+/// Go to a screen whatever the screen order is (R1 cycles through them).
+fn to_view(a: &mut HillDaw, v: View) {
+    for _ in 0..8 {
+        if a.view() == v {
+            return;
+        }
+        press(a, Btn::R1);
+    }
+    panic!("never reached {v:?}");
+}
+
 fn with(a: &mut HillDaw, hold: Btn, b: Btn) {
     a.event(hold, true);
     press(a, b);
@@ -211,9 +222,9 @@ fn a_tempo_change_keeps_the_musical_position() {
 fn click_follows_the_beat_and_is_audible_during_solo() {
     let mut a = app();
     // remove the starter drums through the UI, so only the metronome can be heard
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Arrange);
     press(&mut a, Btn::X);
-    press(&mut a, Btn::L1);
+    to_view(&mut a, View::Mixer);
     assert!(a.project.drums.sections.is_empty());
     press(&mut a, Btn::Start);
     assert_eq!(peak(&render_audio(&mut a, 22050)), 0.0, "click is off by default");
@@ -227,7 +238,7 @@ fn click_follows_the_beat_and_is_audible_during_solo() {
 #[test]
 fn arrange_screen_adds_edits_and_removes_sections() {
     let mut a = app();
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Arrange);
     assert_eq!(a.view(), View::Arrange);
     let first = a.project.drums.sections[0].preset.clone();
     press(&mut a, Btn::A);
@@ -253,7 +264,7 @@ fn arrange_screen_adds_edits_and_removes_sections() {
     press(&mut a, Btn::X); // nothing left: harmless
     press(&mut a, Btn::Start);
     assert_eq!(peak(&render_audio(&mut a, 20000)), 0.0, "no sections, no drums");
-    press(&mut a, Btn::L1);
+    to_view(&mut a, View::Mixer);
     assert_eq!(a.view(), View::Mixer);
 }
 
@@ -315,7 +326,7 @@ fn project_survives_quit_and_restart() {
     press(&mut a, Btn::Down);
     press(&mut a, Btn::Down);
     with(&mut a, Btn::Fn, Btn::Up);
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Arrange);
     press(&mut a, Btn::A);
     a.save();
     assert!(host.load_state(STATE_KEY).is_some());
@@ -402,21 +413,20 @@ impl Rec {
 fn fm1_app() -> (HillDaw, Rec) {
     let rec = Rec::default();
     let mut a = HillDaw::new(Box::new(MemHost::default()), status()).with_fm1(Box::new(rec.clone()));
-    press(&mut a, Btn::R1);
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Fm1);
     assert_eq!(a.view(), View::Fm1);
     (a, rec)
 }
 
 #[test]
-fn l1_and_r1_cycle_through_the_four_screens() {
+fn l1_and_r1_cycle_through_the_five_screens() {
     let mut a = app();
     let mut seen = vec![a.view()];
-    for _ in 0..4 {
+    for _ in 0..5 {
         press(&mut a, Btn::R1);
         seen.push(a.view());
     }
-    assert_eq!(seen, vec![View::Mixer, View::Arrange, View::Fm1, View::Export, View::Mixer]);
+    assert_eq!(seen, vec![View::Mixer, View::Track, View::Arrange, View::Fm1, View::Export, View::Mixer]);
     press(&mut a, Btn::L1);
     assert_eq!(a.view(), View::Export);
 }
@@ -531,9 +541,8 @@ fn fm1_settings_are_saved_with_the_project() {
         let rec = Rec::default();
         (HillDaw::new(Box::new(host.clone()), status()).with_fm1(Box::new(rec.clone())), rec)
     };
-    press(&mut a, Btn::R1);
-    press(&mut a, Btn::R1);
-    press(&mut a, Btn::Right);
+    to_view(&mut a, View::Fm1);
+        press(&mut a, Btn::Right);
     press(&mut a, Btn::R2);
     press(&mut a, Btn::A);
     a.save();
@@ -629,7 +638,7 @@ fn looping_is_identical_for_any_buffer_size_and_survives_an_edit_that_shortens_t
     let mut a = app();
     press(&mut a, Btn::Start);
     render_audio(&mut a, 44100 * 8);
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Arrange);
     a.event(Btn::Y, true);
     for _ in 0..3 {
         press(&mut a, Btn::Left); // cycles 4 -> 1

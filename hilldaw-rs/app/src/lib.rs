@@ -8,6 +8,7 @@
 //! mutex, so `render` must stay cheap. Anything slow (battery, storage, USB presence) is gathered by a background
 //! thread into a [`status::StatusHandle`] and only copied here.
 
+pub mod encode;
 pub mod export;
 pub mod fm1link;
 pub mod recorder;
@@ -20,14 +21,14 @@ use hill_core::ui::{Help, Toast, QUIT_HOLD_MS};
 use hill_core::{fb::Fb, App, Btn, Host};
 use hilldaw_core::drift::{DriftEstimator, Fit};
 use hilldaw_core::drums::DrumPattern;
-use export::{ClipSnap, ExportReport, Job, OutFile, Snapshot, StripSnap};
+use export::{ClipSnap, Converter, ExportReport, Job, OutFile, Snapshot, StripSnap};
 use fm1link::{Fm1Msg, Fm1Out};
 use hilldaw_core::fm1::fx_map;
 use hilldaw_core::mixer::{Click, MonoClip, Mixer, Source, Track};
 use hilldaw_core::session::{Phase, RecordConfig, RecordSession};
 use recorder::Recorder;
 use std::collections::HashMap;
-use hilldaw_core::project::{ClipModel, DrumSectionModel, Project, TakeModel, MAX_DRUM_SECTIONS, MAX_SECTION_CYCLES, MAX_TRACKS};
+use hilldaw_core::project::{ClipModel, DrumSectionModel, ExportFormat, Project, TakeModel, TrackFxModel, MAX_DRUM_SECTIONS, MAX_SECTION_CYCLES, MAX_TRACKS};
 use hilldaw_core::transport::Transport;
 use hilldaw_drums::{find_preset, DrumLibrary};
 use status::{Status, StatusHandle};
@@ -40,6 +41,14 @@ pub const DRUMS: usize = MAX_TRACKS;
 const CLICK: usize = MAX_TRACKS + 1;
 /// Strips on screen: 8 tracks + drums.
 pub const STRIPS: usize = MAX_TRACKS + 1;
+/// What the export format row cycles through: container, bit depth of the rendered WAV, label.
+pub(crate) const FORMATS: [(ExportFormat, u16, &str); 5] = [
+    (ExportFormat::Wav, 24, "WAV 24-bit"),
+    (ExportFormat::Wav, 16, "WAV 16-bit"),
+    (ExportFormat::Flac, 24, "FLAC 24-bit"),
+    (ExportFormat::Flac, 16, "FLAC 16-bit"),
+    (ExportFormat::Mp3, 16, "MP3"),
+];
 pub const MIN_BPM: f64 = 40.0;
 pub const MAX_BPM: f64 = 240.0;
 
@@ -51,6 +60,20 @@ pub enum View {
     Fm1,
     /// mixdown and stems to WAV
     Export,
+    /// the strip picked on the Mixer: takes, effects, input level, loop and punch
+    Track,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum TrackTab {
+    Takes,
+    Fx,
+    Input,
+    Loop,
+}
+
+impl TrackTab {
+    pub(crate) const ALL: [TrackTab; 4] = [TrackTab::Takes, TrackTab::Fx, TrackTab::Input, TrackTab::Loop];
 }
 
 pub(crate) const HELP: &[(&str, &str)] = &[
@@ -83,6 +106,13 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("A", "effect on / off;  voice: send it"),
     ("X", "play a test note (C4)"),
     ("B", "all notes off"),
+    ("Track screen (the strip picked on the Mixer)", ""),
+    ("L2 / R2", "tab: takes, effects, input, loop"),
+    ("Up / Down", "pick a row or a take"),
+    ("Left / Right", "change the value  (Y: bigger steps)"),
+    ("A", "take: play this one;  loop/punch: set to the playhead bar"),
+    ("X", "take: remove from the list (press twice)"),
+    ("B", "back to the Mixer"),
     ("Export screen", ""),
     ("Up / Down", "pick an option"),
     ("Left / Right", "change it"),
@@ -149,6 +179,22 @@ pub struct HillDaw {
     fm1_out: Option<Box<dyn Fm1Out>>,
     recorder: Option<Box<dyn Recorder>>,
     export_job: Option<Job>,
+    pub(crate) track_tab: TrackTab,
+    pub(crate) track_row: usize,
+    pub(crate) take_sel: usize,
+    /// a take waiting for a second X: (track, take, ms left)
+    confirm_delete: Option<(usize, usize, u32)>,
+    /// the FM-1 input meter (see `monitor_tick`)
+    monitoring: bool,
+    monitor_block_ms: u32,
+    pub(crate) monitor_err: Option<String>,
+    pub(crate) in_level: f32,
+    pub(crate) in_hold: f32,
+    in_hold_ms: u32,
+    pub(crate) clip_ms: u32,
+    /// the last loop region that was switched off, to bring back
+    loop_memo: Option<(u64, u64)>,
+    converter: Converter,
     pub(crate) export_report: Option<Result<ExportReport, String>>,
     pub(crate) export_row: usize,
     pub(crate) rec: Option<ActiveRec>,
@@ -179,6 +225,24 @@ pub struct HillDaw {
     pub(crate) help: Help,
     pub(crate) toast: Toast,
     status_ms: u32,
+}
+
+/// One step of a filter cutoff in Hz (0 = off). Steps are multiplicative so they feel even across the range; a low-pass turns off above
+/// `hi`, a high-pass below `lo`.
+pub fn step_cutoff(cur: u32, dir: i32, lo: u32, hi: u32, big: bool, lowpass: bool) -> u32 {
+    let mult = if big { 1.5 } else { 1.12 };
+    if cur == 0 {
+        // off: a low-pass comes in from the top (turning it down), a high-pass from the bottom (turning it up)
+        return match (lowpass, dir < 0) {
+            (true, true) => hi,
+            (false, false) => lo,
+            _ => 0,
+        };
+    }
+    let next = (cur as f64 * if dir > 0 { mult } else { 1.0 / mult }).round() as u32;
+    let next = if next == cur { (cur as i32 + dir) as u32 } else { next };
+    // past the end of its range a filter switches off
+    if (lowpass && next > hi) || (!lowpass && next < lo) { 0 } else { next.clamp(lo, hi) }
 }
 
 fn db_to_gain(db: f32) -> f32 {
@@ -245,6 +309,19 @@ impl HillDaw {
             fm1_out: None,
             recorder: None,
             export_job: None,
+            track_tab: TrackTab::Takes,
+            track_row: 0,
+            take_sel: 0,
+            confirm_delete: None,
+            monitoring: false,
+            monitor_block_ms: 0,
+            monitor_err: None,
+            in_level: 0.0,
+            in_hold: 0.0,
+            in_hold_ms: 0,
+            clip_ms: 0,
+            loop_memo: None,
+            converter: Arc::new(encode::convert),
             export_report: None,
             export_row: 0,
             rec: None,
@@ -277,6 +354,7 @@ impl HillDaw {
         app.rebuild_click();
         app.rebuild_drums();
         app.apply_mixer();
+        app.apply_all_fx();
         app
     }
 
@@ -454,7 +532,7 @@ impl HillDaw {
         let bpb = self.project.beats_per_bar.max(1);
         let count_in = if self.project.count_in { (bpb as f64 * self.transport.frames_per_beat()).round() as u64 } else { 0 };
         let latency = self.project.latency_offset_frames.max(0) as u64;
-        let mut session = RecordSession::new(RecordConfig { count_in_frames: count_in, latency_frames: latency, ..Default::default() });
+        let mut session = RecordSession::new(RecordConfig { count_in_frames: count_in, latency_frames: latency, punch: self.project.punch, ..Default::default() });
         session.begin();
         self.rec = Some(ActiveRec {
             session,
@@ -467,6 +545,7 @@ impl HillDaw {
             elapsed: 0,
             latency,
         });
+        self.monitoring = false; // starting the recording took over from monitoring
         self.transport.playing = true;
         self.toast.say(if count_in > 0 { "Count-in" } else { "Recording" });
     }
@@ -495,7 +574,7 @@ impl HillDaw {
                 continue;
             }
             let tm = &mut self.project.tracks[track];
-            tm.takes.push(TakeModel { file: rec.file.clone(), frames, latency_comp_frames: rec.latency as i64 });
+            tm.takes.push(TakeModel { file: rec.file.clone(), frames, latency_comp_frames: rec.latency as i64, start: t.timeline_start, offset, placed: true });
             tm.active_take = Some(tm.takes.len() - 1);
             // only the active (latest) take plays; the others stay in the take history
             tm.clips = vec![ClipModel { file: rec.file.clone(), start: t.timeline_start, offset, len: Some(frames), ..Default::default() }];
@@ -550,6 +629,7 @@ impl HillDaw {
             View::Arrange => self.arrange_act(b),
             View::Fm1 => self.fm1_act(b),
             View::Export => self.export_act(b),
+            View::Track => self.track_act(b),
         }
     }
 
@@ -697,6 +777,270 @@ impl HillDaw {
         }
     }
 
+    // ---- effects ----------------------------------------------------------------------------------------------------
+
+    fn strip_fx(&self, i: usize) -> &TrackFxModel {
+        if i == DRUMS { &self.project.drums.fx } else { &self.project.tracks[i].fx }
+    }
+
+    fn strip_fx_mut(&mut self, i: usize) -> &mut TrackFxModel {
+        if i == DRUMS { &mut self.project.drums.fx } else { &mut self.project.tracks[i].fx }
+    }
+
+    /// Rebuild one strip's effect chain from the project (a filter's memory restarts; fine for an edit) and the shared reverb.
+    fn apply_fx(&mut self, i: usize) {
+        let rate = self.rate;
+        let m = self.strip_fx(i).clone();
+        m.apply(&mut self.mixer.tracks[i].fx, rate);
+        hilldaw_core::effects::sync_reverb(&mut self.mixer, self.project.reverb_room);
+    }
+
+    fn apply_all_fx(&mut self) {
+        for i in 0..STRIPS {
+            self.apply_fx(i);
+        }
+    }
+
+    // ---- the Track screen -----------------------------------------------------------------------------------------------
+
+    pub(crate) fn bar_frames(&self) -> u64 {
+        ((self.project.beats_per_bar.max(1) as f64) * self.transport.frames_per_beat()).round().max(1.0) as u64
+    }
+
+    /// Make a take from the history the one that plays (its clip is rebuilt from where it was recorded).
+    pub fn set_active_take(&mut self, track: usize, idx: usize) -> Result<(), String> {
+        let tm = self.project.tracks.get_mut(track).ok_or("no such track")?;
+        let t = tm.takes.get(idx).ok_or("no such take")?.clone();
+        if !t.placed {
+            return Err("older take: its place was not saved".into());
+        }
+        tm.active_take = Some(idx);
+        tm.clips = vec![ClipModel { file: t.file, start: t.start, offset: t.offset, len: Some(t.frames), ..Default::default() }];
+        self.rebuild_track(track);
+        Ok(())
+    }
+
+    /// Take `idx` leaves the list (its audio stays on the card). If it was playing, the newest remaining take plays instead.
+    pub fn remove_take(&mut self, track: usize, idx: usize) {
+        let Some(tm) = self.project.tracks.get_mut(track) else { return };
+        if idx >= tm.takes.len() {
+            return;
+        }
+        tm.takes.remove(idx);
+        match tm.active_take {
+            Some(a) if a == idx => {
+                tm.active_take = None;
+                tm.clips.clear();
+                if let Some(last) = tm.takes.iter().rposition(|t| t.placed) {
+                    let _ = self.set_active_take(track, last);
+                } else {
+                    self.rebuild_track(track);
+                }
+            }
+            Some(a) if a > idx => tm.active_take = Some(a - 1),
+            _ => {}
+        }
+        self.take_sel = self.take_sel.min(self.project.tracks[track].takes.len().saturating_sub(1));
+    }
+
+    fn track_act(&mut self, b: Btn) {
+        let big = self.held.is(Btn::Y);
+        match b {
+            Btn::B => {
+                self.view = View::Mixer;
+                return;
+            }
+            Btn::L2 | Btn::R2 => {
+                let i = TrackTab::ALL.iter().position(|t| *t == self.track_tab).unwrap_or(0);
+                let n = if b == Btn::R2 { (i + 1).min(3) } else { i.saturating_sub(1) };
+                self.track_tab = TrackTab::ALL[n];
+                self.track_row = 0;
+                self.confirm_delete = None;
+                return;
+            }
+            _ => {}
+        }
+        let strip = self.sel;
+        match self.track_tab {
+            TrackTab::Takes => self.takes_act(b, strip),
+            TrackTab::Fx => {
+                self.track_row = self.track_row.min(6);
+                match b {
+                    Btn::Up => self.track_row = self.track_row.saturating_sub(1),
+                    Btn::Down => self.track_row = (self.track_row + 1).min(6),
+                    Btn::Left | Btn::Right => self.fx_edit(strip, if b == Btn::Right { 1 } else { -1 }, big),
+                    _ => {}
+                }
+            }
+            TrackTab::Input => {
+                self.track_row = self.track_row.min(1);
+                match b {
+                    Btn::Up => self.track_row = self.track_row.saturating_sub(1),
+                    Btn::Down => self.track_row = (self.track_row + 1).min(1),
+                    Btn::Left | Btn::Right => {
+                        let dir = if b == Btn::Right { 1i64 } else { -1 };
+                        if self.track_row == 0 {
+                            // about 1 ms (44 frames) a step, 5 ms with Y; never earlier than the capture (0) or later than 100 ms
+                            let step = if big { 220 } else { 44 };
+                            self.project.latency_offset_frames = (self.project.latency_offset_frames + dir * step).clamp(0, 4410);
+                        } else {
+                            self.project.count_in = !self.project.count_in;
+                        }
+                    }
+                    Btn::A if self.track_row == 1 => self.project.count_in = !self.project.count_in,
+                    _ => {}
+                }
+            }
+            TrackTab::Loop => self.loop_act(b, big),
+        }
+    }
+
+    fn takes_act(&mut self, b: Btn, strip: usize) {
+        if strip >= MAX_TRACKS {
+            return; // the drums are not recorded
+        }
+        let n = self.project.tracks[strip].takes.len();
+        self.take_sel = self.take_sel.min(n.saturating_sub(1));
+        match b {
+            Btn::Up => self.take_sel = self.take_sel.saturating_sub(1),
+            Btn::Down => self.take_sel = (self.take_sel + 1).min(n.saturating_sub(1)),
+            Btn::A if n > 0 => match self.set_active_take(strip, self.take_sel) {
+                Ok(()) => self.toast.say(&format!("Take {} plays", self.take_sel + 1)),
+                Err(e) => self.toast.say(&hill_core::fb::clip(&e, 28)),
+            },
+            Btn::X if n > 0 => {
+                // two presses, so a slip does not drop a take from the list
+                if self.confirm_delete.is_some_and(|(t, i, _)| t == strip && i == self.take_sel) {
+                    self.confirm_delete = None;
+                    self.remove_take(strip, self.take_sel);
+                    self.toast.say("Take removed from the list");
+                } else {
+                    self.confirm_delete = Some((strip, self.take_sel, 3000));
+                    self.toast.say("X again to remove (audio stays)");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// One edit step of the effect row `self.track_row` on strip `i`.
+    fn fx_edit(&mut self, i: usize, dir: i32, big: bool) {
+        let row = self.track_row;
+        let q = |v: f32| (v * 100.0).round() / 100.0;
+        if row == 6 {
+            self.project.reverb_room = q((self.project.reverb_room + dir as f32 * 0.05).clamp(0.0, 1.0));
+        } else {
+            let fx = self.strip_fx_mut(i);
+            match row {
+                0 => fx.lowpass_hz = step_cutoff(fx.lowpass_hz, dir, 100, 20_000, big, true),
+                1 => fx.highpass_hz = step_cutoff(fx.highpass_hz, dir, 20, 2_000, big, false),
+                2 => fx.delay_ms = (fx.delay_ms as i32 + dir * if big { 50 } else { 10 }).clamp(10, 1000) as u32,
+                3 => fx.delay_feedback = q((fx.delay_feedback + dir as f32 * 0.05).clamp(0.0, 0.9)),
+                4 => fx.delay_mix = q((fx.delay_mix + dir as f32 * 0.05).clamp(0.0, 1.0)),
+                _ => fx.reverb_send = q((fx.reverb_send + dir as f32 * 0.05).clamp(0.0, 1.0)),
+            }
+        }
+        self.apply_fx(i);
+    }
+
+    fn loop_act(&mut self, b: Btn, big: bool) {
+        let bar = self.bar_frames();
+        self.track_row = self.track_row.min(5);
+        let step = if big { 4 } else { 1 };
+        // rows 0-2 are the loop (on, start bar, length in bars), rows 3-5 the punch
+        let (is_loop, base) = if self.track_row < 3 { (true, 0) } else { (false, 3) };
+        let cur = if is_loop { self.project.loop_region } else { self.project.punch };
+        match b {
+            Btn::Up => self.track_row = self.track_row.saturating_sub(1),
+            Btn::Down => self.track_row = (self.track_row + 1).min(5),
+            Btn::Left | Btn::Right | Btn::A => {
+                let dir = match b {
+                    Btn::Left => -1i64,
+                    Btn::Right => 1,
+                    _ => 0,
+                };
+                let new = match (self.track_row - base, cur) {
+                    // on / off
+                    (0, Some(r)) => {
+                        if is_loop {
+                            self.loop_memo = Some(r);
+                        }
+                        None
+                    }
+                    (0, None) => Some(if is_loop { self.loop_memo.unwrap_or((0, 4 * bar)) } else { (0, 4 * bar) }),
+                    // start bar
+                    (1, Some((s, e))) => {
+                        let len = e - s;
+                        let cur_bar = (s / bar) as i64;
+                        let nb = if b == Btn::A { (self.transport.pos / bar) as i64 } else { cur_bar + dir * step };
+                        let ns = (nb.max(0) as u64) * bar;
+                        Some((ns, ns + len))
+                    }
+                    // length in bars
+                    (2, Some((s, e))) => {
+                        let cur_len = ((e - s) / bar).max(1) as i64;
+                        let nl = if b == Btn::A { ((self.transport.pos / bar) as i64 + 1 - (s / bar) as i64).max(1) } else { (cur_len + dir * step).max(1) };
+                        Some((s, s + nl as u64 * bar))
+                    }
+                    (_, None) => None, // the start / length rows do nothing while it is off
+                    _ => cur,
+                };
+                if is_loop {
+                    self.set_loop_region(new);
+                } else {
+                    self.project.punch = new;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ---- input meter ----------------------------------------------------------------------------------------------------
+
+    /// Keep the FM-1 capture running for the meter while a track is armed or the Input tab is open (and read its level).
+    fn monitor_tick(&mut self, dt_ms: u32) {
+        self.monitor_block_ms = self.monitor_block_ms.saturating_sub(dt_ms);
+        self.clip_ms = self.clip_ms.saturating_sub(dt_ms);
+        let wanted = self.recorder.is_some() && self.rec.is_none() && (self.armed.iter().any(|a| *a) || (self.view == View::Track && self.track_tab == TrackTab::Input));
+        if wanted != self.monitoring && (!wanted || self.monitor_block_ms == 0) {
+            if let Some(r) = self.recorder.as_mut() {
+                match r.monitor(wanted) {
+                    Ok(()) => {
+                        self.monitoring = wanted;
+                        self.monitor_err = None;
+                    }
+                    Err(e) => {
+                        // not plugged in: say so on the Input tab and try again in a couple of seconds
+                        self.monitoring = false;
+                        self.monitor_err = Some(e);
+                        self.monitor_block_ms = 2000;
+                    }
+                }
+            }
+        }
+        let live = self.monitoring || self.rec.is_some();
+        let l = if live { self.recorder.as_mut().map_or(0.0, |r| r.level()) } else { 0.0 };
+        self.in_level = l.max(self.in_level * (-(dt_ms as f32) / 250.0).exp());
+        if l >= self.in_hold {
+            self.in_hold = l;
+            self.in_hold_ms = 1500;
+        } else if self.in_hold_ms > dt_ms {
+            self.in_hold_ms -= dt_ms;
+        } else {
+            self.in_hold = l;
+            self.in_hold_ms = 0;
+        }
+        if l >= 0.98 {
+            self.clip_ms = 2000; // within 0.2 dB of full scale: the FM-1 is clipping into the recording
+        }
+        if !live {
+            self.in_level = 0.0;
+        }
+        if let Some((t, i, left)) = self.confirm_delete {
+            self.confirm_delete = if left > dt_ms { Some((t, i, left - dt_ms)) } else { None };
+        }
+    }
+
     // ---- export -------------------------------------------------------------------------------------------------------
 
     /// What an export would render now, or `None` when there is nothing to export.
@@ -713,7 +1057,7 @@ impl HillDaw {
                 end = end.max(c.start + len);
                 clips.push(ClipSnap { data, start: c.start, offset: c.offset, len, gain: c.gain, fade_in: c.fade_in, fade_out: c.fade_out, reverse: c.reverse });
             }
-            strips.push(StripSnap { name: tm.name.clone(), gain: tm.gain, pan: tm.pan, mute: tm.mute, solo: tm.solo, clips });
+            strips.push(StripSnap { name: tm.name.clone(), gain: tm.gain, pan: tm.pan, mute: tm.mute, solo: tm.solo, fx: tm.fx.clone(), clips });
         }
         let d = self.project.drums.clone();
         let mut drums = None;
@@ -724,7 +1068,7 @@ impl HillDaw {
                 drums = Some(t);
             }
         }
-        strips.push(StripSnap { name: "DRUMS".into(), gain: d.gain, pan: d.pan, mute: false, solo: d.solo, clips: vec![] });
+        strips.push(StripSnap { name: "DRUMS".into(), gain: d.gain, pan: d.pan, mute: false, solo: d.solo, fx: d.fx.clone(), clips: vec![] });
         if end == 0 {
             return None;
         }
@@ -732,7 +1076,7 @@ impl HillDaw {
         if let Some(t) = drums.as_mut() {
             t.end_frame = Some(end);
         }
-        Some(Snapshot { rate, strips, drums, end })
+        Some(Snapshot { rate, strips, drums, reverb_room: self.project.reverb_room, end })
     }
 
     /// Start exporting the mixdown (and stems if asked) on a background thread.
@@ -772,8 +1116,22 @@ impl HillDaw {
             }
         }
         self.export_report = None;
-        self.export_job = Some(export::spawn(snap, opts, files));
+        self.export_job = Some(export::spawn(snap, opts, files, self.converter.clone()));
         self.toast.say("Exporting");
+    }
+
+    /// Replace the FLAC/MP3 converter (tests give a fake; the SP uses the encoders on the device).
+    pub fn set_converter(&mut self, c: Converter) {
+        self.converter = c;
+    }
+
+    /// Set a strip's effect chain from a model (strip 8 is the drums); values are pulled into range.
+    pub fn set_strip_fx(&mut self, strip: usize, mut m: TrackFxModel) {
+        if strip < STRIPS {
+            m.sanitize();
+            *self.strip_fx_mut(strip) = m;
+            self.apply_fx(strip);
+        }
     }
 
     pub fn export_running(&self) -> bool {
@@ -818,7 +1176,13 @@ impl HillDaw {
             Btn::Left | Btn::Right => {
                 let e = &mut self.project.export;
                 match self.export_row {
-                    0 => e.bits = if e.bits == 24 { 16 } else { 24 },
+                    0 => {
+                        let i = FORMATS.iter().position(|f| (f.0, f.1) == (e.format, e.bits)).unwrap_or(0) as i32;
+                        let n = FORMATS.len() as i32;
+                        let (format, bits, _) = FORMATS[(i + if b == Btn::Right { 1 } else { n - 1 }).rem_euclid(n) as usize];
+                        e.format = format;
+                        e.bits = bits;
+                    }
                     1 => e.dither = !e.dither,
                     2 => e.normalize = !e.normalize,
                     3 => e.stems = !e.stems,
@@ -960,6 +1324,27 @@ impl HillDaw {
     pub fn bar_beat(&self) -> (u32, u32) {
         self.transport.bar_beat()
     }
+    pub fn track_tab(&self) -> TrackTab {
+        self.track_tab
+    }
+    pub fn track_row(&self) -> usize {
+        self.track_row
+    }
+    pub fn take_sel(&self) -> usize {
+        self.take_sel
+    }
+    pub fn clip_flash(&self) -> bool {
+        self.clip_ms > 0
+    }
+    pub fn input_level(&self) -> f32 {
+        self.in_level
+    }
+    pub fn input_hold(&self) -> f32 {
+        self.in_hold
+    }
+    pub fn monitor_error(&self) -> Option<&str> {
+        self.monitor_err.as_deref()
+    }
     pub fn fm1_tab(&self) -> usize {
         self.fm1_tab
     }
@@ -1035,6 +1420,11 @@ impl HillDaw {
         self.test_clock = t;
     }
 
+    /// Whether the FM-1 input is being measured right now (armed, on the Input tab, or recording).
+    pub(crate) fn input_live(&self) -> bool {
+        self.monitoring || self.rec.is_some()
+    }
+
     pub(crate) fn has_recorder(&self) -> bool {
         self.recorder.is_some()
     }
@@ -1073,6 +1463,7 @@ impl HillDaw {
             }
         }
         self.export_poll();
+        self.monitor_tick(dt_ms);
         if !self.help.open {
             if let Some(b) = self.rep.tick(dt_ms) {
                 self.act(b);
@@ -1171,7 +1562,7 @@ impl App for HillDaw {
                 self.toast.say(if self.project.count_in { "Count-in on" } else { "Count-in off" });
             }
             Btn::L1 | Btn::R1 => {
-                const ORDER: [View; 4] = [View::Mixer, View::Arrange, View::Fm1, View::Export];
+                const ORDER: [View; 5] = [View::Mixer, View::Track, View::Arrange, View::Fm1, View::Export];
                 let i = ORDER.iter().position(|v| *v == self.view).unwrap_or(0);
                 self.view = ORDER[(i + if b == Btn::R1 { 1 } else { ORDER.len() - 1 }) % ORDER.len()];
                 self.rep.clear();

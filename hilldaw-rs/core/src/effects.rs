@@ -193,10 +193,70 @@ impl TrackFx {
     }
 }
 
+use crate::project::TrackFxModel;
+
+impl TrackFxModel {
+    /// Set up a track's effect chain from this model (the same code serves live playback and export, so they sound alike).
+    pub fn apply(&self, fx: &mut TrackFx, rate: u32) {
+        fx.lowpass = (self.lowpass_hz > 0).then(|| Biquad::new(FilterKind::LowPass, self.lowpass_hz as f64, 0.707, rate));
+        fx.highpass = (self.highpass_hz > 0).then(|| Biquad::new(FilterKind::HighPass, self.highpass_hz as f64, 0.707, rate));
+        fx.delay = (self.delay_mix > 0.0).then(|| {
+            let mut d = Delay::new(1000.0, rate);
+            d.set_time_frames((self.delay_ms as f64 * rate as f64 / 1000.0) as usize);
+            d.feedback = self.delay_feedback;
+            d.mix = self.delay_mix;
+            d
+        });
+        fx.send = self.reverb_send;
+    }
+}
+
+/// The shared reverb exists only while some track sends to it (an idle reverb costs CPU for nothing).
+pub fn sync_reverb(mixer: &mut crate::mixer::Mixer, room: f32) {
+    let any = mixer.tracks.iter().any(|t| t.fx.send > 0.0);
+    match (any, mixer.reverb.as_mut()) {
+        (true, Some(r)) => r.room = room,
+        (true, None) => {
+            let mut r = Reverb::new(mixer.rate);
+            r.room = room;
+            mixer.reverb = Some(r);
+        }
+        (false, _) => mixer.reverb = None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     const R: u32 = 44100;
+
+    #[test]
+    fn a_model_builds_the_chain_and_the_reverb_exists_only_while_something_sends() {
+        let mut fx = TrackFx::default();
+        TrackFxModel::default().apply(&mut fx, R);
+        assert!(fx.lowpass.is_none() && fx.highpass.is_none() && fx.delay.is_none() && fx.send == 0.0, "default = all off");
+        let m = TrackFxModel { lowpass_hz: 2000, highpass_hz: 100, delay_ms: 250, delay_feedback: 0.4, delay_mix: 0.3, reverb_send: 0.5 };
+        m.apply(&mut fx, R);
+        assert!(fx.lowpass.is_some() && fx.highpass.is_some() && fx.delay.is_some() && fx.send == 0.5);
+        // the chain really filters: a 10 kHz tone through the 2 kHz low-pass is far quieter
+        let mut b: Vec<f32> = (0..2 * 20_000).map(|i| ((i / 2) as f32 * 2.0 * std::f32::consts::PI * 10_000.0 / R as f32).sin()).collect();
+        let before = b.iter().map(|x| x * x).sum::<f32>();
+        fx.process(&mut b);
+        assert!(b[20_000..].iter().map(|x| x * x).sum::<f32>() < before * 0.01);
+
+        let mut mx = crate::mixer::Mixer::new(R, 1024);
+        mx.tracks.push(crate::mixer::Track::new("A"));
+        sync_reverb(&mut mx, 0.7);
+        assert!(mx.reverb.is_none(), "nothing sends: no reverb");
+        mx.tracks[0].fx.send = 0.3;
+        sync_reverb(&mut mx, 0.7);
+        assert!((mx.reverb.as_ref().unwrap().room - 0.7).abs() < 1e-6);
+        sync_reverb(&mut mx, 0.2);
+        assert!((mx.reverb.as_ref().unwrap().room - 0.2).abs() < 1e-6, "the room follows the setting");
+        mx.tracks[0].fx.send = 0.0;
+        sync_reverb(&mut mx, 0.2);
+        assert!(mx.reverb.is_none());
+    }
 
     fn sine(freq: f64, frames: usize) -> Vec<f32> {
         (0..frames).flat_map(|i| {

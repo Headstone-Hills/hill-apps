@@ -39,6 +39,50 @@ pub struct TakeModel {
     pub frames: u64,
     /// latency compensation that was applied when this take was placed (frames)
     pub latency_comp_frames: i64,
+    /// Where the take sits on the timeline and where it starts in its file, so any take in the history can be made the
+    /// playing one again. `placed` is false for takes from before this was stored (they cannot be switched to).
+    pub start: u64,
+    pub offset: u64,
+    pub placed: bool,
+}
+
+/// The per-track effect chain, in plain numbers. 0 means "off" for the filters and the delay/reverb amounts.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct TrackFxModel {
+    /// low-pass cutoff in Hz (0 = off)
+    pub lowpass_hz: u32,
+    /// high-pass cutoff in Hz (0 = off)
+    pub highpass_hz: u32,
+    pub delay_ms: u32,
+    pub delay_feedback: f32,
+    /// 0 = no delay
+    pub delay_mix: f32,
+    /// amount sent to the shared reverb, 0..1 (0 = none)
+    pub reverb_send: f32,
+}
+
+impl Default for TrackFxModel {
+    fn default() -> Self {
+        TrackFxModel { lowpass_hz: 0, highpass_hz: 0, delay_ms: 300, delay_feedback: 0.35, delay_mix: 0.0, reverb_send: 0.0 }
+    }
+}
+
+impl TrackFxModel {
+    pub fn is_off(&self) -> bool {
+        self.lowpass_hz == 0 && self.highpass_hz == 0 && self.delay_mix <= 0.0 && self.reverb_send <= 0.0
+    }
+
+    /// Pull every value into its range; a damaged file never reaches the filters with nonsense.
+    pub fn sanitize(&mut self) {
+        let unit = |v: f32, d: f32, max: f32| if v.is_finite() { v.clamp(0.0, max) } else { d };
+        self.lowpass_hz = if self.lowpass_hz == 0 { 0 } else { self.lowpass_hz.clamp(100, 20_000) };
+        self.highpass_hz = if self.highpass_hz == 0 { 0 } else { self.highpass_hz.clamp(10, 4_000) };
+        self.delay_ms = self.delay_ms.clamp(10, 1_000);
+        self.delay_feedback = unit(self.delay_feedback, 0.35, 0.9);
+        self.delay_mix = unit(self.delay_mix, 0.0, 1.0);
+        self.reverb_send = unit(self.reverb_send, 0.0, 1.0);
+    }
 }
 
 /// A recorded or edited note on a track (frames on the project timeline). Played by a sampler track
@@ -65,11 +109,12 @@ pub struct TrackModel {
     pub takes: Vec<TakeModel>,
     pub active_take: Option<usize>,
     pub notes: Vec<NoteModel>,
+    pub fx: TrackFxModel,
 }
 
 impl Default for TrackModel {
     fn default() -> Self {
-        TrackModel { name: String::new(), color: 0x4aa3ff, gain: 1.0, pan: 0.0, mute: false, solo: false, clips: vec![], takes: vec![], active_take: None, notes: vec![] }
+        TrackModel { name: String::new(), color: 0x4aa3ff, gain: 1.0, pan: 0.0, mute: false, solo: false, clips: vec![], takes: vec![], active_take: None, notes: vec![], fx: TrackFxModel::default() }
     }
 }
 
@@ -101,11 +146,32 @@ pub struct Fm1Model {
     pub fx: std::collections::BTreeMap<u8, u8>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    #[default]
+    Wav,
+    Flac,
+    Mp3,
+}
+
+impl ExportFormat {
+    pub fn ext(self) -> &'static str {
+        match self {
+            ExportFormat::Wav => "wav",
+            ExportFormat::Flac => "flac",
+            ExportFormat::Mp3 => "mp3",
+        }
+    }
+}
+
 /// How "export" writes its files.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct ExportModel {
-    /// 16 or 24
+    /// WAV, or WAV converted to FLAC / MP3 by the encoders on the device
+    pub format: ExportFormat,
+    /// 16 or 24 (the WAV that is rendered; MP3 ignores it)
     pub bits: u16,
     /// dither when writing 16-bit (24-bit needs none)
     pub dither: bool,
@@ -117,7 +183,7 @@ pub struct ExportModel {
 
 impl Default for ExportModel {
     fn default() -> Self {
-        ExportModel { bits: 24, dither: true, normalize: false, stems: false }
+        ExportModel { format: ExportFormat::Wav, bits: 24, dither: true, normalize: false, stems: false }
     }
 }
 
@@ -143,11 +209,12 @@ pub struct DrumsModel {
     pub start: u64,
     /// the transport wraps at the end of the drum arrangement, so a groove keeps going instead of stopping after its last bar
     pub loop_arrangement: bool,
+    pub fx: TrackFxModel,
 }
 
 impl Default for DrumsModel {
     fn default() -> Self {
-        DrumsModel { enabled: true, sections: vec![], swing: 0.0, vol: [1.0; 8], mute: [false; 8], gain: 1.0, pan: 0.0, solo: false, start: 0, loop_arrangement: true }
+        DrumsModel { enabled: true, sections: vec![], swing: 0.0, vol: [1.0; 8], mute: [false; 8], gain: 1.0, pan: 0.0, solo: false, start: 0, loop_arrangement: true, fx: TrackFxModel::default() }
     }
 }
 
@@ -164,6 +231,10 @@ pub struct Project {
     /// one bar of click before recording starts
     pub count_in: bool,
     pub loop_region: Option<(u64, u64)>,
+    /// record only between these frames (punch in / punch out)
+    pub punch: Option<(u64, u64)>,
+    /// size of the shared reverb, 0..1
+    pub reverb_room: f32,
     pub tracks: Vec<TrackModel>,
     pub drums: DrumsModel,
     pub fm1: Fm1Model,
@@ -181,6 +252,8 @@ impl Default for Project {
             latency_offset_frames: 0,
             count_in: true,
             loop_region: None,
+            punch: None,
+            reverb_room: 0.5,
             tracks: (1..=MAX_TRACKS).map(|i| TrackModel { name: format!("TRACK {i}"), ..Default::default() }).collect(),
             drums: DrumsModel::default(),
             fm1: Fm1Model::default(),
@@ -254,6 +327,16 @@ impl Project {
         for v in d.vol.iter_mut() {
             *v = if v.is_finite() { v.clamp(0.0, 4.0) } else { 1.0 };
         }
+        for t in self.tracks.iter_mut() {
+            t.fx.sanitize();
+        }
+        self.drums.fx.sanitize();
+        self.reverb_room = if self.reverb_room.is_finite() { self.reverb_room.clamp(0.0, 1.0) } else { 0.5 };
+        if let Some((s, e)) = self.punch {
+            if e <= s {
+                self.punch = None;
+            }
+        }
         if let Some((s, e)) = self.loop_region {
             if e <= s {
                 self.loop_region = None;
@@ -277,7 +360,7 @@ mod tests {
     #[test]
     fn full_roundtrip_with_clips_and_takes() {
         let mut p = Project { name: "SONG".into(), bpm: 143.5, loop_region: Some((44100, 441000)), latency_offset_frames: 512, ..Default::default() };
-        p.tracks[0].takes.push(TakeModel { file: "audio/t1-take1.wav".into(), frames: 88200, latency_comp_frames: 512 });
+        p.tracks[0].takes.push(TakeModel { file: "audio/t1-take1.wav".into(), frames: 88200, latency_comp_frames: 512, ..Default::default() });
         p.tracks[0].active_take = Some(0);
         p.tracks[0].clips.push(ClipModel { file: "audio/t1-take1.wav".into(), start: 22050, offset: 100, len: Some(5000), fade_in: 64, reverse: true, ..Default::default() });
         let q = Project::from_json(&p.to_json()).unwrap();
@@ -358,11 +441,33 @@ mod tests {
     fn export_settings_roundtrip_default_to_24_bit_and_bad_bit_depths_are_fixed() {
         let mut p = Project::default();
         assert_eq!((p.export.bits, p.export.dither, p.export.normalize, p.export.stems), (24, true, false, false));
-        p.export = ExportModel { bits: 16, dither: false, normalize: true, stems: true };
+        p.export = ExportModel { format: ExportFormat::Mp3, bits: 16, dither: false, normalize: true, stems: true };
         assert_eq!(Project::from_json(&p.to_json()).unwrap(), p);
         p.export.bits = 8;
         assert_eq!(Project::from_json(&p.to_json()).unwrap().export.bits, 24);
         assert_eq!(Project::from_json(r#"{"version":1}"#).unwrap().export, ExportModel::default(), "old files");
+    }
+
+    #[test]
+    fn fx_punch_and_take_placement_roundtrip_old_files_load_and_bad_values_are_fixed() {
+        let mut p = Project::default();
+        p.tracks[2].fx = TrackFxModel { lowpass_hz: 4000, highpass_hz: 80, delay_ms: 250, delay_feedback: 0.5, delay_mix: 0.3, reverb_send: 0.4 };
+        p.drums.fx.reverb_send = 0.2;
+        p.punch = Some((88200, 176400));
+        p.reverb_room = 0.8;
+        p.tracks[0].takes.push(TakeModel { file: "audio/rec-001.wav".into(), frames: 100, latency_comp_frames: 563, start: 10, offset: 573, placed: true });
+        p.export.format = ExportFormat::Flac;
+        assert_eq!(Project::from_json(&p.to_json()).unwrap(), p);
+        let old = Project::from_json(r#"{"version":1,"tracks":[{"takes":[{"file":"a.wav","frames":5}]}]}"#).unwrap();
+        assert!(!old.tracks[0].takes[0].placed && old.tracks[0].fx.is_off() && old.punch.is_none() && old.export.format == ExportFormat::Wav);
+        let mut bad = Project::default();
+        bad.tracks[0].fx = TrackFxModel { lowpass_hz: 5, highpass_hz: 99_999, delay_ms: 0, delay_feedback: 7.0, delay_mix: 5.0, reverb_send: -3.0 };
+        bad.punch = Some((500, 100));
+        bad.reverb_room = 9.0;
+        let q = Project::from_json(&bad.to_json()).unwrap();
+        let f = &q.tracks[0].fx;
+        assert_eq!((f.lowpass_hz, f.highpass_hz, f.delay_ms), (100, 4000, 10));
+        assert!(f.delay_feedback == 0.9 && f.delay_mix == 1.0 && f.reverb_send == 0.0 && q.punch.is_none() && q.reverb_room == 1.0);
     }
 
     #[test]

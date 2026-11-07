@@ -35,6 +35,22 @@ fn fill_bar(fb: &mut Fb, x: i32, w: i32, frac: f32) {
     }
 }
 
+/// Horizontal level bar on a -60..0 dBFS scale with a tick at the held peak: green, amber from -9, red from -1.
+fn hbar(fb: &mut Fb, x: i32, y: i32, w: i32, h: i32, level: f32, hold: f32) {
+    let f = |l: f32| ((gain_to_db(l) + 60.0) / 60.0).clamp(0.0, 1.0);
+    fb.rect(x, y, w, h, CELL_OFF);
+    let fill = (f(level) * w as f32) as i32;
+    for (lo, hi, c) in [(0.0f32, 51.0 / 60.0, ACCENT), (51.0 / 60.0, 59.0 / 60.0, AMBER), (59.0 / 60.0, 1.0, WARN)] {
+        let (a, b) = ((lo * w as f32) as i32, ((hi * w as f32) as i32).min(fill));
+        if b > a {
+            fb.rect(x + a, y, b - a, h, c);
+        }
+    }
+    if hold > 0.0 {
+        fb.rect(x + ((f(hold) * w as f32) as i32).min(w - 2), y - 2, 2, h + 4, WHITE);
+    }
+}
+
 pub(crate) fn db_text(g: f32) -> String {
     if g <= 0.0 {
         return "-inf".into();
@@ -58,6 +74,7 @@ impl HillDaw {
             View::Arrange => self.draw_arrange(fb),
             View::Fm1 => self.draw_fm1(fb),
             View::Export => self.draw_export(fb),
+            View::Track => self.draw_track(fb),
         }
         self.draw_footer(fb);
         self.draw_clock(fb);
@@ -113,6 +130,14 @@ impl HillDaw {
             None => ("REC n/a".to_string(), DIM),
         };
         fb.text(246, 84, &rec_text, 2, rec_col);
+        if self.input_live() {
+            // the FM-1 input level, so it can be set before and checked during a take
+            fb.text(246, 108, "IN", 1, DIM);
+            hbar(fb, 264, 107, 120, 8, self.in_level, self.in_hold);
+            if self.clip_ms > 0 {
+                fb.text(390, 108, "CLIP", 1, WARN);
+            }
+        }
         fb.text(400, 48, &format!("{:.0}", self.project.bpm), 4, TEXT);
         fb.text(400 + 3 * 32 + 6, 62, "BPM", 2, DIM);
         let sw = 50 + (self.project.drums.swing * 100.0).round() as i32;
@@ -291,7 +316,7 @@ impl HillDaw {
         let e = &self.project.export;
         let onoff = |b: bool| if b { "on" } else { "off" };
         let rows: [(&str, String, &str, bool); 5] = [
-            ("Format", format!("WAV {}-bit", e.bits), "", true),
+            ("Format", FORMATS.iter().find(|f| (f.0, f.1) == (e.format, e.bits)).map_or("?", |f| f.2).to_string(), "", true),
             ("Dither", onoff(e.dither).to_string(), "16-bit only", e.bits == 16),
             ("Normalize", onoff(e.normalize).to_string(), "mixdown peak to -1 dBFS", true),
             ("Stems", onoff(e.stems).to_string(), "one file per track + the drums", true),
@@ -327,6 +352,9 @@ impl HillDaw {
                 if r.clipped > 0 {
                     fb.text(22, y + 12, &format!("{} samples went past full scale and were clipped: lower the levels", r.clipped), 1, WARN);
                 }
+                if let Some(w) = r.warnings.first() {
+                    fb.text(22, y + 12 + if r.clipped > 0 { 12 } else { 0 }, &hill_core::fb::clip(w, 74), 1, AMBER);
+                }
                 for (i, p) in r.files.iter().take(5).enumerate() {
                     let name = std::path::Path::new(p).file_name().map_or(p.clone(), |n| n.to_string_lossy().into_owned());
                     fb.text(22, y + 28 + i as i32 * 10, &hill_core::fb::clip(&name, 60), 1, DIM);
@@ -346,20 +374,146 @@ impl HillDaw {
 
     fn draw_footer(&self, fb: &mut Fb) {
         fb.rect(0, 446, 640, 34, PANEL);
-        let tab = |fb: &mut Fb, x: i32, name: &str, on: bool| {
-            fb.text(x, 454, name, 2, if on { ACCENT } else { DIM });
-        };
-        tab(fb, 12, "MIXER", self.view == View::Mixer);
-        tab(fb, 108, "ARRANGE", self.view == View::Arrange);
-        tab(fb, 236, "FM-1", self.view == View::Fm1);
-        tab(fb, 316, "EXPORT", self.view == View::Export);
+        // five screens: names at scale 2 on the top line, the hint for this screen and the global keys below
+        let tabs = [("MIXER", View::Mixer, 12), ("TRACK", View::Track, 108), ("ARRANGE", View::Arrange, 204), ("FM-1", View::Fm1, 326), ("EXPORT", View::Export, 402)];
+        for (name, v, x) in tabs {
+            fb.text(x, 449, name, 2, if self.view == v { ACCENT } else { DIM });
+        }
         let hint = match self.view {
-            View::Mixer => "L/R strip U/D level",
-            View::Arrange => "U/D section L/R pattern",
-            View::Fm1 => "L2/R2 tab U/D L/R val",
-            View::Export => "U/D option L/R change",
+            View::Mixer => "L/R strip  U/D level (Y 6dB)  X mute  A arm",
+            View::Track => "L2/R2 tab  U/D row  L/R value (Y: big)  B mixer",
+            View::Arrange => "U/D section  L/R pattern  L2/R2 style  A add  X del",
+            View::Fm1 => "L2/R2 section  U/D row  L/R value  A on/off  X note",
+            View::Export => "U/D option  L/R change  A export  B cancel",
         };
-        fb.text_right(630, 452, hint, 1, DIM);
-        fb.text_right(630, 464, "START play   FN+SELECT help", 1, DIM);
+        fb.text(12, 469, hint, 1, DIM);
+        fb.text_right(630, 453, "FN+SELECT help", 1, DIM);
+        fb.text_right(630, 469, "START play  SELECT rec", 1, DIM);
+    }
+
+    /// Track screen: takes, effects, input and loop/punch for the strip picked on the Mixer.
+    fn draw_track(&self, fb: &mut Fb) {
+        fb.rect(10, 138, 620, 262, PANEL);
+        let i = self.sel;
+        let (name, col) = if i == DRUMS { ("DRUMS".to_string(), DRUM) } else { (self.project.tracks[i].name.clone(), MELODIC) };
+        fb.text(22, 144, &hill_core::fb::clip(&name, 12), 2, col);
+        let mut x = 300;
+        for (t, label) in [(TrackTab::Takes, "TAKES"), (TrackTab::Fx, "FX"), (TrackTab::Input, "INPUT"), (TrackTab::Loop, "LOOP")] {
+            x = fb.text(x, 150, label, 1, if t == self.track_tab { ACCENT } else { DIM }) + 14;
+        }
+        let row_y = |r: usize, step: i32| 180 + r as i32 * step;
+        let sel_bar = |fb: &mut Fb, y: i32, h: i32| fb.rect(16, y - 4, 608, h, rgb(34, 42, 58));
+        match self.track_tab {
+            TrackTab::Takes => {
+                if i == DRUMS {
+                    fb.text(22, 190, "The drum track has no takes.", 1, DIM);
+                    return;
+                }
+                let tm = &self.project.tracks[i];
+                if tm.takes.is_empty() {
+                    fb.text(22, 190, "No takes yet. Arm this track on the Mixer (A) and press SELECT.", 1, DIM);
+                    return;
+                }
+                let bar = self.bar_frames();
+                const ROWS: usize = 9;
+                let first = self.take_sel.saturating_sub(ROWS - 1).min(tm.takes.len().saturating_sub(ROWS));
+                for (r, (n, t)) in tm.takes.iter().enumerate().skip(first).take(ROWS).enumerate() {
+                    let y = row_y(r, 24);
+                    if n == self.take_sel {
+                        sel_bar(fb, y, 22);
+                    }
+                    let secs = t.frames / 44100;
+                    let playing = tm.active_take == Some(n);
+                    fb.text(26, y + 3, &format!("Take {}", n + 1), 1, if playing { ACCENT } else { TEXT });
+                    fb.text(110, y + 3, &format!("{}:{:02}", secs / 60, secs % 60), 1, TEXT);
+                    fb.text(170, y + 3, &if t.placed { format!("from bar {}", t.start / bar + 1) } else { "older take (no place saved)".to_string() }, 1, DIM);
+                    fb.text(330, y + 3, &hill_core::fb::clip(&t.file, 30), 1, DIM);
+                    if playing {
+                        fb.text_right(618, y + 3, "PLAYING", 1, ACCENT);
+                    }
+                }
+                fb.text(22, 386, "A: play this take   X twice: remove it (audio stays on the card)", 1, DIM);
+            }
+            TrackTab::Fx => {
+                let f = self.strip_fx(i);
+                let pct = |v: f32| if v <= 0.0 { "off".to_string() } else { format!("{:.0}%", v * 100.0) };
+                let hz = |v: u32| if v == 0 { "off".to_string() } else { format!("{v} Hz") };
+                let rows: [(&str, String, bool); 7] = [
+                    ("Low-pass", hz(f.lowpass_hz), f.lowpass_hz > 0),
+                    ("High-pass", hz(f.highpass_hz), f.highpass_hz > 0),
+                    ("Delay time", format!("{} ms", f.delay_ms), f.delay_mix > 0.0),
+                    ("Delay feedback", pct(f.delay_feedback), f.delay_mix > 0.0),
+                    ("Delay mix", pct(f.delay_mix), f.delay_mix > 0.0),
+                    ("Reverb send", pct(f.reverb_send), f.reverb_send > 0.0),
+                    ("Reverb room", format!("{:.0}%", self.project.reverb_room * 100.0), f.reverb_send > 0.0),
+                ];
+                for (r, (label, value, live)) in rows.iter().enumerate() {
+                    let y = row_y(r, 28) - 6;
+                    if r == self.track_row {
+                        sel_bar(fb, y, 26);
+                    }
+                    fb.text(26, y + 2, label, 2, TEXT);
+                    fb.text(300, y + 2, value, 2, if *live { WHITE } else { DIM });
+                }
+                fb.text(22, 386, "Reverb room is shared by every track. Delay needs its mix above off.", 1, DIM);
+            }
+            TrackTab::Input => {
+                fb.text(26, 176, "FM-1 input level", 2, TEXT);
+                hbar(fb, 26, 206, 400, 18, self.in_level, self.in_hold);
+                for db in [-48.0f32, -24.0, -12.0, -6.0, 0.0] {
+                    let x = 26 + ((db + 60.0) / 60.0 * 400.0) as i32;
+                    fb.rect(x, 226, 1, 5, DIM);
+                    fb.text(x - 12, 234, &format!("{db:.0}"), 1, DIM);
+                }
+                if self.clip_ms > 0 {
+                    fb.text(440, 208, "CLIP", 2, WARN);
+                }
+                if let Some(e) = &self.monitor_err {
+                    fb.text(26, 252, &hill_core::fb::clip(&format!("No input: {e}"), 70), 1, WARN);
+                } else if !self.input_live() {
+                    fb.text(26, 252, "Waiting for the FM-1 ...", 1, DIM);
+                }
+                let ms = self.project.latency_offset_frames as f64 / 44.1;
+                let rows = [("Latency offset", format!("{ms:.0} ms")), ("Count-in", (if self.project.count_in { "on" } else { "off" }).to_string())];
+                for (r, (label, value)) in rows.iter().enumerate() {
+                    let y = 276 + r as i32 * 28;
+                    if r == self.track_row {
+                        sel_bar(fb, y, 26);
+                    }
+                    fb.text(26, y + 2, label, 2, TEXT);
+                    fb.text(300, y + 2, value, 2, WHITE);
+                }
+                fb.text(22, 346, "The meter runs while a track is armed or this tab is open.", 1, DIM);
+                fb.text(22, 358, "Play your loudest part; set the FM-1 volume so peaks reach about -6.", 1, DIM);
+                fb.text(22, 374, "Raising the latency offset moves takes earlier (use it if takes sit late).", 1, DIM);
+            }
+            TrackTab::Loop => {
+                let bar = self.bar_frames();
+                let show = |r: Option<(u64, u64)>| match r {
+                    Some((s, e)) => (format!("bar {}", s / bar + 1), format!("{} bar{}", ((e - s) / bar).max(1), if (e - s) / bar == 1 { "" } else { "s" }), true),
+                    None => ("-".to_string(), "-".to_string(), false),
+                };
+                let (ls, ll, lon) = show(self.project.loop_region);
+                let (ps, pl, pon) = show(self.project.punch);
+                let rows: [(&str, String, bool); 6] = [
+                    ("Loop", (if lon { "on" } else { "off" }).to_string(), true),
+                    ("   start", ls, lon),
+                    ("   length", ll, lon),
+                    ("Punch in/out", (if pon { "on" } else { "off" }).to_string(), true),
+                    ("   from", ps, pon),
+                    ("   length", pl, pon),
+                ];
+                for (r, (label, value, live)) in rows.iter().enumerate() {
+                    let y = row_y(r, 28) - 6;
+                    if r == self.track_row {
+                        sel_bar(fb, y, 26);
+                    }
+                    fb.text(26, y + 2, label, 2, TEXT);
+                    fb.text(300, y + 2, value, 2, if *live { WHITE } else { DIM });
+                }
+                fb.text(22, 374, "Loop: playback goes round the region; recording makes a take per pass.", 1, DIM);
+                fb.text(22, 386, "Punch: only the region is recorded. A sets a row to the playhead's bar.", 1, DIM);
+            }
+        }
     }
 }
