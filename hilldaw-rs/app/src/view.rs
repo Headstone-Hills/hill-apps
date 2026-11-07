@@ -266,9 +266,9 @@ impl HillDaw {
         tab(fb, 124, "ARRANGE", self.view == View::Arrange);
         tab(fb, 268, "FM-1", self.view == View::Fm1);
         let hint = match self.view {
-            View::Mixer => "L/R strip  U/D level  X mute  A arm",
-            View::Arrange => "U/D section  L/R pattern  A add  X del",
-            View::Fm1 => "L2/R2 section  U/D row  L/R value  A on/off  X note",
+            View::Mixer => "L/R strip U/D level X mute A arm",
+            View::Arrange => "U/D section L/R pattern A add X del",
+            View::Fm1 => "L2/R2 tab U/D row L/R value A on/off",
         };
         fb.text_right(630, 452, hint, 1, DIM);
         fb.text_right(630, 464, "START play   FN+SELECT help", 1, DIM);

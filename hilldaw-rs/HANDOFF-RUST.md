@@ -157,3 +157,12 @@ A trial that captures no sound when the baseline had sound counts as a change ("
 Probe run 2 (grouped) on the real unit confirmed the FX map: **CC 70-93 = the old CC 0-23 table + 70**, six groups of four, switch first; values are native units (clamp, not scale).
 Data: `core/data/fm1_fx_cc.json`, loader `core/src/fm1.rs` (`fx_map()`, `FxParam::clamp/from_fraction`). Four entries (76, 79, 91, 92) are `order`-only: no change was measurable.
 Next for the FX/patch browser: Program Change 0-127 on the note channel (documented, not yet tested on the unit), then a UI over `fx_map()`.
+
+## FM-1 screen (2026-11-08)
+
+Third screen in HillDAW (L1/R1 cycle Mixer / Arrange / FM-1): **Voice** (Program Change 0-127, shown as voice 001-128) and the six FX groups from `core/data/fm1_fx_cc.json`.
+Keys: L2/R2 section, Up/Down row (voice: +-10), Left/Right value (Y: +-10), A effect on/off, X test note (C4, 0.7 s), B all notes off.
+- Only what the user chose is stored (`project.fm1`) and sent; untouched controls show `--`. A never-set parameter starts from the middle of its range. On connect (status poll sees the FM-1) the stored values are resent once; again after an unplug/replug.
+- `app/src/fm1link.rs`: a thread owns the USB MIDI port, opened lazily on the first message and reopened after a failed write. **While HillDAW has the port open, `fm1tool`/`hdtool` cannot claim it** (usbfs: one claim per interface): quit HillDAW first, or use the tools before touching the FM-1 screen.
+- Controls marked `?` (reverb decay, delay decay, phaser freq/depth) could not be measured; the screen says so.
+- 25 app tests + 3 link tests; screens checked by snapshot. **Not run on the SP yet.**

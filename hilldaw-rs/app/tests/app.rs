@@ -2,6 +2,7 @@
 
 use hill_core::fb::Fb;
 use hill_core::{App, Btn, Host, MemHost};
+use hilldaw_app::fm1link::{Fm1Msg, Fm1Out};
 use hilldaw_app::status::{Status, StatusHandle};
 use hilldaw_app::{HillDaw, View, DRUMS, STATE_KEY};
 use std::sync::{Arc, Mutex};
@@ -363,4 +364,175 @@ fn meters_follow_the_signal_and_fall_when_it_stops() {
         a.tick(16);
     }
     assert!(a.meter(DRUMS) < 0.01, "meter fell");
+}
+
+// ---- FM-1 screen ----
+
+#[derive(Clone, Default)]
+struct Rec(Arc<Mutex<Vec<Fm1Msg>>>);
+
+impl Fm1Out for Rec {
+    fn send(&mut self, m: Fm1Msg) {
+        self.0.lock().unwrap().push(m);
+    }
+}
+
+impl Rec {
+    fn take(&self) -> Vec<Fm1Msg> {
+        std::mem::take(&mut *self.0.lock().unwrap())
+    }
+}
+
+fn fm1_app() -> (HillDaw, Rec) {
+    let rec = Rec::default();
+    let mut a = HillDaw::new(Box::new(MemHost::default()), status()).with_fm1(Box::new(rec.clone()));
+    press(&mut a, Btn::R1);
+    press(&mut a, Btn::R1);
+    assert_eq!(a.view(), View::Fm1);
+    (a, rec)
+}
+
+#[test]
+fn l1_and_r1_cycle_through_the_three_screens() {
+    let mut a = app();
+    let mut seen = vec![a.view()];
+    for _ in 0..3 {
+        press(&mut a, Btn::R1);
+        seen.push(a.view());
+    }
+    assert_eq!(seen, vec![View::Mixer, View::Arrange, View::Fm1, View::Mixer]);
+    press(&mut a, Btn::L1);
+    assert_eq!(a.view(), View::Fm1);
+}
+
+#[test]
+fn the_voice_tab_sends_program_changes_and_stays_in_0_to_127() {
+    let (mut a, rec) = fm1_app();
+    assert!(rec.take().is_empty(), "opening the screen sends nothing");
+    press(&mut a, Btn::Right);
+    assert_eq!(rec.take(), vec![Fm1Msg::Program(1)]);
+    press(&mut a, Btn::Up);
+    assert_eq!(rec.take(), vec![Fm1Msg::Program(11)]);
+    for _ in 0..20 {
+        press(&mut a, Btn::Down);
+    }
+    assert_eq!(a.project.fm1.program, 0);
+    for _ in 0..20 {
+        press(&mut a, Btn::Up);
+    }
+    assert_eq!(a.project.fm1.program, 127);
+    assert!(a.project.fm1.program_set);
+}
+
+#[test]
+fn effect_controls_send_cc_values_inside_each_parameters_range() {
+    let (mut a, rec) = fm1_app();
+    press(&mut a, Btn::R2);
+    assert_eq!(a.fm1_tab(), 1, "Filter");
+    press(&mut a, Btn::A);
+    press(&mut a, Btn::A);
+    assert_eq!(rec.take(), vec![Fm1Msg::FxCc { cc: 70, value: 1 }, Fm1Msg::FxCc { cc: 70, value: 0 }], "A toggles the effect's switch");
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::Down);
+    assert_eq!(a.fm1_row(), 2, "Cutoff");
+    press(&mut a, Btn::Left); // never set: starts from the middle of 0..=107, not from an invented value
+    press(&mut a, Btn::Right);
+    a.event(Btn::Y, true);
+    press(&mut a, Btn::Right);
+    a.event(Btn::Y, false);
+    assert_eq!(rec.take(), vec![Fm1Msg::FxCc { cc: 72, value: 54 }, Fm1Msg::FxCc { cc: 72, value: 55 }, Fm1Msg::FxCc { cc: 72, value: 65 }]);
+    for _ in 0..60 {
+        press(&mut a, Btn::Right);
+    }
+    assert_eq!(a.project.fm1.fx[&72], 107, "cutoff stops at its maximum");
+    rec.take();
+    press(&mut a, Btn::Down); // Q, range 0..=10
+    for _ in 0..40 {
+        press(&mut a, Btn::Right);
+    }
+    assert_eq!(a.project.fm1.fx[&73], 10);
+    assert!(rec.take().iter().all(|m| matches!(m, Fm1Msg::FxCc { cc: 73, value } if *value <= 10)), "never sends a value above the range");
+}
+
+#[test]
+fn test_note_plays_for_a_moment_and_b_stops_everything() {
+    let (mut a, rec) = fm1_app();
+    press(&mut a, Btn::X);
+    assert_eq!(rec.take(), vec![Fm1Msg::NoteOn(60)]);
+    a.tick(300);
+    assert!(rec.take().is_empty());
+    a.tick(500);
+    assert_eq!(rec.take(), vec![Fm1Msg::NoteOff(60)]);
+    press(&mut a, Btn::X);
+    press(&mut a, Btn::X); // retrigger: the first note is released first
+    assert_eq!(rec.take(), vec![Fm1Msg::NoteOn(60), Fm1Msg::NoteOff(60), Fm1Msg::NoteOn(60)]);
+    press(&mut a, Btn::B);
+    assert_eq!(rec.take(), vec![Fm1Msg::Panic]);
+    a.tick(1000);
+    assert!(rec.take().is_empty(), "no stray note-off after a panic");
+}
+
+#[test]
+fn connecting_sends_only_what_the_user_chose_and_again_after_a_replug() {
+    // nothing chosen: connecting must not touch the FM-1's own patch
+    let st = status();
+    let rec = Rec::default();
+    let mut a = HillDaw::new(Box::new(MemHost::default()), st.clone()).with_fm1(Box::new(rec.clone()));
+    st.lock().unwrap().fm1 = true;
+    a.tick(600);
+    assert!(rec.take().is_empty());
+
+    // settings saved in the project are sent when the unit appears, once
+    let mut p = hilldaw_core::project::Project::default();
+    p.fm1.program = 5;
+    p.fm1.program_set = true;
+    p.fm1.fx.insert(70, 1);
+    p.fm1.fx.insert(72, 60);
+    let mut h = MemHost::default();
+    h.save_state(STATE_KEY, &p.to_json());
+    let st = status();
+    let rec = Rec::default();
+    let mut a = HillDaw::new(Box::new(h), st.clone()).with_fm1(Box::new(rec.clone()));
+    a.tick(600);
+    assert!(rec.take().is_empty(), "unit not there yet");
+    st.lock().unwrap().fm1 = true;
+    a.tick(600);
+    let expect = vec![Fm1Msg::Program(5), Fm1Msg::FxCc { cc: 70, value: 1 }, Fm1Msg::FxCc { cc: 72, value: 60 }];
+    assert_eq!(rec.take(), expect);
+    a.tick(600);
+    assert!(rec.take().is_empty(), "not again while it stays connected");
+    st.lock().unwrap().fm1 = false;
+    a.tick(600);
+    st.lock().unwrap().fm1 = true;
+    a.tick(600);
+    assert_eq!(rec.take(), expect, "resent after unplug and replug");
+}
+
+#[test]
+fn fm1_settings_are_saved_with_the_project() {
+    let host = Shared::default();
+    let (mut a, _rec) = {
+        let rec = Rec::default();
+        (HillDaw::new(Box::new(host.clone()), status()).with_fm1(Box::new(rec.clone())), rec)
+    };
+    press(&mut a, Btn::R1);
+    press(&mut a, Btn::R1);
+    press(&mut a, Btn::Right);
+    press(&mut a, Btn::R2);
+    press(&mut a, Btn::A);
+    a.save();
+    let b = HillDaw::new(Box::new(host), status());
+    assert_eq!((b.project.fm1.program, b.project.fm1.program_set, b.project.fm1.fx.get(&70).copied()), (1, true, Some(1)));
+}
+
+#[test]
+fn the_fm1_screen_draws_every_tab_without_panicking() {
+    let (mut a, _rec) = fm1_app();
+    for _ in 0..8 {
+        let mut fb = Fb::new();
+        a.render(&mut fb);
+        assert!(fb.px.iter().filter(|p| **p != hill_core::fb::BG).count() > 15000);
+        press(&mut a, Btn::R2);
+        press(&mut a, Btn::Right);
+    }
 }
