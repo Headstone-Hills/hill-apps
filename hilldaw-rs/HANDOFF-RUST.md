@@ -208,3 +208,12 @@ SELECT records onto the one armed track (A on the Mixer arms; arming more than o
 - The recorder is a trait; 11 recording tests use a fake that serves a ramp so exact sample alignment, count-in handoff mid-chunk, loop takes, clamping, persistence and the REC lamp are all checked.
 - Not done: input level meter, latency nudge/calibration screen, choosing between takes, punch UI, import of orphaned recordings after a crash during a take (the audio file is valid but the project does not know it), multiple projects (the folder is `projects/song` next to the program, `HILL_PROJECTS` overrides).
 **Not run on the SP yet.** Run it with the FM-1 plugged in: arm a track, press SELECT, play, press SELECT again.
+
+## Loop semantics changed (2026-11-08, after the owner's first recording test on the SP)
+
+Owner report: "the measure counter loops after four measures" (and a long recording is cut into takes). Cause: the previous fix wrapped the **transport** at the end of the 4-bar drum arrangement, so the bar counter wrapped and every pass of a long performance became its own take (only the last plays back). **This supersedes the "Drums stopped after 4 bars" section above.**
+Now: the **drums repeat** (`DrumTrack::looping`, stateless: every cycle that can still sound in a chunk is rendered from its own origin, so the output is chunk-size independent and a long hit rings over the seam) while the **transport runs on**: the bar counter keeps counting and a long performance is one take.
+- `project.drums.loop_arrangement` (default on) now means "the drum arrangement repeats"; FN+Y toggles it ("Drums loop on/off"); the mixer shows "drums loop" / "drums once".
+- The transport only wraps inside `project.loop_region` (none by default; `HillDaw::set_loop_region`, no UI yet). Recording over a loop region makes each pass its own take (tested).
+- Regression tests: `the_drums_keep_going_past_the_end_of_the_arrangement_and_the_bar_counter_keeps_counting`, `a_long_performance_over_the_repeating_drums_is_one_take_and_the_bar_counter_does_not_wrap`, and three DrumTrack looping tests.
+- The owner's three test recordings (rec-001 about 49 s, rec-002, rec-003) were made with the old behaviour; rec-001 was probably five takes. Their audio files are valid.

@@ -562,18 +562,20 @@ fn the_output_clock_is_measured_from_the_audio_callback_with_a_known_error() {
 }
 
 #[test]
-fn the_drums_keep_going_past_the_end_of_the_arrangement_while_looping() {
-    // regression: the starter groove is 4 cycles (4 bars) and used to fall silent after them
+fn the_drums_keep_going_past_the_end_of_the_arrangement_and_the_bar_counter_keeps_counting() {
+    // regression: the starter groove is 4 cycles (4 bars); it used to stop after them, and then the bar counter wrapped to 1
     let mut a = app();
     assert!(a.project.drums.loop_arrangement);
     press(&mut a, Btn::Start);
     let len = a.drum_frames() as usize;
     assert!(len > 44100 * 8, "starter arrangement is about 9.6 s at 100 bpm: {len}");
     render_audio(&mut a, len + 2 * 44100);
-    // two seconds after the end it is playing the groove again
+    // two seconds after the end the groove is playing again...
     let again = render_audio(&mut a, 2 * 44100);
-    assert!(peak(&again) > 0.05, "drums still sounding after the loop point");
-    assert!(a.bar_beat().0 <= 2, "the position wrapped back to the start: {:?}", a.bar_beat());
+    assert!(peak(&again) > 0.05, "drums still sounding after the arrangement ended");
+    // ...and the song position did not wrap: 11.6 s + 2 s at 100 bpm 4/4 (2.4 s per bar) is in bar 6
+    assert_eq!(a.bar_beat().0, 6, "the bar counter runs on: {:?}", a.bar_beat());
+    assert!(a.transport_loop().is_none(), "no loop region unless the user sets one");
 }
 
 #[test]
@@ -581,13 +583,13 @@ fn fn_y_turns_the_loop_off_and_then_the_arrangement_ends() {
     let mut a = app();
     with(&mut a, Btn::Fn, Btn::Y);
     assert!(!a.project.drums.loop_arrangement);
-    assert!(a.toast_text().contains("Loop off"));
+    assert!(a.toast_text().contains("loop off"), "{}", a.toast_text());
     press(&mut a, Btn::Start);
     let len = a.drum_frames() as usize;
     render_audio(&mut a, len + 2 * 44100);
     assert_eq!(peak(&render_audio(&mut a, 44100)), 0.0, "ended, nothing loops");
     with(&mut a, Btn::Fn, Btn::Y);
-    assert!(a.toast_text().contains("Loop on"));
+    assert!(a.toast_text().contains("loop on"), "{}", a.toast_text());
 }
 
 #[test]

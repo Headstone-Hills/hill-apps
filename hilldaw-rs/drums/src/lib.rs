@@ -111,6 +111,7 @@ impl DrumLibrary {
         t.vol = m.vol;
         t.mute = m.mute;
         t.gain = m.gain;
+        t.looping = m.loop_arrangement;
         t.start = m.start;
         for s in &m.sections {
             let p = self.pattern(&s.preset)?;

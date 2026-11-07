@@ -59,7 +59,7 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("FN + A", "tap tempo"),
     ("FN + X", "click on / off"),
     ("FN + B", "back to the start"),
-    ("FN + Y", "loop the drum arrangement on / off"),
+    ("FN + Y", "repeat the drum arrangement on / off"),
     ("FN + L2/R2", "drum swing -/+"),
     ("FN + SELECT", "this help"),
     ("START + SELECT hold", "quit"),
@@ -564,23 +564,23 @@ impl HillDaw {
             }
             Btn::Y => {
                 self.project.drums.loop_arrangement = !self.project.drums.loop_arrangement;
-                self.apply_loop();
-                self.toast.say(if self.project.drums.loop_arrangement { "Loop on" } else { "Loop off" });
+                self.rebuild_drums();
+                self.toast.say(if self.project.drums.loop_arrangement { "Drums loop on" } else { "Drums loop off" });
             }
             _ => {}
         }
     }
 
-    /// Wrap the transport at the end of the drum arrangement (when looping is on and there is an arrangement).
+    /// The transport only wraps inside a loop region the user has set (none by default); the drum arrangement repeats on its own
+    /// (`DrumTrack::looping`), so the bar counter keeps counting while the groove goes round and a long take stays one take.
     pub(crate) fn apply_loop(&mut self) {
-        let end = self.drum_total;
-        self.transport.loop_region = if self.project.drums.loop_arrangement && end > 0 { Some((0, end)) } else { None };
-        // an edit that shortened the arrangement must not leave the playhead beyond its new end
-        if let Some((_, e)) = self.transport.loop_region {
-            if self.transport.pos >= e {
-                self.transport.pos %= e;
-            }
-        }
+        self.transport.loop_region = self.project.loop_region.filter(|(s, e)| e > s);
+    }
+
+    /// Set or clear the loop region (frames). Recording over a loop region makes each pass its own take.
+    pub fn set_loop_region(&mut self, r: Option<(u64, u64)>) {
+        self.project.loop_region = r;
+        self.apply_loop();
     }
 
     fn mixer_act(&mut self, b: Btn) {

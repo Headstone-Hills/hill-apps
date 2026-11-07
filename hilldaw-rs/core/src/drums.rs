@@ -80,11 +80,13 @@ pub struct DrumTrack {
     pub vol: [f32; VOICES],
     pub mute: [bool; VOICES],
     pub gain: f32,
+    /// The whole chain of sections repeats forever instead of ending (the timeline keeps counting; only the drums come round again).
+    pub looping: bool,
 }
 
 impl DrumTrack {
     pub fn new(bpm: f64) -> Self {
-        DrumTrack { sections: vec![], bpm, swing: 0.0, start: 0, vol: [1.0; VOICES], mute: [false; VOICES], gain: 1.0 }
+        DrumTrack { sections: vec![], bpm, swing: 0.0, start: 0, vol: [1.0; VOICES], mute: [false; VOICES], gain: 1.0, looping: false }
     }
 
     fn step_len(&self, p: &DrumPattern, rate: u32) -> f64 {
@@ -143,15 +145,16 @@ impl DrumTrack {
     }
 }
 
-impl Source for DrumTrack {
-    fn render_add(&mut self, start: u64, out: &mut [f32], rate: u32) {
+impl DrumTrack {
+    /// Add the chain of sections as if it began at frame `origin`.
+    fn render_from(&self, origin: f64, start: u64, out: &mut [f32], rate: u32) {
         let end = start + (out.len() / 2) as u64;
         let lead = FLAM_GRACE_SECS * rate as f64;
         // a hit that began before `lo` has finished (its length is capped), one after `hi` has not begun
         let lo = start as f64 - MAX_HIT_SECS * rate as f64 - 1.0;
         let hi = end as f64 + lead + 1.0;
         let swing = self.swing.clamp(0.0, MAX_SWING) as f64;
-        let mut at = self.start as f64;
+        let mut at = origin;
         for sec in &self.sections {
             let p = &*sec.pattern;
             let sl = self.step_len(p, rate);
@@ -190,6 +193,26 @@ impl Source for DrumTrack {
                     }
                 }
             }
+        }
+    }
+}
+
+impl Source for DrumTrack {
+    fn render_add(&mut self, start: u64, out: &mut [f32], rate: u32) {
+        let chain = self.sections.iter().map(|s| self.section_len(s, rate)).sum::<f64>();
+        if !self.looping || chain < 1.0 {
+            self.render_from(self.start as f64, start, out, rate);
+            return;
+        }
+        // Repeat the chain: every cycle that can still be sounding in this chunk (a late hit's tail rings into the next cycle) is
+        // rendered from its own origin. Each hit is still a pure function of the absolute frame, so the output does not depend on
+        // the chunk size, and the seam between cycles is not cut.
+        let end = start + (out.len() / 2) as u64;
+        let reach = MAX_HIT_SECS * rate as f64 + 1.0;
+        let first = (((start as f64 - self.start as f64 - reach) / chain).floor().max(0.0)) as u64;
+        let last = (((end as f64 - self.start as f64) / chain).floor().max(0.0)) as u64;
+        for k in first..=last {
+            self.render_from(self.start as f64 + k as f64 * chain, start, out, rate);
         }
     }
 }
@@ -393,5 +416,68 @@ mod tests {
         t.sections.push(DrumSection { name: "z".into(), pattern: Arc::new(DrumPattern::silent(0, 4)), cycles: 3 });
         t.sections.push(DrumSection { name: "z".into(), pattern: Arc::new(one_hit_pattern(16, 4, 0, 100)), cycles: 0 });
         assert_eq!(render(&mut t, 0, 100).iter().sum::<f32>(), 0.0);
+    }
+
+    #[test]
+    fn a_looping_chain_repeats_forever_and_a_non_looping_one_ends() {
+        // 120 bpm, 4 steps: a cycle is 22050 frames; one hit on step 0
+        let mut t = track(one_hit_pattern(4, 4, 0, 100), 1);
+        let ends = render(&mut t, 22050 * 3, 1000);
+        assert_eq!(ends.iter().sum::<f32>(), 0.0, "without looping the chain is over");
+        t.looping = true;
+        for k in 0..6u64 {
+            let o = render(&mut t, k * 22050 - if k > 0 { 5 } else { 0 }, 300);
+            let first = first_on(&o).expect("a hit every cycle");
+            assert_eq!(first, if k > 0 { 5 } else { 0 }, "cycle {k}");
+        }
+    }
+
+    #[test]
+    fn looping_output_is_identical_for_any_chunk_size_and_tails_ring_across_the_seam() {
+        let mut p = DrumPattern::silent(4, 4);
+        // a long sound on the last step: its tail runs past the end of the cycle into the next one
+        p.voices[0] = Some(DrumVoice { data: Arc::new((0..60000).map(|i| ((i as f32) * 0.01).sin() * 0.5).collect()), rate: R });
+        p.cells[0][3] = 100;
+        p.voices[1] = Some(blip());
+        p.cells[1][0] = 90;
+        let p = Arc::new(p);
+        let mk = || {
+            let mut t = DrumTrack::new(120.0);
+            t.looping = true;
+            t.sections.push(DrumSection { name: "A".into(), pattern: p.clone(), cycles: 1 });
+            t
+        };
+        let total = 22050 * 5;
+        let whole = render(&mut mk(), 0, total);
+        for chunk in [1usize, 313, 1024, 22050, 50_000] {
+            let mut t = mk();
+            let mut got = Vec::new();
+            let mut at = 0;
+            while at < total {
+                let n = chunk.min(total - at);
+                got.extend(render(&mut t, at as u64, n));
+                at += n;
+            }
+            assert!(got == whole, "chunk size {chunk} changed a looping chain");
+        }
+        // the step-3 hit begins at 16537.5 and rings 60000 frames: at the start of cycle 2 (22050) it is still sounding
+        let seam = &whole[2 * 22050..2 * (22050 + 200)];
+        assert!(seam.iter().any(|x| x.abs() > 0.01), "the tail was not cut at the loop point");
+    }
+
+    #[test]
+    fn a_looping_chain_of_several_sections_repeats_as_a_whole() {
+        let a = one_hit_pattern(4, 4, 0, 100);
+        let mut b = DrumPattern::silent(4, 4);
+        b.voices[0] = Some(blip());
+        b.cells[0][2] = 100;
+        let mut t = DrumTrack::new(120.0);
+        t.looping = true;
+        t.sections.push(DrumSection { name: "A".into(), pattern: Arc::new(a), cycles: 2 });
+        t.sections.push(DrumSection { name: "B".into(), pattern: Arc::new(b), cycles: 1 });
+        // chain = 3 cycles of 22050 = 66150; hits (cycle 0): 0, 22050, then B step 2 at 44100+11025
+        let o = render(&mut t, 0, 66150 * 2);
+        let hits: Vec<usize> = (0..o.len() / 2).filter(|&i| o[i * 2] != 0.0 && (i == 0 || o[(i - 1) * 2] == 0.0)).collect();
+        assert_eq!(hits, vec![0, 22050, 55125, 66150, 88200, 121275]);
     }
 }

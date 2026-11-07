@@ -212,7 +212,9 @@ fn each_loop_pass_is_its_own_take_and_the_latest_plays() {
         press(&mut a, Btn::Left);
     }
     let len = a.drum_frames() as usize;
-    assert!(a.transport_loop().is_some() && len > 0);
+    assert!(len > 0);
+    a.set_loop_region(Some((0, len as u64))); // loop recording needs a real loop region now
+    assert!(a.transport_loop().is_some());
     let mut done = 0;
     press(&mut a, Btn::Select);
     run(&mut a, &mut done, len * 2 + len / 2, 1024);
@@ -340,4 +342,26 @@ fn the_rec_lamp_shows_count_in_amber_then_recording_red_then_idle() {
     press(&mut a, Btn::Select);
     a.render(&mut fb);
     assert!(count(&fb, WARN) == 0 && count(&fb, DIM) > 30, "back to idle");
+}
+
+#[test]
+fn a_long_performance_over_the_repeating_drums_is_one_take_and_the_bar_counter_does_not_wrap() {
+    // regression: with the transport wrapping every 4 bars, a 50 s recording became 5 separate takes and only the last played
+    let fake = Fake::default();
+    let mut a = HillDaw::new(Box::new(MemHost::default()), status()).with_recorder(Box::new(fake.clone()));
+    with(&mut a, Btn::Fn, Btn::L1); // count-in off
+    press(&mut a, Btn::A);
+    a.set_test_clock(Some(0.0));
+    let len = a.drum_frames() as usize;
+    let mut done = 0;
+    press(&mut a, Btn::Select);
+    let secs = 25.0;
+    let out = run(&mut a, &mut done, (secs * R) as usize, 1024);
+    assert!(secs * R > 2.5 * len as f64, "the take is longer than two arrangements");
+    assert!(a.bar_beat().0 > 8, "the bar counter kept counting: {:?}", a.bar_beat());
+    assert!(peak(&out[out.len() - 88_200..]) > 0.05, "the drums were still going at the end");
+    press(&mut a, Btn::Select);
+    let t = &a.project.tracks[0];
+    assert_eq!((t.takes.len(), t.clips.len()), (1, 1), "one long take");
+    assert!(t.clips[0].len.unwrap() as f64 > (secs * R) - 2048.0, "{:?}", t.clips[0].len);
 }
