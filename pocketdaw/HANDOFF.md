@@ -51,6 +51,12 @@ cd /mnt/sdcard/ports/pocketdaw && bash phase0.sh
 ```
 (Rebuild the tarball with `bash make_tarball.sh`.)
 
+**Or fetch it on the SP (if the repo is public; the SP has wget):**
+```
+wget -O /root/pocketdaw-phase0.tar https://raw.githubusercontent.com/headstone-hills/hill-apps/claude/fm1-tracker-rg35xxsp-c20kgw/pocketdaw/release/pocketdaw-phase0.tar
+```
+`release/pocketdaw-phase0.tar` is a committed prebuilt bundle (includes the aarch64 `isocap` binary); regenerate with `make_tarball.sh release/pocketdaw-phase0.tar`.
+
 **From a computer** (alternative):
 Cannot be done from a cloud session (no SP access). From a machine that can reach the SP:
 ```
