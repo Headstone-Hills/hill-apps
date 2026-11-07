@@ -98,6 +98,50 @@ impl Source for Clip {
     }
 }
 
+/// A clip with non-destructive edits applied at render time: trim, linear fades, gain, reverse.
+/// `data` is the whole source file (interleaved stereo); the clip uses `len` frames from `offset`
+/// and sits on the timeline at `start`.
+pub struct TrimmedClip {
+    pub data: Arc<Vec<f32>>,
+    pub start: u64,
+    pub offset: u64,
+    pub len: u64,
+    pub gain: f32,
+    pub fade_in: u64,
+    pub fade_out: u64,
+    pub reverse: bool,
+}
+
+impl Source for TrimmedClip {
+    fn render_add(&mut self, start: u64, out: &mut [f32], _rate: u32) {
+        let file_frames = (self.data.len() / 2) as u64;
+        for (i, f) in out.chunks_exact_mut(2).enumerate() {
+            let n = start + i as u64;
+            if n < self.start {
+                continue;
+            }
+            let p = n - self.start;
+            if p >= self.len {
+                break;
+            }
+            let idx = self.offset + if self.reverse { self.len - 1 - p } else { p };
+            if idx >= file_frames {
+                continue; // trim reaches past the end of the file: silence, not a panic
+            }
+            let mut g = self.gain;
+            if p < self.fade_in {
+                g *= p as f32 / self.fade_in as f32;
+            }
+            let left = self.len - 1 - p;
+            if left < self.fade_out {
+                g *= left as f32 / self.fade_out as f32;
+            }
+            f[0] += self.data[2 * idx as usize] * g;
+            f[1] += self.data[2 * idx as usize + 1] * g;
+        }
+    }
+}
+
 pub struct Track {
     pub name: String,
     pub gain: f32,

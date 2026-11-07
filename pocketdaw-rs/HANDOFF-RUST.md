@@ -32,6 +32,13 @@ framebuffer UI `fb.rs`/`ui.rs`, WAV decoder, kv state; `hill-device`: SDL2 runne
 HillBeat's presets can only be reused from that newer source (or from the user's README/state files). Ask the user where the current Rust
 source lives (local checkout? another repo?) before integrating. Do not rebase onto the stale branch blindly.
 
+## Editing (done in core, host tests only)
+`core/src/edit.rs` (8 tests) + `mixer::TrimmedClip`: non-destructive trim / linear fades / gain / reverse rendered at playback; `Edit` enum where every
+edit returns its inverse (so undo/redo is two stacks; atomic `Batch`, redo cleared on a new edit, depth capped at 100), `split` (a split plays
+bit-identically to the original, forward and reversed), `slice_on_grid` (one undo step), `normalize_gain`. Covers brief features 5, 6, 7 at the model level.
+A bug found by the undo/redo round-trip test: removing a take could not be redone (the inverse of `PopTake` lost the take); fixed.
+Not yet: UI for any of it; computing a file's peak for normalise (needs the loaded audio); per-track effects (feature 8), pitch-shift/BPM (9, 13).
+
 ## Recording (in progress)
 `core/src/record.rs` (4 tests): `Downmixer` (24-bit stereo -> 24-bit mono, (L+R)/2, independent of how the byte stream is split),
 `StreamingWav` (header rewritten by `flush_header()`; a crash keeps everything up to the last flush), `detect_onset`, `placed_start`
