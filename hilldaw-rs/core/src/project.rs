@@ -87,6 +87,18 @@ impl Default for DrumSectionModel {
     }
 }
 
+/// What the FM-1 should be set to. Only what the user has chosen is kept (and sent), so connecting never overrides the
+/// unit's own patch with invented defaults.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(default)]
+pub struct Fm1Model {
+    /// Program Change 0-127 (voice 001-128); only sent when `program_set`
+    pub program: u8,
+    pub program_set: bool,
+    /// FX CC (70-93) -> value in that parameter's own range
+    pub fx: std::collections::BTreeMap<u8, u8>,
+}
+
 pub const MAX_DRUM_SECTIONS: usize = 64;
 pub const MAX_SECTION_CYCLES: u32 = 256;
 
@@ -128,6 +140,7 @@ pub struct Project {
     pub loop_region: Option<(u64, u64)>,
     pub tracks: Vec<TrackModel>,
     pub drums: DrumsModel,
+    pub fm1: Fm1Model,
 }
 
 impl Default for Project {
@@ -142,6 +155,7 @@ impl Default for Project {
             loop_region: None,
             tracks: (1..=MAX_TRACKS).map(|i| TrackModel { name: format!("TRACK {i}"), ..Default::default() }).collect(),
             drums: DrumsModel::default(),
+            fm1: Fm1Model::default(),
         }
     }
 }
@@ -195,6 +209,15 @@ impl Project {
         }
         d.swing = if d.swing.is_finite() { d.swing.clamp(0.0, 0.25) } else { 0.0 };
         d.gain = if d.gain.is_finite() { d.gain.clamp(0.0, 4.0) } else { 1.0 };
+        self.fm1.program = self.fm1.program.min(127);
+        // keep only known FX controls, each inside its own range
+        let map = crate::fm1::fx_map();
+        self.fm1.fx.retain(|cc, _| map.by_cc(*cc).is_some());
+        for (cc, v) in self.fm1.fx.iter_mut() {
+            if let Some(p) = map.by_cc(*cc) {
+                *v = p.clamp(*v);
+            }
+        }
         d.pan = if d.pan.is_finite() { d.pan.clamp(-1.0, 1.0) } else { 0.0 };
         for v in d.vol.iter_mut() {
             *v = if v.is_finite() { v.clamp(0.0, 4.0) } else { 1.0 };
@@ -280,6 +303,23 @@ mod tests {
         assert_eq!(Project::from_json(&p.to_json()).unwrap(), p);
         let old = Project::from_json(r#"{"version":1,"name":"OLD"}"#).unwrap();
         assert!(old.drums.sections.is_empty() && old.drums.vol == [1.0; 8]);
+    }
+
+    #[test]
+    fn fm1_settings_roundtrip_old_files_load_and_bad_values_are_fixed() {
+        let mut p = Project::default();
+        p.fm1.program = 5;
+        p.fm1.program_set = true;
+        p.fm1.fx.insert(70, 1);
+        p.fm1.fx.insert(72, 80);
+        assert_eq!(Project::from_json(&p.to_json()).unwrap(), p);
+        assert!(!Project::from_json(r#"{"version":1}"#).unwrap().fm1.program_set, "old files: nothing is sent to the FM-1");
+        let mut bad = Project::default();
+        bad.fm1.program = 200;
+        bad.fm1.fx.insert(71, 99); // filter type 0-2
+        bad.fm1.fx.insert(5, 1); // not an FX CC
+        let q = Project::from_json(&bad.to_json()).unwrap();
+        assert_eq!((q.fm1.program, q.fm1.fx.get(&71).copied(), q.fm1.fx.contains_key(&5)), (127, Some(2), false));
     }
 
     #[test]

@@ -150,6 +150,10 @@ Evidence key: *behaviour* = measured behaviour matches the name; *group* = it ch
 3. Not measurable with this probe: reverb decay (76), delay decay (79), phaser freq and depth (91, 92). They are in the map as `order`; a UI should not claim more. To check them, listen (a long reverb tail, a slow delay) or extend the probe with a longer note and a time-resolved measure.
 4. The probe cannot tell *which* of several parameters in a group an unlabeled change belongs to (for example chorus freq vs depth); only the group role is measured for those.
 
+### Program Change (2026-11-08, same unit, by ear and display; owner: "everything is as it should be")
+
+`fm1tool pc N --ch 1` for N = 0, 1, 5, 20, 50, 90, 127 each selected a different voice (a note after each sounded different). The same programs sent on channel 2 (the FX channel) changed nothing. So **Program Change 0-127 on the note channel selects voices 001-128, and the FX channel ignores it**, as the guide says. (Observed by one listener; the exact voice number shown on the display was reported as correct.)
+
 ## What this means for HillDAW
 
 1. **FM-1 CC control must go to the FX channel (default 2), not channel 1.** `fm1tool cc N V` defaults to channel 1; use `--ch 2`. Notes and program change go to the note channel.

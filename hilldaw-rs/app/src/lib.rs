@@ -8,6 +8,7 @@
 //! mutex, so `render` must stay cheap. Anything slow (battery, storage, USB presence) is gathered by a background
 //! thread into a [`status::StatusHandle`] and only copied here.
 
+pub mod fm1link;
 pub mod status;
 mod view;
 
@@ -16,6 +17,8 @@ use hill_core::presets;
 use hill_core::ui::{Help, Toast, QUIT_HOLD_MS};
 use hill_core::{fb::Fb, App, Btn, Host};
 use hilldaw_core::drums::DrumPattern;
+use fm1link::{Fm1Msg, Fm1Out};
+use hilldaw_core::fm1::fx_map;
 use hilldaw_core::mixer::{Click, Mixer, Track};
 use hilldaw_core::project::{DrumSectionModel, Project, MAX_DRUM_SECTIONS, MAX_SECTION_CYCLES, MAX_TRACKS};
 use hilldaw_core::transport::Transport;
@@ -37,6 +40,8 @@ pub const MAX_BPM: f64 = 240.0;
 pub enum View {
     Mixer,
     Arrange,
+    /// voice (Program Change) and FX controls of the FM-1
+    Fm1,
 }
 
 pub(crate) const HELP: &[(&str, &str)] = &[
@@ -59,6 +64,13 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("Y + X", "solo"),
     ("A", "arm the track for recording"),
     ("B", "reset level and pan"),
+    ("FM-1 screen", ""),
+    ("L2 / R2", "previous / next section (voice, filter, reverb ...)"),
+    ("Up / Down", "voice: +-10;  effects: pick a control"),
+    ("Left / Right", "voice +-1;  effects: value (Y: +-10)"),
+    ("A", "effect on / off;  voice: send it"),
+    ("X", "play a test note (C4)"),
+    ("B", "all notes off"),
     ("Arrange (drums)", ""),
     ("Up / Down", "pick a section"),
     ("Left / Right", "previous / next pattern"),
@@ -88,6 +100,13 @@ pub struct HillDaw {
     pub(crate) armed: [bool; MAX_TRACKS],
     pub(crate) click_on: bool,
     pub(crate) arr_sel: usize,
+    fm1_out: Option<Box<dyn Fm1Out>>,
+    /// 0 = voice, 1.. = the effects in the map's order
+    pub(crate) fm1_tab: usize,
+    pub(crate) fm1_row: usize,
+    fm1_was_up: bool,
+    /// a test note that is sounding: (note, ms left)
+    audition: Option<(u8, u32)>,
 
     // drum arrangement, rebuilt with the track
     pub(crate) drum_total: u64,
@@ -160,6 +179,11 @@ impl HillDaw {
             armed: [false; MAX_TRACKS],
             click_on: false,
             arr_sel: 0,
+            fm1_out: None,
+            fm1_tab: 0,
+            fm1_row: 0,
+            fm1_was_up: false,
+            audition: None,
             drum_total: 0,
             drum_starts: Vec::new(),
             section_pats: Vec::new(),
@@ -183,6 +207,12 @@ impl HillDaw {
         app.rebuild_drums();
         app.apply_mixer();
         app
+    }
+
+    /// Connect the FM-1 screen to a MIDI link (the SDL program gives the USB one, tests a recording one).
+    pub fn with_fm1(mut self, out: Box<dyn Fm1Out>) -> Self {
+        self.fm1_out = Some(out);
+        self
     }
 
     fn fresh_project() -> Project {
@@ -308,6 +338,7 @@ impl HillDaw {
         match self.view {
             View::Mixer => self.mixer_act(b),
             View::Arrange => self.arrange_act(b),
+            View::Fm1 => self.fm1_act(b),
         }
     }
 
@@ -437,6 +468,113 @@ impl HillDaw {
         }
     }
 
+    // ---- FM-1 -------------------------------------------------------------------------------------------------------
+
+    fn fm1_send(&mut self, m: Fm1Msg) {
+        if let Some(o) = self.fm1_out.as_mut() {
+            o.send(m);
+        }
+    }
+
+    fn fm1_set_program(&mut self, p: u8) {
+        self.project.fm1.program = p.min(127);
+        self.project.fm1.program_set = true;
+        self.fm1_send(Fm1Msg::Program(self.project.fm1.program));
+    }
+
+    fn fm1_set_fx(&mut self, cc: u8, v: u8) {
+        let Some(p) = fx_map().by_cc(cc) else { return };
+        let v = p.clamp(v);
+        self.project.fm1.fx.insert(cc, v);
+        self.fm1_send(Fm1Msg::FxCc { cc, value: v });
+    }
+
+    /// Send what the user has chosen (and nothing else) after the FM-1 appears, so connecting never overrides its own patch
+    /// with invented defaults.
+    fn fm1_resync(&mut self) {
+        if self.project.fm1.program_set {
+            self.fm1_send(Fm1Msg::Program(self.project.fm1.program));
+        }
+        let fx: Vec<(u8, u8)> = self.project.fm1.fx.iter().map(|(a, b)| (*a, *b)).collect();
+        for (cc, value) in fx {
+            self.fm1_send(Fm1Msg::FxCc { cc, value });
+        }
+    }
+
+    fn fm1_audition(&mut self) {
+        if let Some((n, _)) = self.audition.take() {
+            self.fm1_send(Fm1Msg::NoteOff(n));
+        }
+        self.fm1_send(Fm1Msg::NoteOn(60));
+        self.audition = Some((60, 700));
+    }
+
+    fn fm1_act(&mut self, b: Btn) {
+        let map = fx_map();
+        let effects = map.effects();
+        match b {
+            Btn::L2 => {
+                self.fm1_tab = self.fm1_tab.saturating_sub(1);
+                self.fm1_row = 0;
+                return;
+            }
+            Btn::R2 => {
+                self.fm1_tab = (self.fm1_tab + 1).min(effects.len());
+                self.fm1_row = 0;
+                return;
+            }
+            Btn::X => {
+                self.fm1_audition();
+                return;
+            }
+            Btn::B => {
+                self.audition = None;
+                self.fm1_send(Fm1Msg::Panic);
+                self.toast.say("All notes off");
+                return;
+            }
+            _ => {}
+        }
+        if self.fm1_tab == 0 {
+            let cur = self.project.fm1.program as i32;
+            let p = match b {
+                Btn::Left => Some(cur - 1),
+                Btn::Right => Some(cur + 1),
+                Btn::Up => Some(cur + 10),
+                Btn::Down => Some(cur - 10),
+                Btn::A => Some(cur),
+                _ => None,
+            };
+            if let Some(p) = p {
+                self.fm1_set_program(p.clamp(0, 127) as u8);
+            }
+            return;
+        }
+        let ps = &effects[self.fm1_tab - 1].1;
+        self.fm1_row = self.fm1_row.min(ps.len() - 1);
+        let sel = ps[self.fm1_row];
+        match b {
+            Btn::Up => self.fm1_row = self.fm1_row.saturating_sub(1),
+            Btn::Down => self.fm1_row = (self.fm1_row + 1).min(ps.len() - 1),
+            Btn::A => {
+                let on = self.project.fm1.fx.get(&ps[0].cc).copied().unwrap_or(0) > 0;
+                self.fm1_set_fx(ps[0].cc, if on { 0 } else { 1 });
+            }
+            Btn::Left | Btn::Right => {
+                let dir = if b == Btn::Left { -1 } else { 1 };
+                let step = if self.held.is(Btn::Y) && sel.max > 10 { 10 } else { 1 };
+                let v = match self.project.fm1.fx.get(&sel.cc).copied() {
+                    // never set: a switch goes straight to its side, a parameter starts from the middle of its range
+                    None if sel.is_switch() => if dir > 0 { 1 } else { 0 },
+                    None => sel.from_fraction(0.5),
+                    Some(cur) => (cur as i32 + dir * step).clamp(sel.min as i32, sel.max as i32) as u8,
+                };
+                self.fm1_set_fx(sel.cc, v);
+            }
+            _ => {}
+        }
+    }
+
     fn set_section_preset(&mut self, idx: usize) {
         let all = &presets::builtin().patterns;
         if let (Some(s), Some(p)) = (self.project.drums.sections.get_mut(self.arr_sel), all.get(idx)) {
@@ -460,6 +598,12 @@ impl HillDaw {
     }
     pub fn bar_beat(&self) -> (u32, u32) {
         self.transport.bar_beat()
+    }
+    pub fn fm1_tab(&self) -> usize {
+        self.fm1_tab
+    }
+    pub fn fm1_row(&self) -> usize {
+        self.fm1_row
     }
     pub fn help_open(&self) -> bool {
         self.help.open
@@ -537,7 +681,9 @@ impl App for HillDaw {
         }
         match b {
             Btn::L1 | Btn::R1 => {
-                self.view = if self.view == View::Mixer { View::Arrange } else { View::Mixer };
+                const ORDER: [View; 3] = [View::Mixer, View::Arrange, View::Fm1];
+                let i = ORDER.iter().position(|v| *v == self.view).unwrap_or(0);
+                self.view = ORDER[(i + if b == Btn::R1 { 1 } else { ORDER.len() - 1 }) % ORDER.len()];
                 self.rep.clear();
             }
             _ => {
@@ -591,12 +737,25 @@ impl App for HillDaw {
         }
         self.meter_master = self.hold_master.max(self.meter_master * fall);
         self.hold_master = 0.0;
+        if let Some((n, left)) = self.audition {
+            if left <= dt_ms {
+                self.audition = None;
+                self.fm1_send(Fm1Msg::NoteOff(n));
+            } else {
+                self.audition = Some((n, left - dt_ms));
+            }
+        }
         self.status_ms += dt_ms;
         if self.status_ms >= 500 {
             self.status_ms = 0;
             if let Ok(s) = self.status_src.lock() {
                 self.status = s.clone();
             }
+            // the FM-1 just appeared (or was there at startup): send what the user chose
+            if self.status.fm1 && !self.fm1_was_up {
+                self.fm1_resync();
+            }
+            self.fm1_was_up = self.status.fm1;
         }
     }
 

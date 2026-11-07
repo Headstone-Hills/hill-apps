@@ -196,7 +196,7 @@ fn click_follows_the_beat_and_is_audible_during_solo() {
     // remove the starter drums through the UI, so only the metronome can be heard
     press(&mut a, Btn::R1);
     press(&mut a, Btn::X);
-    press(&mut a, Btn::R1);
+    press(&mut a, Btn::L1);
     assert!(a.project.drums.sections.is_empty());
     press(&mut a, Btn::Start);
     assert_eq!(peak(&render_audio(&mut a, 22050)), 0.0, "click is off by default");
@@ -236,7 +236,7 @@ fn arrange_screen_adds_edits_and_removes_sections() {
     press(&mut a, Btn::X); // nothing left: harmless
     press(&mut a, Btn::Start);
     assert_eq!(peak(&render_audio(&mut a, 20000)), 0.0, "no sections, no drums");
-    press(&mut a, Btn::R1);
+    press(&mut a, Btn::L1);
     assert_eq!(a.view(), View::Mixer);
 }
 

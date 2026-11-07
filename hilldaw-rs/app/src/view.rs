@@ -49,6 +49,7 @@ impl HillDaw {
         match self.view {
             View::Mixer => self.draw_mixer(fb),
             View::Arrange => self.draw_arrange(fb),
+            View::Fm1 => self.draw_fm1(fb),
         }
         self.draw_footer(fb);
         self.toast.draw(fb);
@@ -216,6 +217,46 @@ impl HillDaw {
         }
     }
 
+    /// FM-1 screen: voice (Program Change) and the effect controls. Unset values show "--": the unit's real state is unknown.
+    fn draw_fm1(&self, fb: &mut Fb) {
+        fb.rect(10, 138, 620, 262, PANEL);
+        let effects = hilldaw_core::fm1::fx_map().effects();
+        let mut x = 22;
+        let names: Vec<&str> = std::iter::once("VOICE").chain(effects.iter().map(|(e, _)| *e)).collect();
+        for (i, n) in names.iter().enumerate() {
+            let c = if i == self.fm1_tab { ACCENT } else { DIM };
+            x = fb.text(x, 146, &n.to_uppercase(), 1, c) + 14;
+        }
+        if self.fm1_tab == 0 {
+            let f = &self.project.fm1;
+            fb.text(22, 190, &format!("{:03}", f.program as u32 + 1), 8, if f.program_set { WHITE } else { DIM });
+            let note = if f.program_set { format!("Program Change {} on the note channel", f.program) } else { "not set: the FM-1 keeps its own sound".to_string() };
+            fb.text(22, 280, &note, 1, DIM);
+            return;
+        }
+        let ps = &effects[self.fm1_tab - 1].1;
+        for (r, p) in ps.iter().enumerate() {
+            let y = 180 + r as i32 * 40;
+            if r == self.fm1_row {
+                fb.rect(16, y - 6, 608, 34, rgb(34, 42, 58));
+            }
+            fb.text(26, y + 2, &format!("{}{}", p.param, if p.evidence == "order" { " ?" } else { "" }), 2, TEXT);
+            fb.text(250, y + 2, &format!("CC {}", p.cc), 1, DIM);
+            fb.rect(330, y + 4, 200, 12, CELL_OFF);
+            match self.project.fm1.fx.get(&p.cc) {
+                Some(v) => {
+                    fb.rect(330, y + 4, (200.0 * p.to_fraction(*v)) as i32, 12, DRUM);
+                    let t = if p.is_switch() { if *v > 0 { "ON".to_string() } else { "OFF".to_string() } } else { v.to_string() };
+                    fb.text(544, y + 2, &t, 2, WHITE);
+                }
+                None => {
+                    fb.text(544, y + 2, "--", 2, DIM);
+                }
+            }
+        }
+        fb.text(22, 372, "? = effect could not be measured; position from the vendor guide", 1, DIM);
+    }
+
     fn draw_footer(&self, fb: &mut Fb) {
         fb.rect(0, 446, 640, 34, PANEL);
         let tab = |fb: &mut Fb, x: i32, name: &str, on: bool| {
@@ -223,9 +264,11 @@ impl HillDaw {
         };
         tab(fb, 12, "MIXER", self.view == View::Mixer);
         tab(fb, 124, "ARRANGE", self.view == View::Arrange);
+        tab(fb, 268, "FM-1", self.view == View::Fm1);
         let hint = match self.view {
             View::Mixer => "L/R strip  U/D level  X mute  A arm",
             View::Arrange => "U/D section  L/R pattern  A add  X del",
+            View::Fm1 => "L2/R2 section  U/D row  L/R value  A on/off  X note",
         };
         fb.text_right(630, 452, hint, 1, DIM);
         fb.text_right(630, 464, "START play   FN+SELECT help", 1, DIM);
