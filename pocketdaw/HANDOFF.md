@@ -43,7 +43,17 @@ Test command: `cd pocketdaw && python3 -m unittest discover -s tests` (stdlib on
 - **The user's deployed Hill apps are Rust ports**: `/mnt/sdcard/ports/{hillbeat-rs,hillchord-rs,hillsequencer-rs,hillband-rs,hillmap-rs,hillsynth}`; there is no
   `ports/hillbeat`. The Python HillBeat in this repo is NOT what runs on the device. HillBeat's drum presets are probably in `hillbeat-rs` (unverified).
   There is also `/mnt/sdcard/ports/hill-buttons.cfg` (shared Hill button config; not yet read). ROMS folders include `Hill Apps` and `Ports`.
-- Next: run `bash audio_test.sh aplay 20` and `bash audio_test.sh pygame 20` on the SP and compare underruns/latency; then pick the output backend.
+- **Audio test results (20 s each, SP):** aplay 0 underruns, est. latency ~146 ms; pygame queue 0 underruns, est. ~58 ms. Both stayed locked to the sound
+  card clock (constant ~0.1 s / ~0.04 s lead of rendered audio over wall time, no growth). Render cost ~2 ms avg / 7 ms max per 23 ms chunk for click+tone.
+  The aplay run printed `RESULT: PROBLEMS` only because aplay's start-up banner was logged as an error (fixed). **Provisional choice: pygame queue as the primary
+  backend (lower latency, no subprocess, same path as the Hill apps), aplay kept as fallback.** The user has not yet said what either sounded like.
+
+## Drum presets: where they are (and aren't)
+Searched every remote branch of `Headstone-Hills/hill-apps` (main, friendly-thompson, gracious-faraday, lucid-euler, relaxed-cerf): **no drum-pattern presets anywhere.**
+`gracious-faraday-6pjyu5` has the Rust workspace (`rust/hill-core`, `hill-device`), but its `apps/beat.rs` is a 38-line wrapper and the only presets are HillSynth's
+(`subtractive.rs::factory_presets`). The deployed `hillbeat-rs` (SP, built Oct 26) is newer than the repo and has presets compiled in
+(`hillbeat-rs.bak-before-presets`, state `.bak-before-8-tracks`). **Needed from the user's SP**: `cat hillbeat-rs/README.md`,
+`cat hillbeat-rs/hillbeat_state.txt.bak-before-8-tracks`, and `strings hillbeat-rs/hillbeat-rs | grep -i -B3 -A30 preset`. Do not invent presets.
 
 ## Phase 0 result (2026-11-08): capture WORKS
 See [`docs/PHASE0_RESULTS.md`](docs/PHASE0_RESULTS.md). MIDI IN now proven too. Remaining Phase 0 items: (60 s soak now done); then proceed to brief section 9 step 2 onward. The numbered "IMMEDIATE NEXT STEP" below is now historical.

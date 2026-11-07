@@ -103,6 +103,16 @@ class OutputTests(unittest.TestCase):
         o.stop()
         self.assertTrue(any("aplay pipe" in e for e in o.stats()["errors"]))
 
+    def test_aplay_banner_is_not_an_error_but_underrun_is_counted(self):
+        script = "echo \"Playing raw data 'stdin' : Signed 16 bit Little Endian\" >&2; echo 'underrun!!! (at least 1.0 ms long)' >&2; cat >/dev/null"
+        o = audio_out.AplayOutput(Mixer(), period_frames=256, cmd=["sh", "-c", script])
+        o.start()
+        time.sleep(0.4)
+        o.stop()
+        st = o.stats()
+        self.assertEqual(st["errors"], [])
+        self.assertEqual(st["underruns"], 1)
+
     def test_aplay_argv(self):
         o = audio_out.AplayOutput(Mixer(), buffer_ms=80, device="hw:0,0")
         a = o._argv()

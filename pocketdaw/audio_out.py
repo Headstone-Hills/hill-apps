@@ -129,7 +129,7 @@ class AplayOutput(_Base):
             txt = line.decode("utf-8", "replace").strip()
             if "underrun" in txt.lower() or "xrun" in txt.lower():
                 self.s.underruns += 1
-            elif txt:
+            elif txt and not txt.startswith("Playing raw data"):      # aplay's start-up banner, not an error
                 self.s.errors.append(txt)
 
     def start(self):
