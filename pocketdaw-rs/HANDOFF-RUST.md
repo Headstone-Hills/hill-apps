@@ -38,7 +38,14 @@ source lives (local checkout? another repo?) before integrating. Do not rebase o
 (take start = record start minus latency offset), `drift_ratio`.
 `tools-bin/` (`pdtool`, release `pdtool-aarch64`): `record SECS OUT.wav [--note N]` = capture thread -> bounded queue (512 chunks) -> writer thread -> SD card,
 reports overruns / captured vs written frames / worst single write; `latency [--runs N]` = MIDI note-on -> first audible sample in the capture.
-**Not yet run on the SP.** The synthetic-source path (`record ... --synthetic`) passes on the dev box.
+**PROVEN ON THE SP (2026-11-08):**
+- `record 60` to the SD card (exfat) while capturing: 2,646,000 captured = 2,646,000 written mono frames, **0 overruns**, 59 header flushes,
+  worst single write 7.27 ms (queue slack is ~500 ms). Streaming 132 KB/s to the SD card is not a problem.
+- `latency --runs 8` (MIDI note-on -> first audible sample in the capture): **median 12.8 ms (563 frames), min 7.3, max 14.0, spread 6.7 ms**.
+  The spread looks like FM-1-side quantisation (block/MIDI polling), not our timing, but that is unconfirmed. Use ~563 frames as the default
+  `latency_offset_frames` for MIDI-driven recording and expect about +/-3 ms of jitter on sequenced notes. Live-played audio has no MIDI leg:
+  its offset is the USB capture path plus whatever the player hears from the SP output, which needs the Rust output path to measure.
+- Not yet measured: clock drift over minutes (FM-1 vs SP sound card).
 
 **Design risk to measure: two clocks.** The FM-1 samples audio on its own clock and the SP's sound card plays on another. Over a long take they drift
 (e.g. 50 ppm = 132 frames = 3 ms per minute). Plan: store `captured_frames` and the transport frames elapsed per take (`drift_ratio`), and play
