@@ -139,6 +139,8 @@ pub struct Project {
     pub beats_per_bar: u32,
     /// calibrated + manual recording offset, in frames (positive = captured audio arrives late)
     pub latency_offset_frames: i64,
+    /// one bar of click before recording starts
+    pub count_in: bool,
     pub loop_region: Option<(u64, u64)>,
     pub tracks: Vec<TrackModel>,
     pub drums: DrumsModel,
@@ -154,6 +156,7 @@ impl Default for Project {
             bpm: 120.0,
             beats_per_bar: 4,
             latency_offset_frames: 0,
+            count_in: true,
             loop_region: None,
             tracks: (1..=MAX_TRACKS).map(|i| TrackModel { name: format!("TRACK {i}"), ..Default::default() }).collect(),
             drums: DrumsModel::default(),

@@ -143,6 +143,54 @@ impl Source for TrimmedClip {
     }
 }
 
+/// A recorded take: the same trimming as [`TrimmedClip`] over **mono** audio (what the FM-1 recordings are), so it costs half the memory.
+/// `data` is the whole file; the clip uses `len` frames from `offset` and sits on the timeline at `start`.
+pub struct MonoClip {
+    pub data: Arc<Vec<f32>>,
+    pub start: u64,
+    pub offset: u64,
+    pub len: u64,
+    pub gain: f32,
+    pub fade_in: u64,
+    pub fade_out: u64,
+    pub reverse: bool,
+}
+
+impl Source for MonoClip {
+    fn render_add(&mut self, start: u64, out: &mut [f32], _rate: u32) {
+        let file_frames = self.data.len() as u64;
+        let end = start + (out.len() / 2) as u64;
+        if end <= self.start || start >= self.start + self.len {
+            return; // nothing of this clip in this chunk
+        }
+        for (i, f) in out.chunks_exact_mut(2).enumerate() {
+            let n = start + i as u64;
+            if n < self.start {
+                continue;
+            }
+            let p = n - self.start;
+            if p >= self.len {
+                break;
+            }
+            let idx = self.offset + if self.reverse { self.len - 1 - p } else { p };
+            if idx >= file_frames {
+                continue; // trim reaches past the end of the file: silence, not a panic
+            }
+            let mut g = self.gain;
+            if p < self.fade_in {
+                g *= p as f32 / self.fade_in as f32;
+            }
+            let left = self.len - 1 - p;
+            if left < self.fade_out {
+                g *= left as f32 / self.fade_out as f32;
+            }
+            let v = self.data[idx as usize] * g;
+            f[0] += v;
+            f[1] += v;
+        }
+    }
+}
+
 pub struct Track {
     pub name: String,
     pub gain: f32,
@@ -479,5 +527,44 @@ mod tests {
         let mut d = [0i16; 3];
         to_i16(&[0.5, 2.0, -2.0], &mut d);
         assert_eq!(d, [16383, 32767, -32767]);
+    }
+}
+
+#[cfg(test)]
+mod mono_clip_tests {
+    use super::*;
+
+    fn render(c: &mut MonoClip, from: u64, frames: usize) -> Vec<f32> {
+        let mut o = vec![0.0; frames * 2];
+        c.render_add(from, &mut o, 44100);
+        o
+    }
+
+    #[test]
+    fn plays_the_trimmed_part_at_its_place_on_both_channels() {
+        let data = Arc::new((0..100).map(|i| i as f32 / 100.0).collect::<Vec<_>>());
+        let mut c = MonoClip { data, start: 50, offset: 10, len: 20, gain: 1.0, fade_in: 0, fade_out: 0, reverse: false };
+        let o = render(&mut c, 0, 100);
+        assert_eq!(o[2 * 49], 0.0, "silent before it starts");
+        assert!((o[2 * 50] - 0.10).abs() < 1e-6 && (o[2 * 50 + 1] - 0.10).abs() < 1e-6, "first frame is file frame 10");
+        assert!((o[2 * 69] - 0.29).abs() < 1e-6, "last frame is file frame 29");
+        assert_eq!(o[2 * 70], 0.0, "silent after len");
+    }
+
+    #[test]
+    fn is_the_same_for_any_chunk_size_and_survives_a_trim_past_the_file_end() {
+        let data = Arc::new((0..1000).map(|i| (i as f32 * 0.37).sin()).collect::<Vec<_>>());
+        let mk = || MonoClip { data: data.clone(), start: 300, offset: 100, len: 5000, gain: 0.5, fade_in: 64, fade_out: 64, reverse: false };
+        let whole = render(&mut mk(), 0, 6000);
+        let mut parts = Vec::new();
+        let mut c = mk();
+        let mut at = 0;
+        while at < 6000 {
+            let n = 333.min(6000 - at);
+            parts.extend(render(&mut c, at as u64, n));
+            at += n;
+        }
+        assert!(whole == parts);
+        assert!(whole.iter().all(|x| x.is_finite()), "trim reaching past the data end is silence");
     }
 }

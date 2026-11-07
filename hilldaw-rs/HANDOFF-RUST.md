@@ -192,3 +192,19 @@ Regression tests: `the_drums_keep_going_past_the_end_of_the_arrangement_while_lo
 Both clocks read +42 ppm against the monotonic clock, so most likely the SP's system clock is the one that is ~42 ppm slow; only the difference matters here. The two readings were taken in separate runs (the FM-1 figure at the same time as an earlier, shorter output reading of +42 ppm at 44 s that agreed); a fully simultaneous long run was not repeated.
 Not yet checked: drift while the SP is hot after a long session, and over 30+ minutes.
 Note: the saved drift file is `hilldaw-drift_state.txt` (the host appends `_state.txt` to the key).
+
+Loop confirmed on the SP by the owner (2026-11-08): "looping worked".
+
+## Recording (2026-11-08)
+
+SELECT records onto the one armed track (A on the Mixer arms; arming more than one is refused). Count-in (one bar of click, FN+L1 toggles, stored in the project) plays the click only; the transport and drums wait for it.
+- **One continuous capture per recording session** (`app/src/recorder.rs`, `UsbRecorder`): FM-1 -> mono 24-bit -> bounded queue -> writer thread -> `<project>/audio/rec-NNN.wav`, header refreshed about every second so a crash or power loss costs at most ~1 s (the same path proven by `hdtool record`: 60 s, 0 overruns). Files are never modified.
+- **Takes are non-destructive clips of that file** (`ClipModel{file, start, offset, len}` + a `TakeModel` in the history). `RecordSession` (core) decides the takes: each loop pass is its own take, punch is supported by the model (no UI yet). The track plays only the latest take; the others stay in `takes`.
+- **Alignment:** the capture index of the first recorded frame is worked out from the common clock: `cap_base = (time recording began - time the capture started) * 44100`, where the time is the audio callback's. The clip offset is `cap_base + latency + position`. `project.latency_offset_frames` (default 563 = the measured MIDI-to-capture latency of 12.8 ms) is the only calibration. **It does not yet include the SP's output latency (unmeasured)**, so a first take may sit a little early or late against the drums; the plan is a nudge control once the real offset is known from a test on the SP.
+  Residual error is the audio callback's wake-up jitter (a few ms at most expected; not measured).
+- Clock drift was measured at ~1.2 ppm (see above), so no correction is applied.
+- Stopping (SELECT, START, or the quit chord) closes the file, keeps capturing until the delayed audio has arrived, clamps every take to what reached the disk, reports dropped chunks ("N chunks dropped"), saves the project at once, and loads the take for playback.
+- Playback uses `MonoClip` (mono floats in memory, ~160 kB per second of audio; recordings over 600 MB on disk are refused). 10 minutes is about 106 MB per take in memory. Streaming playback from disk is future work.
+- The recorder is a trait; 11 recording tests use a fake that serves a ramp so exact sample alignment, count-in handoff mid-chunk, loop takes, clamping, persistence and the REC lamp are all checked.
+- Not done: input level meter, latency nudge/calibration screen, choosing between takes, punch UI, import of orphaned recordings after a crash during a take (the audio file is valid but the project does not know it), multiple projects (the folder is `projects/song` next to the program, `HILL_PROJECTS` overrides).
+**Not run on the SP yet.** Run it with the FM-1 plugged in: arm a track, press SELECT, play, press SELECT again.

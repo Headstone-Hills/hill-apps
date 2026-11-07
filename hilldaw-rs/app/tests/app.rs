@@ -288,7 +288,7 @@ fn fn_select_opens_help_and_a_closes_it() {
 fn select_alone_says_recording_is_not_wired() {
     let mut a = app();
     press(&mut a, Btn::Select);
-    assert!(a.toast_text().contains("Recording"));
+    assert!(a.toast_text().contains("FM-1 recorder"), "{}", a.toast_text());
     assert!(!a.is_playing());
 }
 

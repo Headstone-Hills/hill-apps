@@ -19,8 +19,15 @@ fn u32le(b: &[u8], i: usize) -> u32 {
     u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]])
 }
 
-/// PCM 8/16/24/32-bit or 32-bit float WAV; mono is duplicated, extra channels are dropped.
-pub fn decode(b: &[u8]) -> Result<Audio, String> {
+struct Parsed<'a> {
+    tag: u16,
+    ch: usize,
+    rate: u32,
+    bps: usize,
+    data: &'a [u8],
+}
+
+fn parse(b: &[u8]) -> Result<Parsed<'_>, String> {
     if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
         return Err("not a RIFF/WAVE file".into());
     }
@@ -49,25 +56,46 @@ pub fn decode(b: &[u8]) -> Result<Audio, String> {
     if !(tag == 1 && (1..=4).contains(&bps) || tag == 3 && bps == 4) {
         return Err(format!("unsupported WAV format tag {tag}, {bits} bits"));
     }
-    let frame = ch * bps;
-    let n = data.len() / frame;
+    Ok(Parsed { tag, ch, rate, bps, data })
+}
+
+fn read_sample(p: &Parsed, byte: usize) -> f32 {
+    let q = &p.data[byte..];
+    match (p.tag, p.bps) {
+        (1, 1) => (q[0] as f32 - 128.0) / 128.0,
+        (1, 2) => i16::from_le_bytes([q[0], q[1]]) as f32 / 32768.0,
+        (1, 3) => ((((q[2] as i8) as i32) << 16) | ((q[1] as i32) << 8) | q[0] as i32) as f32 / 8388608.0,
+        (1, _) => i32::from_le_bytes([q[0], q[1], q[2], q[3]]) as f32 / 2147483648.0,
+        _ => f32::from_le_bytes([q[0], q[1], q[2], q[3]]),
+    }
+}
+
+/// PCM 8/16/24/32-bit or 32-bit float WAV; mono is duplicated, extra channels are dropped.
+pub fn decode(b: &[u8]) -> Result<Audio, String> {
+    let p = parse(b)?;
+    let frame = p.ch * p.bps;
+    let n = p.data.len() / frame;
     let mut out = Vec::with_capacity(n * 2);
     for f in 0..n {
-        let rd = |c: usize| -> f32 {
-            let p = &data[f * frame + c * bps..];
-            match (tag, bps) {
-                (1, 1) => (p[0] as f32 - 128.0) / 128.0,
-                (1, 2) => i16::from_le_bytes([p[0], p[1]]) as f32 / 32768.0,
-                (1, 3) => ((((p[2] as i8) as i32) << 16) | ((p[1] as i32) << 8) | p[0] as i32) as f32 / 8388608.0,
-                (1, _) => i32::from_le_bytes([p[0], p[1], p[2], p[3]]) as f32 / 2147483648.0,
-                _ => f32::from_le_bytes([p[0], p[1], p[2], p[3]]),
-            }
-        };
-        let l = rd(0);
+        let l = read_sample(&p, f * frame);
         out.push(l);
-        out.push(if ch >= 2 { rd(1) } else { l });
+        out.push(if p.ch >= 2 { read_sample(&p, f * frame + p.bps) } else { l });
     }
-    Ok(Audio { rate, data: out })
+    Ok(Audio { rate: p.rate, data: out })
+}
+
+/// Same formats, one channel out (several channels are averaged). Recordings are mono, so playing them through
+/// this costs half the memory of [`decode`]; the decoded length is exactly what the header's data chunk holds.
+pub fn decode_mono(b: &[u8]) -> Result<(u32, Vec<f32>), String> {
+    let p = parse(b)?;
+    let frame = p.ch * p.bps;
+    let n = p.data.len() / frame;
+    let mut out = Vec::with_capacity(n);
+    for f in 0..n {
+        let sum: f32 = (0..p.ch).map(|c| read_sample(&p, f * frame + c * p.bps)).sum();
+        out.push(sum / p.ch as f32);
+    }
+    Ok((p.rate, out))
 }
 
 /// Linear-interpolation resample (cheap; fine for import and auditioning).
@@ -125,6 +153,16 @@ mod tests {
 
     fn ramp(frames: usize, rate: u32) -> Audio {
         Audio { rate, data: (0..frames).flat_map(|i| [i as f32 / frames as f32, -(i as f32) / frames as f32]).collect() }
+    }
+
+    #[test]
+    fn decode_mono_reads_a_mono_24_bit_recording_exactly_and_averages_stereo() {
+        let a = Audio { rate: 44100, data: (0..200).map(|i| if i % 2 == 0 { 0.5 } else { -0.25 }).collect() };
+        let bytes = encode(&a, 24);
+        let (rate, mono) = decode_mono(&bytes).unwrap();
+        assert_eq!((rate, mono.len()), (44100, 100));
+        assert!((mono[7] - 0.125).abs() < 1e-5, "(0.5 + -0.25) / 2");
+        assert!(decode_mono(b"nope").is_err());
     }
 
     #[test]

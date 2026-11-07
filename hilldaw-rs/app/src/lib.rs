@@ -9,6 +9,7 @@
 //! thread into a [`status::StatusHandle`] and only copied here.
 
 pub mod fm1link;
+pub mod recorder;
 pub mod status;
 mod view;
 
@@ -20,8 +21,11 @@ use hilldaw_core::drift::{DriftEstimator, Fit};
 use hilldaw_core::drums::DrumPattern;
 use fm1link::{Fm1Msg, Fm1Out};
 use hilldaw_core::fm1::fx_map;
-use hilldaw_core::mixer::{Click, Mixer, Track};
-use hilldaw_core::project::{DrumSectionModel, Project, MAX_DRUM_SECTIONS, MAX_SECTION_CYCLES, MAX_TRACKS};
+use hilldaw_core::mixer::{Click, MonoClip, Mixer, Source, Track};
+use hilldaw_core::session::{Phase, RecordConfig, RecordSession};
+use recorder::Recorder;
+use std::collections::HashMap;
+use hilldaw_core::project::{ClipModel, DrumSectionModel, Project, TakeModel, MAX_DRUM_SECTIONS, MAX_SECTION_CYCLES, MAX_TRACKS};
 use hilldaw_core::transport::Transport;
 use hilldaw_drums::{find_preset, DrumLibrary};
 use status::{Status, StatusHandle};
@@ -48,7 +52,8 @@ pub enum View {
 pub(crate) const HELP: &[(&str, &str)] = &[
     ("Everywhere", ""),
     ("START", "play / stop"),
-    ("SELECT", "record (not wired yet)"),
+    ("SELECT", "record on the armed track / stop"),
+    ("FN + L1", "count-in on / off"),
     ("L1 / R1", "previous / next screen"),
     ("FN + Left/Right", "tempo -1 / +1  (Up/Down: +-5)"),
     ("FN + A", "tap tempo"),
@@ -82,6 +87,30 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("X", "delete the section"),
 ];
 
+/// A recording in progress (count-in or recording).
+pub(crate) struct ActiveRec {
+    session: RecordSession,
+    track: usize,
+    /// the capture file, relative to the project folder
+    file: String,
+    /// the clock time (seconds) at which the capture stream started
+    t_capture: f64,
+    /// capture index that corresponds to the start of recording (known once the count-in is over)
+    cap_base: Option<u64>,
+    /// the count-in click, running on its own clock because the transport does not move during the count-in
+    click: Click,
+    click_pos: u64,
+    /// transport frames recorded so far (for the display)
+    pub(crate) elapsed: u64,
+    latency: u64,
+}
+
+impl ActiveRec {
+    pub(crate) fn counting_in(&self) -> bool {
+        self.session.phase() == Phase::CountIn
+    }
+}
+
 pub struct HillDaw {
     lib: DrumLibrary,
     status_src: StatusHandle,
@@ -108,6 +137,13 @@ pub struct HillDaw {
     pub(crate) click_on: bool,
     pub(crate) arr_sel: usize,
     fm1_out: Option<Box<dyn Fm1Out>>,
+    recorder: Option<Box<dyn Recorder>>,
+    pub(crate) rec: Option<ActiveRec>,
+    /// recordings already loaded for playback, by file
+    audio_cache: HashMap<String, Arc<Vec<f32>>>,
+    /// the clock the audio callback runs on (seconds); tests set it by hand
+    test_clock: Option<f64>,
+    last_audio_s: f64,
     /// 0 = voice, 1.. = the effects in the map's order
     pub(crate) fm1_tab: usize,
     pub(crate) fm1_row: usize,
@@ -191,6 +227,11 @@ impl HillDaw {
             click_on: false,
             arr_sel: 0,
             fm1_out: None,
+            recorder: None,
+            rec: None,
+            audio_cache: HashMap::new(),
+            test_clock: None,
+            last_audio_s: 0.0,
             fm1_tab: 0,
             fm1_row: 0,
             fm1_was_up: false,
@@ -226,8 +267,17 @@ impl HillDaw {
         self
     }
 
+    /// Connect recording: the FM-1 capture and the place recordings are stored and read back from.
+    pub fn with_recorder(mut self, r: Box<dyn Recorder>) -> Self {
+        self.recorder = Some(r);
+        for i in 0..MAX_TRACKS {
+            self.rebuild_track(i);
+        }
+        self
+    }
+
     fn fresh_project() -> Project {
-        let mut p = Project { name: "SONG".into(), bpm: 100.0, ..Project::default() };
+        let mut p = Project { name: "SONG".into(), bpm: 100.0, latency_offset_frames: 563, ..Project::default() };
         // a starting groove so START makes sound straight away
         if let Some(x) = presets::builtin().patterns.iter().find(|x| x.style == "Rock").or(presets::builtin().patterns.first()) {
             p.drums.sections.push(DrumSectionModel { name: x.name.clone(), preset: x.id.clone(), cycles: 4 });
@@ -332,12 +382,141 @@ impl HillDaw {
     }
 
     fn toggle_play(&mut self) {
+        if self.rec.is_some() {
+            self.stop_recording(); // START stops everything
+        }
         self.transport.playing = !self.transport.playing;
         if !self.transport.playing {
             // a stopped transport renders nothing; let the meters fall
             self.hold = [0.0; STRIPS];
             self.hold_master = 0.0;
         }
+    }
+
+    // ---- recording ----------------------------------------------------------------------------------------------------
+
+    /// The clock the audio callback runs on, in seconds (tests set it by hand).
+    fn now_s(&self) -> f64 {
+        self.test_clock.unwrap_or_else(|| self.clock0.map_or(0.0, |c| c.elapsed().as_secs_f64()))
+    }
+
+    /// SELECT: stop the recording in progress, or start one on the armed track.
+    fn toggle_record(&mut self) {
+        if self.rec.is_some() {
+            self.stop_recording();
+            return;
+        }
+        if self.recorder.is_none() {
+            self.toast.say("Recording needs the FM-1 recorder");
+            return;
+        }
+        let armed: Vec<usize> = (0..MAX_TRACKS).filter(|i| self.armed[*i]).collect();
+        let track = match armed.as_slice() {
+            [t] => *t,
+            [] => {
+                self.toast.say("Arm a track first (A on the mixer)");
+                return;
+            }
+            _ => {
+                self.toast.say("Arm only one track");
+                return;
+            }
+        };
+        let file = match self.recorder.as_mut().map(|r| r.start()) {
+            Some(Ok(f)) => f,
+            Some(Err(e)) => {
+                self.toast.say(&hill_core::fb::clip(&e, 28));
+                return;
+            }
+            None => return,
+        };
+        // the capture stream is running from about now: every capture index is counted from this moment
+        let t_capture = self.now_s();
+        let bpb = self.project.beats_per_bar.max(1);
+        let count_in = if self.project.count_in { (bpb as f64 * self.transport.frames_per_beat()).round() as u64 } else { 0 };
+        let latency = self.project.latency_offset_frames.max(0) as u64;
+        let mut session = RecordSession::new(RecordConfig { count_in_frames: count_in, latency_frames: latency, ..Default::default() });
+        session.begin();
+        self.rec = Some(ActiveRec {
+            session,
+            track,
+            file,
+            t_capture,
+            cap_base: None,
+            click: Click { bpm: self.project.bpm, beats_per_bar: bpb as u64, amp: 0.6, enabled: true },
+            click_pos: 0,
+            elapsed: 0,
+            latency,
+        });
+        self.transport.playing = true;
+        self.toast.say(if count_in > 0 { "Count-in" } else { "Recording" });
+    }
+
+    /// Finish the capture and turn what was recorded into clips on the track. The capture file itself is never changed: each take is a
+    /// trimmed view of it (offset + length) placed on the timeline, so a bad take can be dropped or re-trimmed later.
+    fn stop_recording(&mut self) {
+        let Some(mut rec) = self.rec.take() else { return };
+        let (takes, need) = rec.session.stop();
+        let base = rec.cap_base.unwrap_or(0);
+        let Some(recorder) = self.recorder.as_mut() else { return };
+        let info = match recorder.finish(base + need) {
+            Ok(i) => i,
+            Err(e) => {
+                self.toast.say(&hill_core::fb::clip(&e, 28));
+                return;
+            }
+        };
+        let track = rec.track;
+        let mut added = 0;
+        for t in &takes {
+            let offset = base + t.cap_start;
+            // a take can never be longer than what actually reached the disk
+            let frames = t.frames.min(info.frames.saturating_sub(offset));
+            if frames == 0 {
+                continue;
+            }
+            let tm = &mut self.project.tracks[track];
+            tm.takes.push(TakeModel { file: rec.file.clone(), frames, latency_comp_frames: rec.latency as i64 });
+            tm.active_take = Some(tm.takes.len() - 1);
+            // only the active (latest) take plays; the others stay in the take history
+            tm.clips = vec![ClipModel { file: rec.file.clone(), start: t.timeline_start, offset, len: Some(frames), ..Default::default() }];
+            added += 1;
+        }
+        self.audio_cache.remove(&rec.file);
+        self.rebuild_track(track);
+        self.save(); // the take is in the project before anything can go wrong
+        if added == 0 {
+            self.toast.say("Nothing recorded");
+        } else if info.overruns > 0 {
+            self.toast.say(&format!("Recorded, {} chunks dropped", info.overruns));
+        } else {
+            self.toast.say(&format!("Recorded {added} take{}", if added == 1 { "" } else { "s" }));
+        }
+    }
+
+    /// Rebuild a track's playback from the clips in the project (loading each recording once).
+    fn rebuild_track(&mut self, i: usize) {
+        let clips = self.project.tracks[i].clips.clone();
+        let mut sources: Vec<Box<dyn Source>> = Vec::new();
+        for c in &clips {
+            let data = match self.audio_cache.get(&c.file) {
+                Some(d) => d.clone(),
+                None => match self.recorder.as_mut().and_then(|r| r.load(&c.file)) {
+                    Some(v) => {
+                        let a = Arc::new(v);
+                        self.audio_cache.insert(c.file.clone(), a.clone());
+                        a
+                    }
+                    None => {
+                        self.toast.say("A recording is missing");
+                        continue;
+                    }
+                },
+            };
+            let len = c.len.unwrap_or_else(|| (data.len() as u64).saturating_sub(c.offset));
+            sources.push(Box::new(MonoClip { data, start: c.start, offset: c.offset, len, gain: c.gain, fade_in: c.fade_in, fade_out: c.fade_out, reverse: c.reverse }));
+        }
+        self.mixer.tracks[i].sources = sources;
     }
 
     // ---- controls -----------------------------------------------------------------------------------------------------
@@ -656,6 +835,7 @@ impl HillDaw {
 impl HillDaw {
     /// The audio callback with the time given by the caller (tests drive it with a pretend clock).
     pub fn audio_at(&mut self, out: &mut [f32], t_s: f64) {
+        self.last_audio_s = t_s;
         self.out_frames += (out.len() / 2) as u64;
         if t_s - self.out_last_push >= 0.2 {
             self.out_last_push = t_s;
@@ -663,18 +843,59 @@ impl HillDaw {
         }
         out.fill(0.0);
         let frames = out.len() / 2;
+        let rate = self.rate;
+        // count-in: only the click sounds and the transport does not move; recording begins where it ends, possibly mid-chunk
+        let mut lead = 0usize;
+        if let Some(rec) = self.rec.as_mut() {
+            if rec.session.phase() == Phase::CountIn {
+                let used = rec.session.tick_count_in(frames as u64) as usize;
+                rec.click.render_add(rec.click_pos, &mut out[..used * 2], rate);
+                rec.click_pos += used as u64;
+                lead = used;
+            }
+            if rec.session.phase() == Phase::Recording && rec.cap_base.is_none() {
+                // the capture index that lines up with the first recorded frame, from the two streams' common clock
+                let t = t_s + lead as f64 / rate as f64;
+                rec.cap_base = Some(((t - rec.t_capture).max(0.0) * recorder::RATE as f64).round() as u64);
+            }
+        }
         let mut spans = std::mem::take(&mut self.spans);
-        self.transport.advance(frames, &mut spans);
-        let mut at = 0usize;
+        self.transport.advance(frames - lead, &mut spans);
+        let mut at = lead;
         for &(start, len) in &spans {
             self.mixer.render(start, &mut out[at * 2..(at + len) * 2]);
             for i in 0..STRIPS {
                 self.hold[i] = self.hold[i].max(self.mixer.tracks[i].peak);
             }
             self.hold_master = self.hold_master.max(self.mixer.master_peak);
+            if let Some(rec) = self.rec.as_mut() {
+                rec.session.on_span(start, len as u64);
+                rec.elapsed += len as u64;
+            }
             at += len;
         }
         self.spans = spans;
+    }
+
+    /// Test hook: the clock recordings are aligned on, instead of the real one.
+    pub fn set_test_clock(&mut self, t: Option<f64>) {
+        self.test_clock = t;
+    }
+
+    pub(crate) fn has_recorder(&self) -> bool {
+        self.recorder.is_some()
+    }
+
+    pub fn transport_loop(&self) -> Option<(u64, u64)> {
+        self.transport.loop_region
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.rec.is_some()
+    }
+
+    pub fn is_counting_in(&self) -> bool {
+        self.rec.as_ref().is_some_and(|r| r.counting_in())
     }
 
     /// Measured output clock after at least 30 s of running (`None` before).
@@ -689,6 +910,9 @@ impl HillDaw {
             self.quit_ms += dt_ms;
         } else {
             self.quit_ms = 0;
+        }
+        if self.quit_ms >= QUIT_HOLD_MS && self.rec.is_some() {
+            self.stop_recording(); // quitting mid-take keeps the take
         }
         if !self.help.open {
             if let Some(b) = self.rep.tick(dt_ms) {
@@ -751,7 +975,7 @@ impl App for HillDaw {
                 }
                 Btn::Select => {
                     if !self.combo {
-                        self.toast.say("Recording isn't wired yet");
+                        self.toggle_record();
                     }
                     if !self.held.is(Btn::Start) {
                         self.combo = false;
@@ -783,6 +1007,10 @@ impl App for HillDaw {
             return;
         }
         match b {
+            Btn::L1 if self.held.is(Btn::Fn) => {
+                self.project.count_in = !self.project.count_in;
+                self.toast.say(if self.project.count_in { "Count-in on" } else { "Count-in off" });
+            }
             Btn::L1 | Btn::R1 => {
                 const ORDER: [View; 3] = [View::Mixer, View::Arrange, View::Fm1];
                 let i = ORDER.iter().position(|v| *v == self.view).unwrap_or(0);

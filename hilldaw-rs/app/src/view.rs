@@ -94,8 +94,17 @@ impl HillDaw {
         fb.text(22, 98, &format!("{:02}:{:04.1}", (secs / 60.0) as u32, secs % 60.0), 2, DIM);
         let (state, sc) = if t.playing { ("PLAY", ACCENT) } else { ("STOP", DIM) };
         fb.text(246, 50, state, 3, sc);
-        // the REC lamp is honest: there is no recorder yet
-        fb.text(246, 84, "REC n/a", 2, DIM);
+        // the REC lamp is honest: it shows n/a when no recorder is connected
+        let (rec_text, rec_col) = match &self.rec {
+            Some(r) if r.counting_in() => ("COUNT-IN".to_string(), AMBER),
+            Some(r) => {
+                let secs = r.elapsed / t.rate.max(1) as u64;
+                (format!("REC {:02}:{:02}", secs / 60, secs % 60), WARN)
+            }
+            None if self.has_recorder() => ("REC".to_string(), DIM),
+            None => ("REC n/a".to_string(), DIM),
+        };
+        fb.text(246, 84, &rec_text, 2, rec_col);
         fb.text(400, 48, &format!("{:.0}", self.project.bpm), 4, TEXT);
         fb.text(400 + 3 * 32 + 6, 62, "BPM", 2, DIM);
         let sw = 50 + (self.project.drums.swing * 100.0).round() as i32;
