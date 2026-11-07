@@ -30,10 +30,16 @@ import wavcheck                            # noqa: E402
 
 
 def find_helper():
+    """Locate isocap and return a path that is actually executable. The SD card is exfat and
+    may be mounted noexec / without exec bits, so the helper is copied to a temp dir first."""
+    import shutil
     for p in (os.environ.get("POCKETDAW_ISOCAP"), os.path.join(HERE, "isocap"),
               os.path.join(HERE, "dist", "isocap"), os.path.join(HERE, "dist", "isocap-host")):
-        if p and os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
+        if p and os.path.isfile(p):
+            dst = os.path.join(tempfile.gettempdir(), "pocketdaw-isocap")
+            shutil.copyfile(p, dst)
+            os.chmod(dst, 0o755)
+            return dst
     return None
 
 

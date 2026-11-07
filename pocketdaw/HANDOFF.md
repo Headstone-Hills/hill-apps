@@ -33,7 +33,25 @@ Legend: DONE+TESTED (unit tests / host) · WRITTEN (compiles, **not run on hardw
 
 Test command: `cd pocketdaw && python3 -m unittest discover -s tests` (stdlib only; 9 tests).
 
+## Device facts learned from the user's SSH session (iPhone/Termius, root on the SP)
+- Tools on the SP: `curl`, `wget`, `tar`, **no `git`**. Python **3.11.8**. **numpy not installed** (vendor into `pylibs/` like the Hill apps).
+- User's workflow is iPhone-only: `deploy.sh` (needs a computer with the repo) is not usable for them. Use the tarball + `phase0.sh` route below.
+- SD card `/mnt/sdcard` is exfat: exec bit / `noexec` is uncertain, so `fm1tool.py` copies `isocap` to the temp dir before running it.
+- Power: PMIC regulator `regulator.20 axp2202-drivevbus` (state `disabled` when read, FM-1 attachment state unknown) is the USB VBUS supply;
+  `/sys/devices/platform/soc/usbc0` exists. `dmesg | grep -i -E "vbus|otg"` printed nothing. Open question: can the SP stop powering the FM-1,
+  and does the FM-1 still enumerate without VBUS? `phase0.sh` records the regulator state with the FM-1 plugged in. Do not write to the regulator
+  until we know what else it feeds.
+
 ## IMMEDIATE NEXT STEP — Phase 0, needs the real device
+
+**On the SP itself (no computer):** upload `pocketdaw-phase0.tar.gz` to `/root/` with the Termius SFTP browser, then:
+```
+mkdir -p /mnt/sdcard/ports/pocketdaw && tar -xzf /root/pocketdaw-phase0.tar.gz -C /mnt/sdcard/ports/pocketdaw
+cd /mnt/sdcard/ports/pocketdaw && bash phase0.sh
+```
+(Rebuild the tarball with `bash make_tarball.sh`.)
+
+**From a computer** (alternative):
 Cannot be done from a cloud session (no SP access). From a machine that can reach the SP:
 ```
 cd pocketdaw
