@@ -138,5 +138,5 @@ The project is now called **HillDAW** (was PocketDAW): dirs `hilldaw-rs/`, `hill
 
 Build for the SP (needs `cargo-zigbuild`, Homebrew `zig`, the arm64 libSDL2 cached by the owner's `rust/build.sh`):
 `RUSTFLAGS="-L <rust/.cache/arm64sdl/lib> -C link-arg=-Wl,--allow-shlib-undefined" cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28 -p hilldaw`
-Install on the SP: binary to `/mnt/sdcard/ports/hilldaw/hilldaw`, `ports/HillDAW.sh` to `/mnt/sdcard/ROMS/ports/Hill Apps/HillDAW.sh` (a launcher generated from `rust/ports/launcher.sh.in`).
-**Not run on the SP yet.** Verified on the Mac: tests, screenshots of every screen, and the SDL window launches and stays up.
+Install on the SP: binary to `/mnt/sdcard/ports/hilldaw/hilldaw`, `ports/HillDAW.sh` to `/mnt/sdcard/ROMS/Hill Apps/HillDAW.sh` (a launcher generated from `rust/ports/launcher.sh.in`).
+**Run on the SP (2026-11-08): the owner ran the checklist (START plays the drums, Arrange edits, mixer level/mute/tempo, quit and restart keeps the project) and reports it all works.** Their own wording was \"tests work\"; audio latency, underruns and mutex contention under load were not measured. Also verified on the Mac: tests, screenshots of every screen, SDL window launches.
