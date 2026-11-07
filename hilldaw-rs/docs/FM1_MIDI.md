@@ -112,6 +112,44 @@ Two of two numbers that moved match the "old position + 70" order (filter switch
 
 **Pass 2 (lower one CC from all-on): not usable.** The all-high state is almost silent (-65 dB, noise limits 19 dB / 32% / 136 dB): filter on, type clamped to high-pass, cutoff at maximum blocks the whole note. CC 70, 71, 72 and 73 each restored sound (+40 dB), which only shows they are the four filter controls in some order. Everything else in that column compares against a nearly silent baseline and should be ignored. The probe is being changed to test one effect at a time (see `core/src/probe.rs`).
 
+### Probe run 2 (grouped, 81 trials, 2026-11-08, same unit)
+
+Each effect group tested alone: switch on, other CCs of the group at 64, everything else off; then each CC set to 0 and to 127.
+
+**Result: the vendor's old CC 0-23 table, shifted by 70, matches the unit.** Machine-readable copy: `core/data/fm1_fx_cc.json` (loaded by `core/src/fm1.rs`).
+
+| CC | Effect / parameter | Range (old table) | What the run showed | Evidence |
+|---|---|---|---|---|
+| 70 | Filter Switch | 0 off, >=1 on | off: louder 10 dB, duller 59%, tail +35 dB | behaviour |
+| 71 | Filter Type | 0-2 LPF/BPF/HPF | 0 vs 64: louder 11 dB, duller 49%; **64 and 127 identical** (both clamp to 2) | behaviour |
+| 72 | Filter Cutoff | 0-107 | 0: louder, duller; 127: **silenced** (high-pass at the top) | behaviour |
+| 73 | Filter Q | 0-10 | 0: quieter 15 dB; **64 and 127 identical** | group |
+| 74 | Reverb Switch | | off: tail -41 dB | behaviour |
+| 75 | Reverb Type | 0-2 | 0: brighter 26%; 127 same as 64 | group |
+| 76 | Reverb Decay | 0-100 | no change (the reverb group's noise limits were wide: 35 dB / 24% / 17 dB) | **order only** |
+| 77 | Reverb Mix | 0-100 | 0: tail -20 dB | behaviour |
+| 78 | Delay Switch | | off: tail -31 dB | behaviour |
+| 79 | Delay Decay | 0-100 | no change | **order only** |
+| 80 | Delay Rate | 0-100 | 0: duller 52%; 127: brighter 66% | group |
+| 81 | Delay Mix | 0-100 | 0: tail -31 dB | behaviour |
+| 82 | Distortion Switch | | off: duller 63%, tail -23 dB; raised alone: quieter 20 dB (switch on, level 0) | behaviour |
+| 83 | Distortion Gain | 0-100 | 0: duller 28%, tail -28 dB | behaviour |
+| 84 | Distortion Tone | 0-100 | 0: duller 66% | behaviour |
+| 85 | Distortion Level | 0-100 | 0: quieter 17 dB; 127: louder 3.4 dB | behaviour |
+| 86 | Chorus Switch | | off: duller 14% (a subtle effect on a held note) | behaviour |
+| 87-89 | Chorus Freq / Depth / Mix | 0-100 | each moves brightness or tail a little (8-15%, 6-14 dB) | group |
+| 90 | Phaser Switch | | off: quieter 5 dB, brighter 7%, tail -8 dB | behaviour |
+| 91, 92 | Phaser Freq / Depth | 0-100 | **no change** (a slow sweep on a steady note may not move level, brightness or tail) | **order only** |
+| 93 | Phaser Mix | 0-100 | 0 gave exactly the numbers of the switch off (-5.0 dB, +7%, -8 dB) | behaviour |
+
+Evidence key: *behaviour* = measured behaviour matches the name; *group* = it changed that effect's sound, the name comes from the guide's order; *order* = nothing measurable, position from the guide's order only.
+
+**Conclusions**
+1. The six switches are CC 70, 74, 78, 82, 86, 90 (all measured). Groups are 70-73 Filter, 74-77 Reverb, 78-81 Delay, 82-85 Distortion, 86-89 Chorus, 90-93 Phaser.
+2. **Values are the parameter's own units, not 0-127 scaled across the range:** filter type 64 and 127 sound identical, as do Q 64 and 127. Send values inside each range (`FxParam::clamp`).
+3. Not measurable with this probe: reverb decay (76), delay decay (79), phaser freq and depth (91, 92). They are in the map as `order`; a UI should not claim more. To check them, listen (a long reverb tail, a slow delay) or extend the probe with a longer note and a time-resolved measure.
+4. The probe cannot tell *which* of several parameters in a group an unlabeled change belongs to (for example chorus freq vs depth); only the group role is measured for those.
+
 ## What this means for HillDAW
 
 1. **FM-1 CC control must go to the FX channel (default 2), not channel 1.** `fm1tool cc N V` defaults to channel 1; use `--ch 2`. Notes and program change go to the note channel.

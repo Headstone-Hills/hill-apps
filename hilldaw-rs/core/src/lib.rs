@@ -10,6 +10,7 @@
 
 pub mod drums;
 pub mod edit;
+pub mod fm1;
 pub mod effects;
 pub mod mixer;
 pub mod notes;

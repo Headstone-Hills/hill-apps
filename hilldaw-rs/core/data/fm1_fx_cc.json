@@ -1,0 +1,198 @@
+{
+ "_about": "FM-1 FX controls on firmware V16: CC 70-93 on the FX channel (default 2). Names and ranges are the vendor's older CC 0-23 table shifted by 70; the shift was checked on a real unit with `hdtool probe-cc` (docs/FM1_MIDI.md). evidence: behaviour = measured behaviour matches the name; group = it changed that effect's sound but the parameter name comes from the guide's order; order = no change measured, position from the guide's order only.",
+ "fx_channel_default": 2,
+ "params": [
+  {
+   "cc": 70,
+   "effect": "Filter",
+   "param": "Switch",
+   "min": 0,
+   "max": 1,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 71,
+   "effect": "Filter",
+   "param": "Type",
+   "min": 0,
+   "max": 2,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 72,
+   "effect": "Filter",
+   "param": "Cutoff",
+   "min": 0,
+   "max": 107,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 73,
+   "effect": "Filter",
+   "param": "Q",
+   "min": 0,
+   "max": 10,
+   "evidence": "group"
+  },
+  {
+   "cc": 74,
+   "effect": "Reverb",
+   "param": "Switch",
+   "min": 0,
+   "max": 1,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 75,
+   "effect": "Reverb",
+   "param": "Type",
+   "min": 0,
+   "max": 2,
+   "evidence": "group"
+  },
+  {
+   "cc": 76,
+   "effect": "Reverb",
+   "param": "Decay",
+   "min": 0,
+   "max": 100,
+   "evidence": "order"
+  },
+  {
+   "cc": 77,
+   "effect": "Reverb",
+   "param": "Mix",
+   "min": 0,
+   "max": 100,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 78,
+   "effect": "Delay",
+   "param": "Switch",
+   "min": 0,
+   "max": 1,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 79,
+   "effect": "Delay",
+   "param": "Decay",
+   "min": 0,
+   "max": 100,
+   "evidence": "order"
+  },
+  {
+   "cc": 80,
+   "effect": "Delay",
+   "param": "Rate",
+   "min": 0,
+   "max": 100,
+   "evidence": "group"
+  },
+  {
+   "cc": 81,
+   "effect": "Delay",
+   "param": "Mix",
+   "min": 0,
+   "max": 100,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 82,
+   "effect": "Distortion",
+   "param": "Switch",
+   "min": 0,
+   "max": 1,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 83,
+   "effect": "Distortion",
+   "param": "Gain",
+   "min": 0,
+   "max": 100,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 84,
+   "effect": "Distortion",
+   "param": "Tone",
+   "min": 0,
+   "max": 100,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 85,
+   "effect": "Distortion",
+   "param": "Level",
+   "min": 0,
+   "max": 100,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 86,
+   "effect": "Chorus",
+   "param": "Switch",
+   "min": 0,
+   "max": 1,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 87,
+   "effect": "Chorus",
+   "param": "Freq",
+   "min": 0,
+   "max": 100,
+   "evidence": "group"
+  },
+  {
+   "cc": 88,
+   "effect": "Chorus",
+   "param": "Depth",
+   "min": 0,
+   "max": 100,
+   "evidence": "group"
+  },
+  {
+   "cc": 89,
+   "effect": "Chorus",
+   "param": "Mix",
+   "min": 0,
+   "max": 100,
+   "evidence": "group"
+  },
+  {
+   "cc": 90,
+   "effect": "Phaser",
+   "param": "Switch",
+   "min": 0,
+   "max": 1,
+   "evidence": "behaviour"
+  },
+  {
+   "cc": 91,
+   "effect": "Phaser",
+   "param": "Freq",
+   "min": 0,
+   "max": 100,
+   "evidence": "order"
+  },
+  {
+   "cc": 92,
+   "effect": "Phaser",
+   "param": "Depth",
+   "min": 0,
+   "max": 100,
+   "evidence": "order"
+  },
+  {
+   "cc": 93,
+   "effect": "Phaser",
+   "param": "Mix",
+   "min": 0,
+   "max": 100,
+   "evidence": "behaviour"
+  }
+ ]
+}

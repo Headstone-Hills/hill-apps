@@ -153,3 +153,7 @@ Verified on the owner's V16 unit (2026-11-08): FX CCs are 70-93 on channel 2; th
 Logic is pure and tested in `core/src/probe.rs` (FFT centroid, level, tail; thresholds learned from repeated baselines; a fake FM-1 with a hidden mapping is used to test the two passes).
 Pass 1 raises each CC alone from all-off. Pass 2 (revised after run 1, see docs/FM1_MIDI.md) tests one effect group at a time (default 4 CCs per group, `--group N`): the group's first CC (its switch) on, its parameters at 64, everything else off, then each CC to 0 and to 127. A group that is silent at rest falls back to parameters at 0, then is skipped. ~80 trials, ~4 min. Leaves the probed CCs at 0. The first version lowered each CC from an all-127 state, which is nearly silent (filter high-passes everything), so its pass 2 was unusable.
 A trial that captures no sound when the baseline had sound counts as a change ("silenced"). Run 1 on the real unit worked mechanically (pass 1 usable); run 2 (grouped) not yet done.
+
+Probe run 2 (grouped) on the real unit confirmed the FX map: **CC 70-93 = the old CC 0-23 table + 70**, six groups of four, switch first; values are native units (clamp, not scale).
+Data: `core/data/fm1_fx_cc.json`, loader `core/src/fm1.rs` (`fx_map()`, `FxParam::clamp/from_fraction`). Four entries (76, 79, 91, 92) are `order`-only: no change was measurable.
+Next for the FX/patch browser: Program Change 0-127 on the note channel (documented, not yet tested on the unit), then a UI over `fx_map()`.
