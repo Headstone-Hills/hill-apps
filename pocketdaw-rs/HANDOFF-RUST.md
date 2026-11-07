@@ -46,12 +46,12 @@ All logic below is in `core/` with host tests only unless noted. Nothing here ha
 | 8 | Filter, delay, reverb | `effects.rs`: LP/HP biquad, delay, shared send reverb. Done. |
 | 9 | Sample pitch-shift across keyboard, root note | `sampler.rs`: stateless, seekable, Hermite interpolation, loop, polyphony cap. Done. |
 | 10 | Arrangement view, sections | **TODO** (needs the drum track / HillBeat presets). |
-| 11 | MIDI note recording from FM-1 keys | Note list model = `sampler::Note`; USB MIDI-in works (proven). **Capture-to-note-list TODO.** |
+| 11 | MIDI note recording from FM-1 keys | `notes.rs`: `NoteRecorder` (pairs ons/offs incl. overlaps, retrigger, stuck notes; tested on the shape of the real FM-1 stream), `quantize`, `midi_schedule` + `events_in_range` (send notes back to the FM-1 / retrigger), `to_sampler_notes`; `NoteModel` stored per track in the project; `Edit::SetNotes` for undo. USB MIDI-in is proven. **App wiring TODO** (timestamp each event with the transport position minus MIDI-in latency). FM-1 notes always arrive at velocity 90 in the one test; unknown if its keys are velocity-sensitive. |
 | 12 | FM-1 program/CC control + patch browser | MIDI out proven. **Browser TODO; needs the M-VAVE CC guide (never supplied).** |
 | 13 | BPM detection, fit to tempo | `tempo.rs`: ranked candidates incl. octave alternatives (audio cannot always settle half/double time; the UI must offer x2 and /2), `varispeed`, `fit_to_bars_ratio`. Done. |
 | 14 | WAV import with sample-rate conversion | `wav.rs` decode + linear resample. Done. |
-| 15 | Project browser | **TODO.** |
-| 16 | Battery and storage indicators | `device/` crate (`battery`, `storage`, `record_seconds_left`, formatting; 4 tests on a fake sysfs). `pdtool status` prints them; **not yet run on the SP** (battery attribute names unconfirmed). No `current_now` exists on the SP. |
+| 15 | Project browser | `device/src/projects.rs`: `scan` (newest first, duration from clips/notes via WAV headers, size, track count, bad projects listed with the error), `duplicate` (never overwrites), `delete` (only real project folders directly under the root; refuses `..`, separators, symlinks). 5 tests. Not run on the SP (no projects exist yet). |
+| 16 | Battery and storage indicators | `device/` crate (`battery`, `storage`, `record_seconds_left`, formatting; 4 tests on a fake sysfs). `pdtool status` **PROVEN ON THE SP**: `battery: 36% Discharging 3561 mV`, `/mnt/sdcard: 100.4 GB free of 233.1 GB = 226h of mono 24-bit recording`. No `current_now` exists on the SP. |
 
 Bench (`examples/bench.rs`): 8 clip tracks each with LP+HP+delay+reverb send + click/tone + 12-voice sampler = 0.58 ms avg / 2.8 ms worst per 23.2 ms chunk
 on the dev box (~2.5% of budget). **SP measured (2026-11-08): 3.76 ms avg / 6.03 ms worst per 23.2 ms chunk = ~16% of one core, 6x headroom** for the heaviest load tested (~6.5x slower than the dev box). The Python mixer needed ~2 ms for just a click + tone.

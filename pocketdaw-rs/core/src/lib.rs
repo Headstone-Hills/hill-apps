@@ -11,6 +11,7 @@
 pub mod edit;
 pub mod effects;
 pub mod mixer;
+pub mod notes;
 pub mod project;
 pub mod record;
 pub mod sampler;

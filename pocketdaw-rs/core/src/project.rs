@@ -39,6 +39,16 @@ pub struct TakeModel {
     pub latency_comp_frames: i64,
 }
 
+/// A recorded or edited note on a track (frames on the project timeline). Played by a sampler track
+/// or sent back to the FM-1 as MIDI.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoteModel {
+    pub start: u64,
+    pub len: u64,
+    pub note: u8,
+    pub vel: u8,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct TrackModel {
@@ -52,11 +62,12 @@ pub struct TrackModel {
     /// every recording is kept; `active_take` says which one the track currently plays
     pub takes: Vec<TakeModel>,
     pub active_take: Option<usize>,
+    pub notes: Vec<NoteModel>,
 }
 
 impl Default for TrackModel {
     fn default() -> Self {
-        TrackModel { name: String::new(), color: 0x4aa3ff, gain: 1.0, pan: 0.0, mute: false, solo: false, clips: vec![], takes: vec![], active_take: None }
+        TrackModel { name: String::new(), color: 0x4aa3ff, gain: 1.0, pan: 0.0, mute: false, solo: false, clips: vec![], takes: vec![], active_take: None, notes: vec![] }
     }
 }
 
@@ -124,6 +135,7 @@ impl Project {
             if t.active_take.is_some_and(|a| a >= t.takes.len()) {
                 t.active_take = None;
             }
+            t.notes.retain(|n| n.len > 0 && n.note < 128 && (1..=127).contains(&n.vel));
             for f in t.clips.iter().map(|c| &c.file).chain(t.takes.iter().map(|k| &k.file)) {
                 if !is_safe_relative(f) {
                     return Err(format!("unsafe path in project: {f:?}"));
@@ -181,6 +193,21 @@ mod tests {
         p.tracks.push(TrackModel::default());
         let q = Project::from_json(&p.to_json()).unwrap();
         assert_eq!((q.bpm, q.tracks[1].pan, q.tracks[1].active_take, q.loop_region, q.tracks.len()), (300.0, 1.0, None, None, 8));
+    }
+
+    #[test]
+    fn notes_roundtrip_old_files_still_load_and_bad_notes_are_dropped() {
+        let mut p = Project::default();
+        p.tracks[3].notes = vec![
+            NoteModel { start: 0, len: 22050, note: 60, vel: 90 },
+            NoteModel { start: 100, len: 0, note: 62, vel: 90 },   // zero length
+            NoteModel { start: 100, len: 10, note: 200, vel: 90 }, // not a MIDI note
+            NoteModel { start: 100, len: 10, note: 64, vel: 0 },   // velocity 0 is a note-off
+        ];
+        let q = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!(q.tracks[3].notes, vec![NoteModel { start: 0, len: 22050, note: 60, vel: 90 }]);
+        let old = Project::from_json(r#"{"version":1,"tracks":[{"name":"A"}]}"#).unwrap();
+        assert!(old.tracks[0].notes.is_empty());
     }
 
     #[test]

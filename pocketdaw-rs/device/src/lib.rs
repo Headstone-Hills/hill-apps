@@ -1,6 +1,8 @@
 //! Battery and storage indicators (brief feature 16). Reads sysfs and statvfs; no kernel driver needed.
 //! On the RG35XXSP the battery is `axp2202-battery` under `/sys/class/power_supply` (there is no `current_now`).
 
+pub mod projects;
+
 use std::ffi::CString;
 use std::fs;
 use std::path::Path;

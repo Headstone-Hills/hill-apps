@@ -6,6 +6,7 @@ description = "Reads the handheld's battery and storage state (sysfs, statvfs) f
 
 [dependencies]
 libc = "0.2"
+pocketdaw-core = { path = "../core" }
 
 [dev-dependencies]
 tempfile = "3"

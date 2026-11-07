@@ -2,7 +2,7 @@
 //! history is just two stacks of edits. Nothing here touches audio files: trim, fades, gain, reverse,
 //! split and move are all metadata (the recorded WAV is never rewritten).
 
-use crate::project::{ClipModel, Project, TakeModel, TrackModel};
+use crate::project::{ClipModel, NoteModel, Project, TakeModel, TrackModel};
 use crate::transport::Transport;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +17,8 @@ pub enum Edit {
     PopTake { track: usize },
     SetActiveTake { track: usize, take: Option<usize> },
     SetTempo { bpm: f64 },
+    /// Replace a track's whole note list (note recording, quantise, delete are all this).
+    SetNotes { track: usize, notes: Vec<NoteModel> },
     /// Several edits as one undo step. Applied atomically: if one fails the earlier ones are rolled back.
     Batch(Vec<Edit>),
 }
@@ -85,6 +87,11 @@ impl Edit {
                 }
                 let old = std::mem::replace(&mut t.active_take, take);
                 Ok(Edit::SetActiveTake { track, take: old })
+            }
+            Edit::SetNotes { track, notes } => {
+                let t = track_mut(p, track)?;
+                let old = std::mem::replace(&mut t.notes, notes);
+                Ok(Edit::SetNotes { track, notes: old })
             }
             Edit::SetTempo { bpm } => {
                 let old = p.bpm;
@@ -258,6 +265,7 @@ mod tests {
             Edit::SetTrack { track: 2, name: "BASS".into(), gain: 0.8, pan: -0.5, mute: true, solo: false },
             Edit::AddTake { track: 0, take: TakeModel { file: "audio/t.wav".into(), frames: 10, latency_comp_frames: 3 } },
             Edit::SetTempo { bpm: 90.0 },
+            Edit::SetNotes { track: 4, notes: vec![NoteModel { start: 10, len: 20, note: 60, vel: 90 }] },
             Edit::DeleteClip { track: 0, index: 0 },
         ];
         let mut states = vec![p.clone()];
