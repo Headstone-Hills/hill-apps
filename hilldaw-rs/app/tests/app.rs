@@ -419,14 +419,14 @@ fn fm1_app() -> (HillDaw, Rec) {
 }
 
 #[test]
-fn l1_and_r1_cycle_through_the_five_screens() {
+fn l1_and_r1_cycle_through_the_six_screens() {
     let mut a = app();
     let mut seen = vec![a.view()];
-    for _ in 0..5 {
+    for _ in 0..6 {
         press(&mut a, Btn::R1);
         seen.push(a.view());
     }
-    assert_eq!(seen, vec![View::Mixer, View::Track, View::Arrange, View::Fm1, View::Export, View::Mixer]);
+    assert_eq!(seen, vec![View::Mixer, View::Track, View::Waves, View::Arrange, View::Fm1, View::Export, View::Mixer]);
     press(&mut a, Btn::L1);
     assert_eq!(a.view(), View::Export);
 }

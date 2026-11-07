@@ -50,6 +50,8 @@ pub(crate) const FORMATS: [(ExportFormat, u16, &str); 5] = [
     (ExportFormat::Flac, 16, "FLAC 16-bit"),
     (ExportFormat::Mp3, 16, "MP3"),
 ];
+/// How many bars the Waves screen shows across, from zoomed in to zoomed out.
+pub(crate) const ZOOM_BARS: [u64; 6] = [2, 4, 8, 16, 32, 64];
 pub const MIN_BPM: f64 = 40.0;
 pub const MAX_BPM: f64 = 240.0;
 
@@ -63,6 +65,8 @@ pub enum View {
     Export,
     /// the strip picked on the Mixer: takes, effects, input level, loop and punch
     Track,
+    /// every track's audio drawn over time (waveforms), the drum arrangement, the playhead and the loop/punch regions
+    Waves,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -109,6 +113,12 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("A", "effect on / off;  voice: send it"),
     ("X", "play a test note (C4)"),
     ("B", "all notes off"),
+    ("Waves screen (every track over time)", ""),
+    ("Left / Right", "scroll a bar  (Y: a whole page)"),
+    ("L2 / R2", "zoom out / in"),
+    ("Up / Down", "pick a track row"),
+    ("A", "move the playhead to the left edge"),
+    ("X", "follow the playhead on / off"),
     ("Track screen (the strip picked on the Mixer)", ""),
     ("L2 / R2", "tab: takes, effects, input, loop"),
     ("Up / Down", "pick a row or a take"),
@@ -205,6 +215,12 @@ pub struct HillDaw {
     fm1_out: Option<Box<dyn Fm1Out>>,
     recorder: Option<Box<dyn Recorder>>,
     export_job: Option<Job>,
+    /// the Waves screen: the timeline frame at its left edge (always a whole bar), the zoom (index into `ZOOM_BARS`), and whether it follows the playhead
+    pub(crate) waves_start: u64,
+    pub(crate) waves_zoom: usize,
+    pub(crate) waves_follow: bool,
+    /// waveform overviews of the loaded recordings, by file
+    pub(crate) peak_cache: HashMap<String, Arc<Vec<(f32, f32)>>>,
     undo: Vec<UndoEntry>,
     redo: Vec<UndoEntry>,
     pending: Option<Pending>,
@@ -344,6 +360,10 @@ impl HillDaw {
             fm1_out: None,
             recorder: None,
             export_job: None,
+            waves_start: 0,
+            waves_zoom: 2,
+            waves_follow: true,
+            peak_cache: HashMap::new(),
             undo: Vec::new(),
             redo: Vec::new(),
             pending: None,
@@ -744,6 +764,7 @@ impl HillDaw {
             added += 1;
         }
         self.audio_cache.remove(&rec.file);
+        self.peak_cache.remove(&rec.file);
         self.rebuild_track(track);
         self.save(); // the take is in the project before anything can go wrong
         if added == 0 {
@@ -761,6 +782,7 @@ impl HillDaw {
             return Some(d.clone());
         }
         let a = Arc::new(self.recorder.as_mut()?.load(file)?);
+        self.peak_cache.insert(file.to_string(), Arc::new(hilldaw_core::waveform::peaks(&a)));
         self.audio_cache.insert(file.to_string(), a.clone());
         Some(a)
     }
@@ -793,6 +815,7 @@ impl HillDaw {
             View::Fm1 => self.fm1_act(b),
             View::Export => self.export_act(b),
             View::Track => self.track_act(b),
+            View::Waves => self.waves_act(b),
         }
     }
 
@@ -967,6 +990,61 @@ impl HillDaw {
     fn apply_all_fx(&mut self) {
         for i in 0..STRIPS {
             self.apply_fx(i);
+        }
+    }
+
+    // ---- the Waves screen ----------------------------------------------------------------------------------------------
+
+    pub(crate) fn waves_span(&self) -> u64 {
+        ZOOM_BARS[self.waves_zoom.min(ZOOM_BARS.len() - 1)] * self.bar_frames()
+    }
+
+    /// The last frame anything starts or sounds on the timeline: the longest clip, or one pass of the drum arrangement.
+    pub(crate) fn song_end(&self) -> u64 {
+        let clips = self.project.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.start + c.len.unwrap_or(0)).max().unwrap_or(0);
+        let d = &self.project.drums;
+        let drums = if d.enabled && !d.sections.is_empty() { self.drum_total } else { 0 };
+        clips.max(drums)
+    }
+
+    fn waves_act(&mut self, b: Btn) {
+        let bar = self.bar_frames();
+        let span = self.waves_span();
+        match b {
+            Btn::Up => self.sel = self.sel.saturating_sub(1),
+            Btn::Down => self.sel = (self.sel + 1).min(STRIPS - 1),
+            Btn::Left | Btn::Right => {
+                let step = if self.held.is(Btn::Y) { span } else { bar };
+                let last = (self.song_end() / bar) * bar; // no scrolling off into nothing
+                self.waves_start = if b == Btn::Left { self.waves_start.saturating_sub(step) } else { (self.waves_start + step).min(last.max(self.waves_start)) };
+                self.waves_start = (self.waves_start / bar) * bar;
+                if self.waves_follow {
+                    self.waves_follow = false;
+                    self.toast.say("Follow off (X)");
+                }
+            }
+            Btn::L2 => self.waves_zoom = (self.waves_zoom + 1).min(ZOOM_BARS.len() - 1),
+            Btn::R2 => self.waves_zoom = self.waves_zoom.saturating_sub(1),
+            Btn::A => {
+                self.transport.pos = self.waves_start;
+                self.toast.say("Playhead moved here");
+            }
+            Btn::X => {
+                self.waves_follow = !self.waves_follow;
+                self.toast.say(if self.waves_follow { "Follow on" } else { "Follow off" });
+            }
+            Btn::B => self.view = View::Mixer,
+            _ => {}
+        }
+    }
+
+    /// While following, turn the page when the playhead leaves the window (the window starts on a multiple of its own width).
+    fn waves_follow_tick(&mut self) {
+        if self.waves_follow && self.transport.playing {
+            let span = self.waves_span();
+            if span > 0 && (self.transport.pos < self.waves_start || self.transport.pos >= self.waves_start + span) {
+                self.waves_start = (self.transport.pos / span) * span;
+            }
         }
     }
 
@@ -1561,6 +1639,19 @@ impl HillDaw {
     pub fn selected_input(&self) -> Option<&str> {
         self.settings.input_device.as_deref()
     }
+    /// The last frame anything starts or sounds (the longest clip, or one pass of the drum arrangement).
+    pub fn song_end_for_test(&self) -> u64 {
+        self.song_end()
+    }
+    pub fn waves_zoom(&self) -> usize {
+        self.waves_zoom
+    }
+    pub fn waves_start(&self) -> u64 {
+        self.waves_start
+    }
+    pub fn waves_follow(&self) -> bool {
+        self.waves_follow
+    }
     pub fn track_tab(&self) -> TrackTab {
         self.track_tab
     }
@@ -1700,6 +1791,7 @@ impl HillDaw {
             }
         }
         self.export_poll();
+        self.waves_follow_tick();
         if !self.help.open {
             if let Some(b) = self.rep.tick(dt_ms) {
                 self.act(b);
@@ -1799,7 +1891,7 @@ impl HillDaw {
                 self.toast.say(if self.project.count_in { "Count-in on" } else { "Count-in off" });
             }
             Btn::L1 | Btn::R1 => {
-                const ORDER: [View; 5] = [View::Mixer, View::Track, View::Arrange, View::Fm1, View::Export];
+                const ORDER: [View; 6] = [View::Mixer, View::Track, View::Waves, View::Arrange, View::Fm1, View::Export];
                 let i = ORDER.iter().position(|v| *v == self.view).unwrap_or(0);
                 self.view = ORDER[(i + if b == Btn::R1 { 1 } else { ORDER.len() - 1 }) % ORDER.len()];
                 self.rep.clear();

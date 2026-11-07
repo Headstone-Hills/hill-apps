@@ -1,7 +1,7 @@
 //! Drawing. Everything here is `&self`: the UI thread holds the same mutex as the audio callback while it draws.
 
 use super::*;
-use hill_core::fb::{rgb, ACCENT, BG, CELL_BEAT, CELL_OFF, DIM, DRUM, MELODIC, PANEL, TEXT, WARN, WHITE};
+use hill_core::fb::{rgb, scale, ACCENT, BG, CELL_BEAT, CELL_OFF, DIM, DRUM, MELODIC, PANEL, TEXT, WARN, WHITE};
 use hill_core::ui::quit_bar;
 use hilldaw_device::{fmt_bytes, fmt_duration, record_seconds_left};
 
@@ -75,6 +75,7 @@ impl HillDaw {
             View::Fm1 => self.draw_fm1(fb),
             View::Export => self.draw_export(fb),
             View::Track => self.draw_track(fb),
+            View::Waves => self.draw_waves(fb),
         }
         self.draw_footer(fb);
         self.draw_clock(fb);
@@ -325,7 +326,7 @@ impl HillDaw {
             ("Dither", onoff(e.dither).to_string(), "16-bit only", e.bits == 16),
             ("Normalize", onoff(e.normalize).to_string(), "mixdown peak to -1 dBFS", true),
             ("Stems", onoff(e.stems).to_string(), "one file per track + the drums", true),
-            ("Drums", onoff(e.drums).to_string(), "off: mixdown and stems without the drum track", true),
+            ("Drums", onoff(e.drums).to_string(), "off: leave the drums out of the export", true),
             ("Export now", "press A".to_string(), "", true),
         ];
         for (r, (label, value, note, live)) in rows.iter().enumerate() {
@@ -381,7 +382,7 @@ impl HillDaw {
     fn draw_footer(&self, fb: &mut Fb) {
         fb.rect(0, 446, 640, 34, PANEL);
         // five screens: names at scale 2 on the top line, the hint for this screen and the global keys below
-        let tabs = [("MIXER", View::Mixer, 12), ("TRACK", View::Track, 108), ("ARRANGE", View::Arrange, 204), ("FM-1", View::Fm1, 326), ("EXPORT", View::Export, 402)];
+        let tabs = [("MIX", View::Mixer, 12), ("TRACK", View::Track, 68), ("WAVES", View::Waves, 156), ("ARRANGE", View::Arrange, 244), ("FM-1", View::Fm1, 364), ("EXPORT", View::Export, 436)];
         for (name, v, x) in tabs {
             fb.text(x, 449, name, 2, if self.view == v { ACCENT } else { DIM });
         }
@@ -391,10 +392,140 @@ impl HillDaw {
             View::Arrange => "U/D section  L/R pattern  L2/R2 style  A add  X del",
             View::Fm1 => "L2/R2 section  U/D row  L/R value  A on/off  X note",
             View::Export => "U/D option  L/R change  A export  B cancel",
+            View::Waves => "L/R scroll  L2/R2 zoom  U/D row  A seek  X follow",
         };
         fb.text(12, 469, hint, 1, DIM);
-        fb.text_right(630, 453, "FN+SELECT help", 1, DIM);
+        fb.text_right(630, 453, "FN+SEL help", 1, DIM);
         fb.text_right(630, 469, "START play  SELECT rec", 1, DIM);
+    }
+
+    /// Waves screen: every track's recorded audio over time, the drum arrangement, the playhead and the loop / punch regions.
+    /// Tracks with audio have a bright label and their waveform; empty ones are dim and say so.
+    fn draw_waves(&self, fb: &mut Fb) {
+        use hilldaw_core::waveform::{envelope, frame_to_x};
+        const X0: i32 = 62;
+        const W: i32 = 560;
+        const ROW_Y: i32 = 158;
+        const ROW_H: i32 = 26;
+        fb.rect(10, 138, 620, 262, PANEL);
+        let bar = self.bar_frames();
+        let span = self.waves_span();
+        let start = self.waves_start;
+        let bars_shown = ZOOM_BARS[self.waves_zoom.min(ZOOM_BARS.len() - 1)];
+        let px_per_bar = W as f64 / bars_shown as f64;
+        let x_of = |frame: u64| X0 + ((frame.saturating_sub(start)).min(span) as f64 / span as f64 * W as f64) as i32;
+
+        // ruler: bar numbers (spaced so they never touch), a grid line every bar (every 4 when zoomed far out)
+        fb.rect(X0, 140, W, 14, rgb(20, 24, 32));
+        let every = [1u64, 2, 4, 8, 16].iter().copied().find(|e| px_per_bar * *e as f64 >= 34.0).unwrap_or(16);
+        let grid_every = if px_per_bar >= 7.0 { 1 } else { 4 };
+        let first_bar = start / bar;
+        for k in 0..bars_shown {
+            let b = first_bar + k;
+            let x = X0 + (k as f64 * px_per_bar) as i32;
+            if b.is_multiple_of(grid_every) {
+                fb.rect(x, ROW_Y, 1, 9 * ROW_H, if b.is_multiple_of(4) { CELL_BEAT } else { CELL_OFF });
+            }
+            if b.is_multiple_of(every) {
+                fb.rect(x, 146, 1, 8, DIM);
+                fb.text(x + 5, 142, &format!("{}", b + 1), 1, DIM);
+            }
+        }
+        // loop region (green) and punch region (red) as bands on the ruler
+        for (region, col, y) in [(self.project.loop_region, scale(ACCENT, 0.7), 140), (self.project.punch, scale(WARN, 0.8), 151)] {
+            if let Some((a, e)) = region {
+                if e > start && a < start + span {
+                    let (xa, xb) = (x_of(a.max(start)), x_of(e.min(start + span)));
+                    fb.rect(xa, y, (xb - xa).max(2), 3, col);
+                }
+            }
+        }
+        fb.text(12, 142, &format!("{bars_shown} bars"), 1, DIM);
+        if self.waves_follow {
+            fb.text(12, 150, "follow", 1, scale(ACCENT, 0.7));
+        }
+
+        // one row per strip: 8 tracks and the drums
+        let any_solo = (0..STRIPS).any(|i| self.strip_solo(i));
+        for i in 0..STRIPS {
+            let y = ROW_Y + i as i32 * ROW_H;
+            let cy = y + ROW_H / 2;
+            let (name, col) = if i == DRUMS { ("DRUM".to_string(), DRUM) } else { (format!("T{}", i + 1), MELODIC) };
+            let used = if i == DRUMS { !self.project.drums.sections.is_empty() } else { !self.project.tracks[i].clips.is_empty() };
+            let silent = self.strip_muted(i) || (any_solo && !self.strip_solo(i));
+            let tone = if silent { rgb(96, 102, 116) } else { col };
+            fb.rect(X0, y + 1, W, ROW_H - 2, rgb(22, 27, 36));
+            fb.text(14, cy - 4, &name, 1, if used { tone } else { DIM });
+            if self.strip_muted(i) {
+                fb.text(36, cy - 4, "M", 1, AMBER);
+            }
+            if self.strip_solo(i) {
+                fb.text(46, cy - 4, "S", 1, ACCENT);
+            }
+            if !used {
+                fb.rect(X0, cy, W, 1, CELL_OFF);
+                fb.text(X0 + 6, cy - 4, if i == DRUMS { "no drum sections" } else { "empty" }, 1, CELL_BEAT);
+            } else if i == DRUMS {
+                // the arrangement as blocks, then the same blocks lighter for as long as the drums repeat
+                let d = &self.project.drums;
+                let period = self.drum_total.max(1);
+                let n = d.sections.len();
+                let mut k = 0u64;
+                while k * period < start + span && (k == 0 || d.loop_arrangement) {
+                    for (si, sec) in d.sections.iter().enumerate() {
+                        let s0 = k * period + self.drum_starts.get(si).copied().unwrap_or(0);
+                        let len = self.drum_starts.get(si + 1).copied().unwrap_or(self.drum_starts.first().copied().unwrap_or(0) + period) - self.drum_starts.get(si).copied().unwrap_or(0);
+                        let s1 = s0 + len;
+                        if s1 <= start || s0 >= start + span {
+                            continue;
+                        }
+                        let (xa, xb) = (x_of(s0.max(start)), x_of(s1.min(start + span)));
+                        let shade = if k == 0 { 0.55 } else { 0.3 };
+                        fb.rect(xa, y + 3, (xb - xa - 1).max(1), ROW_H - 6, if silent { rgb(52, 56, 66) } else { scale(DRUM, shade) });
+                        if xb - xa > 44 && k == 0 {
+                            fb.text(xa + 3, cy - 4, &hill_core::fb::clip(&sec.name, ((xb - xa) / 8 - 1).max(1) as usize), 1, if n > 0 { WHITE } else { TEXT });
+                        }
+                    }
+                    k += 1;
+                }
+            } else {
+                let g = self.strip_gain(i);
+                let fpp = span as f64 / W as f64;
+                for (ci, c) in self.project.tracks[i].clips.iter().enumerate() {
+                    let len = c.len.unwrap_or(0);
+                    let (cs, ce) = (c.start, c.start + len);
+                    if ce <= start || cs >= start + span {
+                        continue;
+                    }
+                    let (xa, xb) = (x_of(cs.max(start)), x_of(ce.min(start + span)));
+                    if xb <= xa {
+                        continue;
+                    }
+                    let active = self.project.tracks[i].active_take.is_some() || ci == 0;
+                    fb.rect(xa, y + 2, xb - xa, ROW_H - 4, if silent { rgb(44, 48, 58) } else { scale(col, if active { 0.28 } else { 0.15 }) });
+                    if let Some(pk) = self.peak_cache.get(&c.file) {
+                        let from = c.offset as i64 + (start.max(cs) as i64 - cs as i64);
+                        let env = envelope(pk, from, fpp, (xb - xa) as usize);
+                        let half = (ROW_H / 2 - 3) as f32;
+                        for (k, e) in env.iter().enumerate() {
+                            if let Some((lo, hi)) = e {
+                                let (lo, hi) = ((lo * g).clamp(-1.0, 1.0), (hi * g).clamp(-1.0, 1.0));
+                                let (top, bot) = (cy - (hi * half).round() as i32, cy - (lo * half).round() as i32);
+                                fb.rect(xa + k as i32, top, 1, (bot - top).max(1), tone);
+                            }
+                        }
+                    }
+                }
+            }
+            if i == self.sel {
+                fb.frame(10, y, 616, ROW_H, 1, ACCENT);
+            }
+        }
+
+        // the playhead (white; red while recording)
+        if let Some(x) = frame_to_x(self.transport.pos, start, span, X0, W) {
+            fb.rect(x, 140, 2, 9 * ROW_H + 18, if self.rec.is_some() { WARN } else { WHITE });
+        }
     }
 
     /// Track screen: takes, effects, input and loop/punch for the strip picked on the Mixer.

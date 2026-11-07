@@ -4,12 +4,18 @@
 use hill_core::fb::Fb;
 use hill_core::{App, Btn, MemHost};
 use hilldaw_app::status::{InputSummary, Status};
-use hilldaw_app::HillDaw;
+use hilldaw_app::{HillDaw, View};
 use std::sync::{Arc, Mutex};
 
 fn press(a: &mut HillDaw, b: Btn) {
     a.event(b, true);
     a.event(b, false);
+}
+
+fn to_view(a: &mut HillDaw, v: hilldaw_app::View) {
+    while a.view() != v {
+        press(a, Btn::R1);
+    }
 }
 
 fn save(a: &HillDaw, path: &str) {
@@ -45,7 +51,7 @@ fn main() {
         a.tick(23);
     }
     save(&a, &format!("{dir}/mixer.ppm"));
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Arrange);
     press(&mut a, Btn::A);
     press(&mut a, Btn::Right);
     press(&mut a, Btn::Right);
@@ -57,7 +63,7 @@ fn main() {
     save(&a, &format!("{dir}/help.ppm"));
     // FM-1 screens: close help, go to the third screen, choose a voice, then show the filter and the distortion
     press(&mut a, Btn::A);
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Fm1);
     for _ in 0..4 {
         press(&mut a, Btn::Right);
     }
@@ -76,7 +82,7 @@ fn main() {
     }
     save(&a, &format!("{dir}/fm1_delay.ppm"));
     // export screen: a few options changed, no export run
-    press(&mut a, Btn::R1);
+    to_view(&mut a, View::Export);
     press(&mut a, Btn::Down);
     press(&mut a, Btn::Right);
     press(&mut a, Btn::Down);
@@ -84,9 +90,7 @@ fn main() {
     press(&mut a, Btn::Right);
     save(&a, &format!("{dir}/export.ppm"));
     // Track screen: effects (some values set), input, loop and punch
-    for _ in 0..3 {
-        press(&mut a, Btn::R1); // Export -> Mixer -> Track
-    }
+    to_view(&mut a, View::Track);
     press(&mut a, Btn::R2);
     for _ in 0..12 {
         press(&mut a, Btn::Left);
