@@ -117,7 +117,7 @@ Decisions / limits to know about:
 4. Once a `DrumTrack` is boxed into a mixer `Track` its vol/mute can't be changed live. The app needs a shared handle (atomics or `Arc<Mutex>`) when it is wired in.
 5. `libc::Ioctl` is Linux-only; `usb/src/sys.rs` now uses `req as _` so the crate also compiles on macOS. Type-checked for `aarch64-unknown-linux-gnu`; the musl release binaries were not rebuilt.
 
-Known nit: `hdtool drums list | head` panics with Broken pipe (println! on a closed pipe, panic=abort). Harmless; fix with the next change.
+Fixed 2026-11-08: `hdtool drums list | head` used to die with Broken pipe (println! panics on a closed pipe; panic=abort made it an abort on the SP). Now writes through a locked stdout and stops quietly; regression test `tools-bin/tests/closed_pipe.rs`. It only showed on the SP because `head` quit while the slower CPU was still writing.
 Build without the pip zig: `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=<shim running 'zig cc -target aarch64-linux-musl'> cargo build --release --target aarch64-unknown-linux-musl -p hilldaw-tools` (Homebrew zig works).
 
 ## HillDAW app skeleton (2026-11-08, local session)
@@ -140,3 +140,9 @@ Build for the SP (needs `cargo-zigbuild`, Homebrew `zig`, the arm64 libSDL2 cach
 `RUSTFLAGS="-L <rust/.cache/arm64sdl/lib> -C link-arg=-Wl,--allow-shlib-undefined" cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.28 -p hilldaw`
 Install on the SP: binary to `/mnt/sdcard/ports/hilldaw/hilldaw`, `ports/HillDAW.sh` to `/mnt/sdcard/ROMS/Hill Apps/HillDAW.sh` (a launcher generated from `rust/ports/launcher.sh.in`).
 **Run on the SP (2026-11-08): the owner ran the checklist (START plays the drums, Arrange edits, mixer level/mute/tempo, quit and restart keeps the project) and reports it all works.** Their own wording was \"tests work\"; audio latency, underruns and mutex contention under load were not measured. Also verified on the Mac: tests, screenshots of every screen, SDL window launches.
+
+## FM-1 MIDI guide (2026-11-08)
+
+Found: the vendor's "MIDI CONTROL EN" guide and the release note are on <https://www.m-vave.com/download.html>. Transcribed with sources in `docs/FM1_MIDI.md`.
+Key points: CC for FX goes on the **FX channel (default 2), not the note channel**; Program Change 0-127 selects voices; **the guide lists FX CCs 0-23 but the V16 release note says they became CC 70-93**, with no per-number table, so which applies is unverified.
+Nothing is coded from it yet. Next: run the verification commands at the end of that file on the SP.
