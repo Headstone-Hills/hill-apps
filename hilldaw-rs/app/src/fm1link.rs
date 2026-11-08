@@ -1,14 +1,15 @@
 //! The app's connection to the FM-1's MIDI port.
 //!
 //! The UI thread must never wait on USB, so it only drops [`Fm1Msg`]s into a channel; a small thread owns the port, encodes
-//! them and writes them. The port is opened **lazily**, on the first message after startup or after a write failed, so the app
-//! does not hold the USB interface (usbfs allows one claim per interface) while nobody is using the FM-1 screen. While the unit
-//! is unplugged messages are dropped: the app resends what the user has chosen when the unit shows up again.
+//! them and writes them. The port is opened as soon as the unit is there (retrying every second) and its MIDI output is **read
+//! and discarded** all the time: custom firmware (FM-1+VA) sends its notes and clock to the host and stalls, holding notes for
+//! about three seconds and then freezing, when nobody reads them. While the unit is unplugged messages are dropped: the app
+//! resends what the user has chosen when the unit shows up again.
 
 use hilldaw_usb::dev::{find_fm1, MidiDevice, SYSFS_USB};
 use hilldaw_usb::{midi, FM1_PID, FM1_VID};
 use std::path::Path;
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -61,6 +62,10 @@ pub fn encode(m: Fm1Msg, ch: &Channels) -> Vec<u8> {
 /// An open MIDI port.
 pub trait MidiSink {
     fn write(&mut self, packets: &[u8]) -> Result<(), String>;
+    /// Read and discard what the unit sent us (waits a few ms at most); an error means the port is gone.
+    fn drain(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 struct UsbSink(MidiDevice);
@@ -68,6 +73,9 @@ struct UsbSink(MidiDevice);
 impl MidiSink for UsbSink {
     fn write(&mut self, packets: &[u8]) -> Result<(), String> {
         self.0.write(packets).map_err(|e| e.to_string())
+    }
+    fn drain(&mut self) -> Result<(), String> {
+        self.0.read(10).map(|_| ()).map_err(|e| e.to_string())
     }
 }
 
@@ -90,22 +98,37 @@ impl Fm1Link {
         Self::spawn_with(open_usb, ch)
     }
 
-    /// Link over any port opener (tests give a fake). `open` is called only when a message needs sending and no port is open.
+    /// Link over any port opener (tests give a fake). `open` is called whenever no port is open (at most once a second).
     pub fn spawn_with(mut open: impl FnMut() -> Option<Box<dyn MidiSink>> + Send + 'static, ch: Channels) -> Fm1Link {
         let (tx, rx) = channel::<Fm1Msg>();
         let handle = std::thread::spawn(move || {
             let mut sink: Option<Box<dyn MidiSink>> = None;
             let mut last_try: Option<Instant> = None;
-            for m in rx {
+            loop {
                 if sink.is_none() && last_try.is_none_or(|t| t.elapsed() >= RETRY) {
                     last_try = Some(Instant::now());
                     sink = open();
                 }
-                if let Some(s) = sink.as_mut() {
-                    if s.write(&encode(m, &ch)).is_err() {
-                        sink = None; // unplugged or reset: reopen on the next message
-                        last_try = None;
+                // with a port open, an idle turn is spent reading (a few ms), so a message waits that long at most
+                let wait = if sink.is_some() { Duration::ZERO } else { Duration::from_millis(100) };
+                match rx.recv_timeout(wait) {
+                    Ok(m) => {
+                        if let Some(s) = sink.as_mut() {
+                            if s.write(&encode(m, &ch)).is_err() {
+                                sink = None; // unplugged or reset: reopen
+                                last_try = None;
+                            }
+                        }
                     }
+                    Err(RecvTimeoutError::Timeout) => {
+                        if let Some(s) = sink.as_mut() {
+                            if s.drain().is_err() {
+                                sink = None;
+                                last_try = None;
+                            }
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
                 }
             }
         });
@@ -168,12 +191,11 @@ mod tests {
     }
 
     #[test]
-    fn the_port_is_opened_only_when_something_is_sent_and_every_message_goes_out_in_order() {
+    fn the_port_is_opened_at_once_and_every_message_goes_out_in_order() {
         let log: Log = Arc::default();
         let opens = Arc::new(Mutex::new(0));
         let (l2, o2) = (log.clone(), opens.clone());
         let mut link = Fm1Link::spawn_with(move || { *o2.lock().unwrap() += 1; Some(Box::new(Fake { log: l2.clone(), fail_after: None })) }, Channels::default());
-        assert_eq!(*opens.lock().unwrap(), 0, "nothing claimed before the first message");
         link.send(Fm1Msg::Program(7));
         link.send(Fm1Msg::FxCc { cc: 70, value: 1 });
         link.send(Fm1Msg::NoteOn(60));
@@ -182,6 +204,27 @@ mod tests {
         let l = log.lock().unwrap();
         assert_eq!(l.len(), 3);
         assert_eq!((l[0][1], l[1][1], l[2][1]), (0xC0, 0xB1, 0x90));
+    }
+
+    #[test]
+    fn the_units_output_is_drained_while_idle() {
+        struct D(Arc<Mutex<usize>>);
+        impl MidiSink for D {
+            fn write(&mut self, _: &[u8]) -> Result<(), String> {
+                Ok(())
+            }
+            fn drain(&mut self) -> Result<(), String> {
+                *self.0.lock().unwrap() += 1;
+                std::thread::sleep(Duration::from_millis(2));
+                Ok(())
+            }
+        }
+        let n = Arc::new(Mutex::new(0));
+        let n2 = n.clone();
+        let link = Fm1Link::spawn_with(move || Some(Box::new(D(n2.clone()))), Channels::default());
+        std::thread::sleep(Duration::from_millis(100));
+        link.finish();
+        assert!(*n.lock().unwrap() > 5, "the port is read continuously, not only when we write");
     }
 
     #[test]
