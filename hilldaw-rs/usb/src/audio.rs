@@ -238,6 +238,16 @@ mod tests {
     }
 
     #[test]
+    fn the_fm1_va_firmware_still_parses() {
+        let va = include_bytes!("../tests/fixtures/fm1_va_descriptors.bin");
+        let streams = parse_audio_streams(va);
+        let (a, r) = choose_format(&streams).expect("capture");
+        assert_eq!((a.channels, a.bits, r), (2, 24, 44_100));
+        let (a, r) = choose_playback_format(&streams).expect("playback");
+        assert_eq!((a.channels, a.bits, r, a.ep), (2, 24, 44_100, 0x02));
+    }
+
+    #[test]
     fn the_fm1_has_a_playback_stream_2_channel_24_bit_44_1_khz_adaptive() {
         let (alt, rate) = choose_playback_format(&parse_audio_streams(FM1)).unwrap();
         assert_eq!((alt.channels, alt.subframe, alt.bits, rate, alt.sync, alt.ep), (2, 3, 24, 44_100, "adaptive", 0x03));
