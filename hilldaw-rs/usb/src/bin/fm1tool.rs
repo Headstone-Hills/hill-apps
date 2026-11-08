@@ -9,7 +9,7 @@
 //!   fm1tool wavcheck FILE.wav
 
 use hilldaw_usb::desc::{parse_audio_streams, pick_capture};
-use hilldaw_usb::dev::{find_devices, DeviceInfo, MidiDevice, SYSFS_USB};
+use hilldaw_usb::dev::{class_request, find_devices, AltHold, DeviceInfo, MidiDevice, SYSFS_USB};
 use hilldaw_usb::iso::IsoCapture;
 use hilldaw_usb::{midi, wav, FM1_PID, FM1_VID};
 use std::path::Path;
@@ -146,6 +146,25 @@ fn main() {
             let cap = pick_capture(&streams, 44100).unwrap_or_else(|| { eprintln!("no capture endpoint in descriptors"); exit(2) });
             println!("capturing from {}: iface {} alt {} ep 0x{:02x} maxpkt {} ({}ch {}-bit {:?} Hz)", d.path(), cap.iface, cap.alt, cap.ep, cap.max_packet, cap.channels, cap.bits, cap.rates);
             let rate = if cap.rates.contains(&44100) { 44100 } else { cap.rates[0] };
+            // probes for firmware that streams nothing: switch the playback stream on as well, and unmute / select the capture path
+            let _play = if rest.iter().any(|a| a == "--play-alt") {
+                let p = streams.iter().find(|s| s.ep & 0x80 == 0);
+                let r = p.map(|p| AltHold::open(&d, p.iface, p.alt));
+                println!("playback stream switched on: {}", match &r { Some(Ok(_)) => "ok".to_string(), Some(Err(e)) => e.to_string(), None => "no playback stream".into() });
+                r.and_then(|r| r.ok())
+            } else {
+                None
+            };
+            if rest.iter().any(|a| a == "--unmute") {
+                // UAC1 feature unit 5 (capture) and 2 (playback): mute off; selector unit 7: position 1. Request, wValue = control << 8 | channel, wIndex = unit << 8 | interface 0
+                for (what, unit, value, byte) in [("capture mute", 5u16, 0x0100u16, 0u8), ("playback mute", 2, 0x0100, 0), ("selector 7", 7, 0x0000, 1)] {
+                    let mut cur = [0xEEu8];
+                    let got = class_request(&d, 0, 0xA1, 0x81, value, unit << 8, &mut cur);
+                    let mut set = [byte];
+                    let r = class_request(&d, 0, 0x21, 0x01, value, unit << 8, &mut set);
+                    println!("{what}: was {:?}, set {byte}: {:?}", got.map(|_| cur[0]).map_err(|e| e.to_string()), r.map_err(|e| e.to_string()));
+                }
+            }
             let mut cp = IsoCapture::open(&d, cap, opt(rest, "--frames", 16usize), opt(rest, "--urbs", 8usize)).unwrap_or_else(|e| { eprintln!("{e}"); exit(2) });
             if let Some(note) = opt_s(rest, "--note").and_then(|v| v.parse::<u8>().ok()) {
                 let dd = d.clone();

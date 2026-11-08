@@ -207,6 +207,52 @@ pub(crate) fn set_sampling_rate(fd: i32, ep: u8, rate: u32) -> Result<(), UsbErr
     Ok(())
 }
 
+/// Diagnostics: a class/standard control request on a claimed interface. Returns the bytes transferred (IN: `data` is filled).
+pub fn class_request(info: &DeviceInfo, iface: u8, request_type: u8, request: u8, value: u16, index: u16, data: &mut [u8]) -> Result<usize, UsbError> {
+    let fd = open_node(info)?;
+    if let Err(e) = claim(fd, iface) {
+        unsafe { libc::close(fd) };
+        return Err(e);
+    }
+    let mut t = sys::CtrlTransfer { request_type, request, value, index, length: data.len() as u16, timeout: 1000, data: data.as_mut_ptr() as *mut std::os::raw::c_void };
+    let n = unsafe { sys::ioctl(fd, sys::CONTROL, &mut t) };
+    let r = if n < 0 { Err(os_error("control request")) } else { Ok(n as usize) };
+    release(fd, iface);
+    unsafe { libc::close(fd) };
+    r
+}
+
+/// Diagnostics: keep a streaming interface switched to `alt` (so the device sees that stream as active) until dropped.
+pub struct AltHold {
+    fd: i32,
+    iface: u8,
+}
+
+impl AltHold {
+    pub fn open(info: &DeviceInfo, iface: u8, alt: u8) -> Result<Self, UsbError> {
+        let fd = open_node(info)?;
+        if let Err(e) = claim(fd, iface) {
+            unsafe { libc::close(fd) };
+            return Err(e);
+        }
+        let mut si = sys::SetInterface { interface: iface as u32, altsetting: alt as u32 };
+        if unsafe { sys::ioctl(fd, sys::SETINTERFACE, &mut si) } < 0 {
+            let e = os_error("set alt setting");
+            release(fd, iface);
+            unsafe { libc::close(fd) };
+            return Err(e);
+        }
+        Ok(AltHold { fd, iface })
+    }
+}
+
+impl Drop for AltHold {
+    fn drop(&mut self) {
+        release(self.fd, self.iface);
+        unsafe { libc::close(self.fd) };
+    }
+}
+
 /// USB Audio Class 2.0: the clock source's current sampling frequency (GET_CUR, CS_SAM_FREQ_CONTROL), or set it (SET_CUR).
 fn uac2_rate(fd: i32, c: crate::desc::Uac2Clock, set: Option<u32>) -> Result<u32, UsbError> {
     let mut data = set.unwrap_or(0).to_le_bytes();
