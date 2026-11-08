@@ -5,7 +5,7 @@
 //! does not hold the USB interface (usbfs allows one claim per interface) while nobody is using the FM-1 screen. While the unit
 //! is unplugged messages are dropped: the app resends what the user has chosen when the unit shows up again.
 
-use hilldaw_usb::dev::{find_devices, MidiDevice, SYSFS_USB};
+use hilldaw_usb::dev::{find_fm1, MidiDevice, SYSFS_USB};
 use hilldaw_usb::{midi, FM1_PID, FM1_VID};
 use std::path::Path;
 use std::sync::mpsc::{channel, Sender};
@@ -72,7 +72,7 @@ impl MidiSink for UsbSink {
 }
 
 fn open_usb() -> Option<Box<dyn MidiSink>> {
-    let info = find_devices(FM1_VID, FM1_PID, Path::new(SYSFS_USB)).into_iter().next()?;
+    let info = find_fm1(FM1_VID, FM1_PID, Path::new(SYSFS_USB)).into_iter().next()?;
     MidiDevice::open(&info).ok().map(|d| Box::new(UsbSink(d)) as Box<dyn MidiSink>)
 }
 

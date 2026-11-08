@@ -3,7 +3,7 @@
 
 use hilldaw_device::{battery, storage, POWER_SUPPLY};
 use hilldaw_usb::audio::{list_inputs, list_outputs};
-use hilldaw_usb::dev::{find_devices, SYSFS_USB};
+use hilldaw_usb::dev::{find_fm1, SYSFS_USB};
 use hilldaw_usb::{FM1_PID, FM1_VID};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -55,7 +55,7 @@ pub fn poll_once(storage_path: &Path) -> Status {
         charging: b.as_ref().is_some_and(|b| b.is_charging()),
         battery_low: b.as_ref().is_some_and(|b| b.is_low(15)),
         free_bytes: storage(storage_path).map(|s| s.free),
-        fm1: !find_devices(FM1_VID, FM1_PID, Path::new(SYSFS_USB)).is_empty(),
+        fm1: !find_fm1(FM1_VID, FM1_PID, Path::new(SYSFS_USB)).is_empty(),
         inputs: list_inputs(Path::new(SYSFS_USB)).into_iter().map(|i| InputSummary { summary: i.summary(), rate: i.rate, id: i.id, name: i.name }).collect(),
         outputs: list_outputs(Path::new(SYSFS_USB)).into_iter().map(|o| InputSummary { summary: o.summary(), rate: o.rate, id: o.id, name: o.name }).collect(),
     }
