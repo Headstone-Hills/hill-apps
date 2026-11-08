@@ -159,7 +159,7 @@ fn to_view(a: &mut HillDaw, v: View) {
 
 fn to_tab(a: &mut HillDaw, t: TrackTab) {
     to_view(a, View::Track);
-    for _ in 0..4 {
+    for _ in 0..6 {
         if a.track_tab() == t {
             return;
         }
@@ -841,4 +841,163 @@ fn the_input_cannot_be_changed_while_recording() {
     assert!(a.toast_text().contains("Stop recording first"), "{}", a.toast_text());
     assert_eq!(a.selected_input(), None);
     press(&mut a, Btn::Select);
+}
+
+// ---- clip editing (the Clip tab) ----
+
+/// A track with one 2 s take (file 1: ramp, slope 1e-5, offset 563, placed at frame 0) and the Clip tab open.
+fn clip_app() -> (HillDaw, Fake, Clock) {
+    let (mut a, f, mut clock) = recording_app();
+    clock.record(&mut a, 2.0);
+    to_tab(&mut a, TrackTab::Clip);
+    (a, f, clock)
+}
+
+fn play_from_start(a: &mut HillDaw, clock: &mut Clock, frames: usize) -> Vec<f32> {
+    with(a, Btn::Fn, Btn::B);
+    clock.run(a, frames)
+}
+
+fn rows_down(a: &mut HillDaw, n: usize) {
+    for _ in 0..n {
+        press(a, Btn::Down);
+    }
+}
+
+#[test]
+fn trimming_the_start_keeps_the_sound_where_it_was_and_silences_what_was_cut() {
+    let (mut a, _f, mut clock) = clip_app();
+    rows_down(&mut a, 1);
+    let before = a.project.tracks[0].clips[0].clone();
+    press(&mut a, Btn::Right);
+    press(&mut a, Btn::Right); // 2 x 441 frames
+    let c = a.project.tracks[0].clips[0].clone();
+    assert_eq!((c.offset, c.start, c.len), (before.offset + 882, 882, before.len.map(|l| l - 882)));
+    let out = play_from_start(&mut a, &mut clock, 3000);
+    assert!(out[..2 * 880].iter().all(|s| *s == 0.0), "the cut part is silent");
+    for p in [882usize, 1500, 2500] {
+        let want = (563 + p) as f32 * 1e-5 * PAN_CENTRE; // the same sample as before the trim: it did not slide
+        assert!((out[2 * p] - want).abs() < 2e-5, "frame {p}: {} vs {want}", out[2 * p]);
+    }
+    // Left walks it back out, never before the start of the file
+    for _ in 0..40 {
+        press(&mut a, Btn::Left);
+    }
+    assert_eq!(a.project.tracks[0].clips[0].offset, 0);
+}
+
+#[test]
+fn the_length_shortens_and_cannot_pass_the_end_of_the_recording() {
+    let (mut a, _f, mut clock) = clip_app();
+    rows_down(&mut a, 2);
+    let full = a.project.tracks[0].clips[0].len.unwrap();
+    for _ in 0..3 {
+        press(&mut a, Btn::Left);
+    }
+    assert_eq!(a.project.tracks[0].clips[0].len, Some(full - 3 * 441));
+    let out = play_from_start(&mut a, &mut clock, full as usize);
+    let end = (full - 3 * 441) as usize;
+    assert!(out[2 * (end - 10)] != 0.0 && out[2 * (end + 10)] == 0.0, "sound stops at the new end");
+    for _ in 0..10 {
+        press(&mut a, Btn::Right);
+    }
+    // the clip can grow back out to the end of the file (the fake's file holds 500 frames more than the take used) and no further
+    let cap = a.project.tracks[0].clips[0].len.unwrap();
+    assert_eq!(cap, full + 500, "cannot extend past the file");
+    press(&mut a, Btn::Right);
+    assert_eq!(a.project.tracks[0].clips[0].len, Some(cap));
+    // Y steps 100 ms
+    a.event(Btn::Y, true);
+    press(&mut a, Btn::Left);
+    a.event(Btn::Y, false);
+    assert_eq!(a.project.tracks[0].clips[0].len, Some(cap - 4410));
+}
+
+#[test]
+fn fades_shape_the_ends_and_reverse_plays_backwards() {
+    let (mut a, _f, mut clock) = clip_app();
+    rows_down(&mut a, 3);
+    press(&mut a, Btn::Right);
+    press(&mut a, Btn::Right); // fade in 882 frames
+    assert_eq!(a.project.tracks[0].clips[0].fade_in, 882);
+    let out = play_from_start(&mut a, &mut clock, 2000);
+    for p in [100usize, 441, 800] {
+        let want = (563 + p) as f32 * 1e-5 * PAN_CENTRE * (p as f32 / 882.0);
+        assert!((out[2 * p] - want).abs() < 2e-5, "frame {p}: {} vs {want}", out[2 * p]);
+    }
+    rows_down(&mut a, 1);
+    for _ in 0..3 {
+        press(&mut a, Btn::Right);
+    }
+    assert_eq!(a.project.tracks[0].clips[0].fade_out, 1323);
+
+    rows_down(&mut a, 1);
+    press(&mut a, Btn::A); // reverse
+    assert!(a.project.tracks[0].clips[0].reverse);
+    let c = a.project.tracks[0].clips[0].clone();
+    let len = c.len.unwrap();
+    let out = play_from_start(&mut a, &mut clock, len as usize);
+    let p = 3000usize;
+    let src = c.offset + len - 1 - p as u64; // frame p of a reversed clip reads from the far end
+    let g = (p as f32 / 882.0).min(1.0);
+    assert!((out[2 * p] - src as f32 * 1e-5 * PAN_CENTRE * g).abs() < 3e-5, "{}", out[2 * p]);
+}
+
+#[test]
+fn the_start_moves_by_a_sixteenth_or_a_bar_and_cannot_go_before_zero() {
+    let (mut a, _f, _c) = clip_app();
+    let bar = a.bar_frames_for_test();
+    press(&mut a, Btn::Right);
+    assert_eq!(a.project.tracks[0].clips[0].start, bar / 16);
+    a.event(Btn::Y, true);
+    press(&mut a, Btn::Right);
+    a.event(Btn::Y, false);
+    assert_eq!(a.project.tracks[0].clips[0].start, bar / 16 + bar);
+    for _ in 0..3 {
+        a.event(Btn::Y, true);
+        press(&mut a, Btn::Left);
+        a.event(Btn::Y, false);
+    }
+    assert_eq!(a.project.tracks[0].clips[0].start, 0);
+}
+
+#[test]
+fn clip_edits_stay_with_their_take_undo_removes_them_and_a_restart_keeps_them() {
+    let (mut a, _f, mut clock) = recording_app();
+    clock.record(&mut a, 1.0);
+    clock.record(&mut a, 1.0);
+    to_tab(&mut a, TrackTab::Clip);
+    rows_down(&mut a, 3);
+    press(&mut a, Btn::Right); // fade in on take 2 (playing)
+    assert_eq!(a.project.tracks[0].takes[1].fade_in, 441);
+    to_tab(&mut a, TrackTab::Takes);
+    press(&mut a, Btn::A); // take 1: untouched
+    assert_eq!(a.project.tracks[0].clips[0].fade_in, 0);
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::A); // take 2 again: its fade is back
+    assert_eq!(a.project.tracks[0].clips[0].fade_in, 441);
+    // undo the take switch, then the edit
+    with(&mut a, Btn::Y, Btn::B);
+    with(&mut a, Btn::Y, Btn::B);
+    with(&mut a, Btn::Y, Btn::B);
+    assert_eq!(a.project.tracks[0].clips[0].fade_in, 0, "undo took the fade out again");
+    assert_eq!(a.project.tracks[0].takes[1].fade_in, 0);
+}
+
+#[test]
+fn the_clip_tab_says_so_when_there_is_nothing_to_edit_and_never_touches_the_drums() {
+    let (mut a, _f) = new_app();
+    to_tab(&mut a, TrackTab::Clip);
+    press(&mut a, Btn::Right); // no take: a toast, no change
+    assert!(a.toast_text().contains("No take"), "{}", a.toast_text());
+    let mut fb = Fb::new();
+    a.render(&mut fb);
+    // the drums strip
+    to_view(&mut a, View::Mixer);
+    for _ in 0..8 {
+        press(&mut a, Btn::Right);
+    }
+    to_tab(&mut a, TrackTab::Clip);
+    press(&mut a, Btn::Right);
+    a.render(&mut fb);
 }

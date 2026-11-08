@@ -77,10 +77,11 @@ pub enum TrackTab {
     Fx,
     Input,
     Loop,
+    Clip,
 }
 
 impl TrackTab {
-    pub(crate) const ALL: [TrackTab; 4] = [TrackTab::Takes, TrackTab::Fx, TrackTab::Input, TrackTab::Loop];
+    pub(crate) const ALL: [TrackTab; 5] = [TrackTab::Takes, TrackTab::Fx, TrackTab::Input, TrackTab::Loop, TrackTab::Clip];
 }
 
 pub(crate) const HELP: &[(&str, &str)] = &[
@@ -798,7 +799,7 @@ impl HillDaw {
                 continue;
             }
             let tm = &mut self.project.tracks[track];
-            tm.takes.push(TakeModel { file: rec.file.clone(), frames, latency_comp_frames: rec.latency as i64, start: t.timeline_start, offset, placed: true });
+            tm.takes.push(TakeModel { file: rec.file.clone(), frames, latency_comp_frames: rec.latency as i64, start: t.timeline_start, offset, placed: true, ..Default::default() });
             tm.active_take = Some(tm.takes.len() - 1);
             // only the active (latest) take plays; the others stay in the take history
             tm.clips = vec![ClipModel { file: rec.file.clone(), start: t.timeline_start, offset, len: Some(frames), ..Default::default() }];
@@ -1104,7 +1105,7 @@ impl HillDaw {
         self.checkpoint("take", NO_COALESCE);
         let tm = &mut self.project.tracks[track];
         tm.active_take = Some(idx);
-        tm.clips = vec![ClipModel { file: t.file, start: t.start, offset: t.offset, len: Some(t.frames), ..Default::default() }];
+        tm.clips = vec![ClipModel { file: t.file, start: t.start, offset: t.offset, len: Some(t.frames), fade_in: t.fade_in, fade_out: t.fade_out, reverse: t.reverse, ..Default::default() }];
         self.rebuild_track(track);
         Ok(())
     }
@@ -1142,7 +1143,7 @@ impl HillDaw {
             }
             Btn::L2 | Btn::R2 => {
                 let i = TrackTab::ALL.iter().position(|t| *t == self.track_tab).unwrap_or(0);
-                let n = if b == Btn::R2 { (i + 1).min(3) } else { i.saturating_sub(1) };
+                let n = if b == Btn::R2 { (i + 1).min(TrackTab::ALL.len() - 1) } else { i.saturating_sub(1) };
                 self.track_tab = TrackTab::ALL[n];
                 self.track_row = 0;
                 self.confirm_delete = None;
@@ -1189,10 +1190,16 @@ impl HillDaw {
                 }
             }
             TrackTab::Loop => self.loop_act(b, big),
+            TrackTab::Clip => self.clip_act(b, strip, big),
         }
     }
 
     /// The input in use right now (the chosen one, or the automatic pick), if it is attached.
+    /// Frames in a recording's file (0 if it is not loaded).
+    pub(crate) fn audio_len(&self, file: &str) -> u64 {
+        self.audio_cache.get(file).map_or(0, |d| d.len() as u64)
+    }
+
     pub(crate) fn current_input(&self) -> Option<&InputSummary> {
         effective_input(&self.status.inputs, &self.settings.input_device)
     }
@@ -1300,6 +1307,77 @@ impl HillDaw {
             }
             _ => {}
         }
+    }
+
+    /// The clip the Clip tab edits: the strip's playing take, with the length of its audio file.
+    pub(crate) fn edit_clip(&self, strip: usize) -> Option<&ClipModel> {
+        self.project.tracks.get(strip)?.clips.first()
+    }
+
+    /// Clip tab: Up/Down pick a row (start, trim start, length, fade in, fade out, reverse), Left/Right change it, A flips reverse.
+    /// Trimming the start keeps the audio where it is on the timeline; the edits are copied into the take so they stay with it.
+    fn clip_act(&mut self, b: Btn, strip: usize, big: bool) {
+        self.track_row = self.track_row.min(5);
+        match b {
+            Btn::Up => self.track_row = self.track_row.saturating_sub(1),
+            Btn::Down => self.track_row = (self.track_row + 1).min(5),
+            Btn::Left | Btn::Right | Btn::A => {
+                let dir = match b {
+                    Btn::Left => -1i64,
+                    Btn::Right => 1,
+                    _ => 0,
+                };
+                if strip < MAX_TRACKS {
+                    self.clip_edit(strip, self.track_row, dir, big);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn clip_edit(&mut self, strip: usize, row: usize, dir: i64, big: bool) {
+        let Some(c) = self.project.tracks[strip].clips.first().cloned() else {
+            self.toast.say("No take on this track");
+            return;
+        };
+        let Some(file_len) = self.clip_data(&c.file).map(|d| d.len() as u64) else {
+            self.toast.say("The recording is missing");
+            return;
+        };
+        let len = c.len.unwrap_or(file_len.saturating_sub(c.offset));
+        // 10 ms a step, 100 ms with Y; the start moves by a sixteenth note, or a bar with Y
+        let fine = if big { 4410i64 } else { 441 };
+        let grid = if big { self.bar_frames() as i64 } else { (self.bar_frames() / 16).max(1) as i64 };
+        self.checkpoint("clip", 8000 + row as u32);
+        let mut n = c.clone();
+        match row {
+            0 => n.start = (c.start as i64 + dir * grid).max(0) as u64,
+            1 => {
+                // trim the start: the audio keeps its place, so the clip start and the file offset move together
+                let d = (dir * fine).clamp(-(c.offset as i64), len as i64 - 1);
+                n.offset = (c.offset as i64 + d) as u64;
+                n.start = (c.start as i64 + d).max(0) as u64;
+                n.len = Some((len as i64 - d) as u64);
+            }
+            2 => n.len = Some((len as i64 + dir * fine).clamp(1, file_len.saturating_sub(c.offset).max(1) as i64) as u64),
+            3 => n.fade_in = (c.fade_in as i64 + dir * fine).clamp(0, len as i64) as u64,
+            4 => n.fade_out = (c.fade_out as i64 + dir * fine).clamp(0, len as i64) as u64,
+            _ => n.reverse = !c.reverse,
+        }
+        let nl = n.len.unwrap_or(len);
+        n.fade_in = n.fade_in.min(nl);
+        n.fade_out = n.fade_out.min(nl);
+        let tm = &mut self.project.tracks[strip];
+        if let Some(t) = tm.active_take.and_then(|a| tm.takes.get_mut(a)) {
+            t.start = n.start;
+            t.offset = n.offset;
+            t.frames = nl;
+            t.fade_in = n.fade_in;
+            t.fade_out = n.fade_out;
+            t.reverse = n.reverse;
+        }
+        tm.clips[0] = n;
+        self.rebuild_track(strip);
     }
 
     /// One edit step of the effect row `self.track_row` on strip `i`.
@@ -1782,6 +1860,9 @@ impl HillDaw {
     /// Smoothed meter level of a strip, 0..1 linear.
     pub fn meter(&self, strip: usize) -> f32 {
         self.meter[strip]
+    }
+    pub fn bar_frames_for_test(&self) -> u64 {
+        self.bar_frames()
     }
     /// Length of the drum arrangement in frames.
     pub fn drum_frames(&self) -> u64 {

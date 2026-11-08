@@ -44,6 +44,10 @@ pub struct TakeModel {
     pub start: u64,
     pub offset: u64,
     pub placed: bool,
+    /// edits made on the Clip tab, kept with the take so switching takes and back does not lose them
+    pub fade_in: u64,
+    pub fade_out: u64,
+    pub reverse: bool,
 }
 
 /// The per-track effect chain, in plain numbers. 0 means "off" for the filters and the delay/reverb amounts.
@@ -457,7 +461,7 @@ mod tests {
         p.drums.fx.reverb_send = 0.2;
         p.punch = Some((88200, 176400));
         p.reverb_room = 0.8;
-        p.tracks[0].takes.push(TakeModel { file: "audio/rec-001.wav".into(), frames: 100, latency_comp_frames: 563, start: 10, offset: 573, placed: true });
+        p.tracks[0].takes.push(TakeModel { file: "audio/rec-001.wav".into(), frames: 100, latency_comp_frames: 563, start: 10, offset: 573, placed: true, ..Default::default() });
         p.export.format = ExportFormat::Flac;
         assert_eq!(Project::from_json(&p.to_json()).unwrap(), p);
         let old = Project::from_json(r#"{"version":1,"tracks":[{"takes":[{"file":"a.wav","frames":5}]}]}"#).unwrap();

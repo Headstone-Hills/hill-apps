@@ -541,7 +541,7 @@ impl HillDaw {
         let (name, col) = if i == DRUMS { ("DRUMS".to_string(), DRUM) } else { (self.project.tracks[i].name.clone(), MELODIC) };
         fb.text(22, 144, &hill_core::fb::clip(&name, 12), 2, col);
         let mut x = 300;
-        for (t, label) in [(TrackTab::Takes, "TAKES"), (TrackTab::Fx, "FX"), (TrackTab::Input, "INPUT"), (TrackTab::Loop, "LOOP")] {
+        for (t, label) in [(TrackTab::Takes, "TAKES"), (TrackTab::Fx, "FX"), (TrackTab::Input, "INPUT"), (TrackTab::Loop, "LOOP"), (TrackTab::Clip, "CLIP")] {
             x = fb.text(x, 150, label, 1, if t == self.track_tab { ACCENT } else { DIM }) + 14;
         }
         let row_y = |r: usize, step: i32| 180 + r as i32 * step;
@@ -661,6 +661,35 @@ impl HillDaw {
                 fb.text(22, 384, "Play your loudest part; set the input volume so peaks reach about -6.", 1, DIM);
                 fb.text(22, 396, "Raising the latency offset moves takes earlier (a USB output adds delay).", 1, DIM);
                 fb.text(22, 408, "Left/Right picks Auto/Built-in or a device. USB Audio 2.0 is not supported.", 1, DIM);
+            }
+            TrackTab::Clip => {
+                let Some(c) = (i != DRUMS).then(|| self.edit_clip(i)).flatten() else {
+                    fb.text(22, 190, "Nothing to edit: this track has no playing take.", 1, DIM);
+                    return;
+                };
+                let bar = self.bar_frames();
+                let ms = |f: u64| if f == 0 { "off".to_string() } else { format!("{:.0} ms", f as f64 / 44.1) };
+                let file_len = self.audio_len(&c.file);
+                let len = c.len.unwrap_or(file_len.saturating_sub(c.offset));
+                let rows = [
+                    ("Start", format!("bar {:.2}", c.start as f64 / bar as f64 + 1.0)),
+                    ("Trim start", format!("{:.2} s in", c.offset as f64 / 44100.0)),
+                    ("Length", format!("{:.2} s", len as f64 / 44100.0)),
+                    ("Fade in", ms(c.fade_in)),
+                    ("Fade out", ms(c.fade_out)),
+                    ("Reverse", (if c.reverse { "on" } else { "off" }).to_string()),
+                ];
+                for (r, (label, value)) in rows.iter().enumerate() {
+                    let y = row_y(r, 28) - 6;
+                    if r == self.track_row {
+                        sel_bar(fb, y, 26);
+                    }
+                    fb.text(26, y + 2, label, 2, TEXT);
+                    fb.text(300, y + 2, value, 2, WHITE);
+                }
+                fb.text(22, 360, "Left/Right change a row (Y: bigger steps). Start moves by a 16th note, a bar with Y.", 1, DIM);
+                fb.text(22, 372, "Trim start keeps the sound where it is. Edits belong to the take and can be undone.", 1, DIM);
+                fb.text(22, 384, "Switching takes on the Takes tab brings each take's own edits back.", 1, DIM);
             }
             TrackTab::Loop => {
                 let bar = self.bar_frames();
