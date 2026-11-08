@@ -239,6 +239,7 @@ pub struct HillDaw {
     pub(crate) track_tab: TrackTab,
     pub(crate) track_row: usize,
     pub(crate) take_sel: usize,
+    clip_sel: usize,
     /// a take waiting for a second X: (track, take, ms left)
     confirm_delete: Option<(usize, usize, u32)>,
     /// the FM-1 input meter (see `monitor_tick`)
@@ -385,6 +386,7 @@ impl HillDaw {
             track_tab: TrackTab::Takes,
             track_row: 0,
             take_sel: 0,
+            clip_sel: 0,
             confirm_delete: None,
             monitoring: false,
             monitor_block_ms: 0,
@@ -1105,7 +1107,8 @@ impl HillDaw {
         self.checkpoint("take", NO_COALESCE);
         let tm = &mut self.project.tracks[track];
         tm.active_take = Some(idx);
-        tm.clips = vec![ClipModel { file: t.file, start: t.start, offset: t.offset, len: Some(t.frames), fade_in: t.fade_in, fade_out: t.fade_out, reverse: t.reverse, ..Default::default() }];
+        tm.clips = if !t.clips.is_empty() { t.clips.clone() } else { vec![ClipModel { file: t.file, start: t.start, offset: t.offset, len: Some(t.frames), fade_in: t.fade_in, fade_out: t.fade_out, reverse: t.reverse, ..Default::default() }] };
+        self.clip_sel = 0;
         self.rebuild_track(track);
         Ok(())
     }
@@ -1309,37 +1312,69 @@ impl HillDaw {
         }
     }
 
-    /// The clip the Clip tab edits: the strip's playing take, with the length of its audio file.
+    /// The clip the Clip tab edits: the picked clip of the strip's playing take.
     pub(crate) fn edit_clip(&self, strip: usize) -> Option<&ClipModel> {
-        self.project.tracks.get(strip)?.clips.first()
+        let t = self.project.tracks.get(strip)?;
+        t.clips.get(self.clip_sel.min(t.clips.len().saturating_sub(1)))
     }
 
-    /// Clip tab: Up/Down pick a row (start, trim start, length, fade in, fade out, reverse), Left/Right change it, A flips reverse.
-    /// Trimming the start keeps the audio where it is on the timeline; the edits are copied into the take so they stay with it.
+    pub fn clip_sel(&self) -> usize {
+        self.clip_sel
+    }
+
+    /// Clip tab rows: 0 which clip, 1 start, 2 trim start, 3 length, 4 fade in, 5 fade out, 6 gain, 7 reverse, 8 split at the playhead,
+    /// 9 delete clip. Up/Down pick a row, Left/Right change it, A does the action rows.
+    /// Trimming the start keeps the audio where it is on the timeline; every edit is copied into the take so it stays with it.
     fn clip_act(&mut self, b: Btn, strip: usize, big: bool) {
-        self.track_row = self.track_row.min(5);
+        self.track_row = self.track_row.min(9);
         match b {
             Btn::Up => self.track_row = self.track_row.saturating_sub(1),
-            Btn::Down => self.track_row = (self.track_row + 1).min(5),
-            Btn::Left | Btn::Right | Btn::A => {
+            Btn::Down => self.track_row = (self.track_row + 1).min(9),
+            Btn::Left | Btn::Right | Btn::A if strip < MAX_TRACKS => {
                 let dir = match b {
                     Btn::Left => -1i64,
                     Btn::Right => 1,
                     _ => 0,
                 };
-                if strip < MAX_TRACKS {
-                    self.clip_edit(strip, self.track_row, dir, big);
-                }
+                self.clip_edit(strip, self.track_row, dir, big);
             }
             _ => {}
         }
     }
 
+    /// Copy the strip's clips into its playing take, so switching takes and back keeps them.
+    fn sync_take(&mut self, strip: usize) {
+        let tm = &mut self.project.tracks[strip];
+        let clips = tm.clips.clone();
+        if let Some(t) = tm.active_take.and_then(|a| tm.takes.get_mut(a)) {
+            if let Some(n) = clips.first() {
+                t.start = n.start;
+                t.offset = n.offset;
+                t.frames = n.len.unwrap_or(t.frames);
+                t.fade_in = n.fade_in;
+                t.fade_out = n.fade_out;
+                t.reverse = n.reverse;
+            }
+            t.clips = clips;
+        }
+    }
+
     fn clip_edit(&mut self, strip: usize, row: usize, dir: i64, big: bool) {
-        let Some(c) = self.project.tracks[strip].clips.first().cloned() else {
+        let n_clips = self.project.tracks[strip].clips.len();
+        if n_clips == 0 {
             self.toast.say("No take on this track");
             return;
-        };
+        }
+        self.clip_sel = self.clip_sel.min(n_clips - 1);
+        if row == 0 {
+            if dir != 0 {
+                self.clip_sel = (self.clip_sel as i64 + dir).rem_euclid(n_clips as i64) as usize;
+                self.toast.say(&format!("Clip {} of {}", self.clip_sel + 1, n_clips));
+            }
+            return;
+        }
+        let ci = self.clip_sel;
+        let c = self.project.tracks[strip].clips[ci].clone();
         let Some(file_len) = self.clip_data(&c.file).map(|d| d.len() as u64) else {
             self.toast.say("The recording is missing");
             return;
@@ -1348,36 +1383,94 @@ impl HillDaw {
         // 10 ms a step, 100 ms with Y; the start moves by a sixteenth note, or a bar with Y
         let fine = if big { 4410i64 } else { 441 };
         let grid = if big { self.bar_frames() as i64 } else { (self.bar_frames() / 16).max(1) as i64 };
+        match row {
+            8 | 9 if dir != 0 => return, // actions: A only
+            8 => return self.split_clip(strip, ci, len),
+            9 => return self.delete_clip(strip, ci),
+            _ => {}
+        }
         self.checkpoint("clip", 8000 + row as u32);
         let mut n = c.clone();
         match row {
-            0 => n.start = (c.start as i64 + dir * grid).max(0) as u64,
-            1 => {
+            1 => n.start = (c.start as i64 + dir * grid).max(0) as u64,
+            2 => {
                 // trim the start: the audio keeps its place, so the clip start and the file offset move together
                 let d = (dir * fine).clamp(-(c.offset as i64), len as i64 - 1);
                 n.offset = (c.offset as i64 + d) as u64;
                 n.start = (c.start as i64 + d).max(0) as u64;
                 n.len = Some((len as i64 - d) as u64);
             }
-            2 => n.len = Some((len as i64 + dir * fine).clamp(1, file_len.saturating_sub(c.offset).max(1) as i64) as u64),
-            3 => n.fade_in = (c.fade_in as i64 + dir * fine).clamp(0, len as i64) as u64,
-            4 => n.fade_out = (c.fade_out as i64 + dir * fine).clamp(0, len as i64) as u64,
+            3 => n.len = Some((len as i64 + dir * fine).clamp(1, file_len.saturating_sub(c.offset).max(1) as i64) as u64),
+            4 => n.fade_in = (c.fade_in as i64 + dir * fine).clamp(0, len as i64) as u64,
+            5 => n.fade_out = (c.fade_out as i64 + dir * fine).clamp(0, len as i64) as u64,
+            6 => {
+                // half a dB a step, 3 dB with Y; -36 .. +12 dB
+                let db = (gain_to_db(c.gain) + dir as f32 * if big { 3.0 } else { 0.5 }).clamp(-36.0, 12.0);
+                n.gain = db_to_gain((db * 2.0).round() / 2.0);
+            }
             _ => n.reverse = !c.reverse,
         }
         let nl = n.len.unwrap_or(len);
         n.fade_in = n.fade_in.min(nl);
         n.fade_out = n.fade_out.min(nl);
-        let tm = &mut self.project.tracks[strip];
-        if let Some(t) = tm.active_take.and_then(|a| tm.takes.get_mut(a)) {
-            t.start = n.start;
-            t.offset = n.offset;
-            t.frames = nl;
-            t.fade_in = n.fade_in;
-            t.fade_out = n.fade_out;
-            t.reverse = n.reverse;
-        }
-        tm.clips[0] = n;
+        self.project.tracks[strip].clips[ci] = n;
+        self.sync_take(strip);
         self.rebuild_track(strip);
+    }
+
+    /// Cut the picked clip in two at the playhead; both halves keep the clip's gain, the fade in stays on the first and the fade out on the second.
+    fn split_clip(&mut self, strip: usize, ci: usize, len: u64) {
+        let c = self.project.tracks[strip].clips[ci].clone();
+        let p = self.transport.pos;
+        if p <= c.start || p >= c.start + len {
+            self.toast.say("Move the playhead inside the clip");
+            return;
+        }
+        self.checkpoint("split", NO_COALESCE);
+        let l = p - c.start; // frames before the cut
+        let (mut a, mut b) = (c.clone(), c.clone());
+        a.len = Some(l);
+        b.start = p;
+        b.len = Some(len - l);
+        if c.reverse {
+            // a reversed clip plays the file from its far end, so the first half reads the end of the range
+            a.offset = c.offset + (len - l);
+            b.offset = c.offset;
+        } else {
+            b.offset = c.offset + l;
+        }
+        a.fade_out = 0;
+        b.fade_in = 0;
+        a.fade_in = a.fade_in.min(l);
+        b.fade_out = b.fade_out.min(len - l);
+        let clips = &mut self.project.tracks[strip].clips;
+        clips[ci] = a;
+        clips.insert(ci + 1, b);
+        self.clip_sel = ci + 1;
+        self.sync_take(strip);
+        self.rebuild_track(strip);
+        self.toast.say(&format!("Split: clip {} of {}", ci + 2, self.project.tracks[strip].clips.len()));
+    }
+
+    /// Two presses, so a slip does not remove a clip. The last clip of a take stays (remove the take on the Takes tab instead).
+    fn delete_clip(&mut self, strip: usize, ci: usize) {
+        if self.project.tracks[strip].clips.len() < 2 {
+            self.toast.say("Last clip: remove the take on Takes");
+            return;
+        }
+        let tag = 10_000 + ci;
+        if self.confirm_delete.is_some_and(|(t, i, _)| t == strip && i == tag) {
+            self.confirm_delete = None;
+            self.checkpoint("delete clip", NO_COALESCE);
+            self.project.tracks[strip].clips.remove(ci);
+            self.clip_sel = ci.min(self.project.tracks[strip].clips.len() - 1);
+            self.sync_take(strip);
+            self.rebuild_track(strip);
+            self.toast.say("Clip removed (audio stays)");
+        } else {
+            self.confirm_delete = Some((strip, tag, 3000));
+            self.toast.say("A again to remove this clip");
+        }
     }
 
     /// One edit step of the effect row `self.track_row` on strip `i`.

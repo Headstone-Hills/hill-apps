@@ -510,12 +510,32 @@ impl HillDaw {
                     let active = self.project.tracks[i].active_take.is_some() || ci == 0;
                     fb.rect(xa, y + 2, xb - xa, ROW_H - 4, if silent { rgb(44, 48, 58) } else { scale(col, if active { 0.28 } else { 0.15 }) });
                     if let Some(pk) = self.peak_cache.get(&c.file) {
-                        let from = c.offset as i64 + (start.max(cs) as i64 - cs as i64);
-                        let env = envelope(pk, from, fpp, (xb - xa) as usize);
+                        let t0 = start.max(cs);
+                        let t1 = (start + span).min(ce);
+                        let n = (xb - xa) as usize;
+                        let mut env = if c.reverse {
+                            // a reversed clip reads the file from its far end: take the same stretch and flip it
+                            let from = (c.offset + len) as i64 - (t1 - cs) as i64;
+                            let mut e = envelope(pk, from, fpp, n);
+                            e.reverse();
+                            e
+                        } else {
+                            envelope(pk, c.offset as i64 + (t0 - cs) as i64, fpp, n)
+                        };
                         let half = (ROW_H / 2 - 3) as f32;
-                        for (k, e) in env.iter().enumerate() {
+                        for (k, e) in env.drain(..).enumerate() {
                             if let Some((lo, hi)) = e {
-                                let (lo, hi) = ((lo * g).clamp(-1.0, 1.0), (hi * g).clamp(-1.0, 1.0));
+                                // the picture is the sound as it plays: strip gain, clip gain and the fades
+                                let p = (t0 - cs) as f64 + k as f64 * fpp;
+                                let mut gg = g * c.gain;
+                                if c.fade_in > 0 && p < c.fade_in as f64 {
+                                    gg *= (p / c.fade_in as f64) as f32;
+                                }
+                                let left = len as f64 - 1.0 - p;
+                                if c.fade_out > 0 && left < c.fade_out as f64 {
+                                    gg *= (left.max(0.0) / c.fade_out as f64) as f32;
+                                }
+                                let (lo, hi) = ((lo * gg).clamp(-1.0, 1.0), (hi * gg).clamp(-1.0, 1.0));
                                 let (top, bot) = (cy - (hi * half).round() as i32, cy - (lo * half).round() as i32);
                                 fb.rect(xa + k as i32, top, 1, (bot - top).max(1), tone);
                             }
@@ -671,25 +691,28 @@ impl HillDaw {
                 let ms = |f: u64| if f == 0 { "off".to_string() } else { format!("{:.0} ms", f as f64 / 44.1) };
                 let file_len = self.audio_len(&c.file);
                 let len = c.len.unwrap_or(file_len.saturating_sub(c.offset));
+                let n = self.project.tracks[i].clips.len();
                 let rows = [
+                    ("Clip", format!("{} of {}", self.clip_sel().min(n - 1) + 1, n)),
                     ("Start", format!("bar {:.2}", c.start as f64 / bar as f64 + 1.0)),
                     ("Trim start", format!("{:.2} s in", c.offset as f64 / 44100.0)),
                     ("Length", format!("{:.2} s", len as f64 / 44100.0)),
                     ("Fade in", ms(c.fade_in)),
                     ("Fade out", ms(c.fade_out)),
+                    ("Gain", format!("{:+.1} dB", gain_to_db(c.gain))),
                     ("Reverse", (if c.reverse { "on" } else { "off" }).to_string()),
+                    ("Split at playhead", "A".to_string()),
+                    ("Delete clip", "A twice".to_string()),
                 ];
                 for (r, (label, value)) in rows.iter().enumerate() {
-                    let y = row_y(r, 28) - 6;
+                    let y = row_y(r, 20) - 8;
                     if r == self.track_row {
-                        sel_bar(fb, y, 26);
+                        sel_bar(fb, y, 20);
                     }
-                    fb.text(26, y + 2, label, 2, TEXT);
-                    fb.text(300, y + 2, value, 2, WHITE);
+                    fb.text(26, y, label, 2, TEXT);
+                    fb.text(300, y, value, 2, WHITE);
                 }
-                fb.text(22, 360, "Left/Right change a row (Y: bigger steps). Start moves by a 16th note, a bar with Y.", 1, DIM);
-                fb.text(22, 372, "Trim start keeps the sound where it is. Edits belong to the take and can be undone.", 1, DIM);
-                fb.text(22, 384, "Switching takes on the Takes tab brings each take's own edits back.", 1, DIM);
+                fb.text(22, 386, "L/R change (Y: bigger). Trim keeps the sound in place. Edits stay with the take.", 1, DIM);
             }
             TrackTab::Loop => {
                 let bar = self.bar_frames();

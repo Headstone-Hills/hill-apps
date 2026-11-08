@@ -48,6 +48,8 @@ pub struct TakeModel {
     pub fade_in: u64,
     pub fade_out: u64,
     pub reverse: bool,
+    /// the take's full clip list once it has been split or edited with several clips (empty = the single clip the fields above describe)
+    pub clips: Vec<ClipModel>,
 }
 
 /// The per-track effect chain, in plain numbers. 0 means "off" for the filters and the delay/reverb amounts.

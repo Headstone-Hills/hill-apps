@@ -867,7 +867,7 @@ fn rows_down(a: &mut HillDaw, n: usize) {
 #[test]
 fn trimming_the_start_keeps_the_sound_where_it_was_and_silences_what_was_cut() {
     let (mut a, _f, mut clock) = clip_app();
-    rows_down(&mut a, 1);
+    rows_down(&mut a, 2);
     let before = a.project.tracks[0].clips[0].clone();
     press(&mut a, Btn::Right);
     press(&mut a, Btn::Right); // 2 x 441 frames
@@ -889,7 +889,7 @@ fn trimming_the_start_keeps_the_sound_where_it_was_and_silences_what_was_cut() {
 #[test]
 fn the_length_shortens_and_cannot_pass_the_end_of_the_recording() {
     let (mut a, _f, mut clock) = clip_app();
-    rows_down(&mut a, 2);
+    rows_down(&mut a, 3);
     let full = a.project.tracks[0].clips[0].len.unwrap();
     for _ in 0..3 {
         press(&mut a, Btn::Left);
@@ -916,7 +916,7 @@ fn the_length_shortens_and_cannot_pass_the_end_of_the_recording() {
 #[test]
 fn fades_shape_the_ends_and_reverse_plays_backwards() {
     let (mut a, _f, mut clock) = clip_app();
-    rows_down(&mut a, 3);
+    rows_down(&mut a, 4);
     press(&mut a, Btn::Right);
     press(&mut a, Btn::Right); // fade in 882 frames
     assert_eq!(a.project.tracks[0].clips[0].fade_in, 882);
@@ -931,7 +931,7 @@ fn fades_shape_the_ends_and_reverse_plays_backwards() {
     }
     assert_eq!(a.project.tracks[0].clips[0].fade_out, 1323);
 
-    rows_down(&mut a, 1);
+    rows_down(&mut a, 2);
     press(&mut a, Btn::A); // reverse
     assert!(a.project.tracks[0].clips[0].reverse);
     let c = a.project.tracks[0].clips[0].clone();
@@ -947,6 +947,7 @@ fn fades_shape_the_ends_and_reverse_plays_backwards() {
 fn the_start_moves_by_a_sixteenth_or_a_bar_and_cannot_go_before_zero() {
     let (mut a, _f, _c) = clip_app();
     let bar = a.bar_frames_for_test();
+    rows_down(&mut a, 1);
     press(&mut a, Btn::Right);
     assert_eq!(a.project.tracks[0].clips[0].start, bar / 16);
     a.event(Btn::Y, true);
@@ -967,7 +968,7 @@ fn clip_edits_stay_with_their_take_undo_removes_them_and_a_restart_keeps_them() 
     clock.record(&mut a, 1.0);
     clock.record(&mut a, 1.0);
     to_tab(&mut a, TrackTab::Clip);
-    rows_down(&mut a, 3);
+    rows_down(&mut a, 4);
     press(&mut a, Btn::Right); // fade in on take 2 (playing)
     assert_eq!(a.project.tracks[0].takes[1].fade_in, 441);
     to_tab(&mut a, TrackTab::Takes);
@@ -1000,4 +1001,100 @@ fn the_clip_tab_says_so_when_there_is_nothing_to_edit_and_never_touches_the_drum
     to_tab(&mut a, TrackTab::Clip);
     press(&mut a, Btn::Right);
     a.render(&mut fb);
+}
+
+#[test]
+fn splitting_at_the_playhead_makes_two_clips_that_sound_exactly_like_the_original() {
+    let (mut a, _f, mut clock) = clip_app();
+    let whole = play_from_start(&mut a, &mut clock, 20_000);
+    // park the playhead at frame 10 000 and split
+    with(&mut a, Btn::Fn, Btn::B);
+    clock.run(&mut a, 10_000);
+    press(&mut a, Btn::Start);
+    rows_down(&mut a, 8);
+    press(&mut a, Btn::A);
+    let clips = a.project.tracks[0].clips.clone();
+    assert_eq!(clips.len(), 2, "{clips:?}");
+    assert_eq!((clips[0].start, clips[0].len), (0, Some(10_000)));
+    assert_eq!((clips[1].start, clips[1].offset), (10_000, clips[0].offset + 10_000));
+    assert_eq!(a.clip_sel(), 1, "the new right-hand clip is picked");
+    press(&mut a, Btn::Start); // play again
+    let split = play_from_start(&mut a, &mut clock, 20_000);
+    for p in [0usize, 5_000, 9_999, 10_000, 15_000, 19_999] {
+        assert!((split[2 * p] - whole[2 * p]).abs() < 1e-6, "frame {p}");
+    }
+    // the split is saved in the take, undoable, and the clip count shows on screen
+    assert_eq!(a.project.tracks[0].takes[0].clips.len(), 2);
+    with(&mut a, Btn::Y, Btn::B);
+    assert_eq!(a.project.tracks[0].clips.len(), 1);
+    let mut fb = Fb::new();
+    a.render(&mut fb);
+}
+
+#[test]
+fn a_split_outside_the_clip_is_refused_and_a_reversed_clip_splits_into_the_right_halves() {
+    let (mut a, _f, mut clock) = clip_app();
+    with(&mut a, Btn::Fn, Btn::B); // playhead at 0: on the clip's first frame, not inside it
+    rows_down(&mut a, 8);
+    press(&mut a, Btn::A);
+    assert_eq!(a.project.tracks[0].clips.len(), 1);
+    assert!(a.toast_text().contains("inside"), "{}", a.toast_text());
+    // reverse, then split in the middle: played back it must equal the reversed whole
+    for _ in 0..1 {
+        press(&mut a, Btn::Up);
+    }
+    press(&mut a, Btn::A); // row 7: reverse
+    let whole = play_from_start(&mut a, &mut clock, 20_000);
+    with(&mut a, Btn::Fn, Btn::B);
+    clock.run(&mut a, 30_000);
+    press(&mut a, Btn::Start);
+    rows_down(&mut a, 1);
+    press(&mut a, Btn::A);
+    assert_eq!(a.project.tracks[0].clips.len(), 2);
+    press(&mut a, Btn::Start);
+    let split = play_from_start(&mut a, &mut clock, 20_000);
+    for p in [0usize, 10_000, 19_999] {
+        assert!((split[2 * p] - whole[2 * p]).abs() < 1e-6, "frame {p}: {} vs {}", split[2 * p], whole[2 * p]);
+    }
+}
+
+#[test]
+fn clip_gain_steps_in_half_decibels_and_the_clips_are_picked_and_deleted_with_confirmation() {
+    let (mut a, _f, mut clock) = clip_app();
+    rows_down(&mut a, 7); // gain row is 6; check it first
+    for _ in 0..1 {
+        press(&mut a, Btn::Up);
+    }
+    for _ in 0..4 {
+        press(&mut a, Btn::Right); // +2 dB
+    }
+    let g = a.project.tracks[0].clips[0].gain;
+    assert!((g - 10f32.powf(2.0 / 20.0)).abs() < 1e-3, "{g}");
+    let out = play_from_start(&mut a, &mut clock, 2000);
+    let want = (563 + 1000) as f32 * 1e-5 * PAN_CENTRE * g;
+    assert!((out[2 * 1000] - want).abs() < 3e-5);
+    // two clips: pick with row 0, delete with A twice
+    with(&mut a, Btn::Fn, Btn::B);
+    clock.run(&mut a, 10_000);
+    press(&mut a, Btn::Start);
+    rows_down(&mut a, 2); // row 8
+    press(&mut a, Btn::A);
+    assert_eq!(a.project.tracks[0].clips.len(), 2);
+    for _ in 0..8 {
+        press(&mut a, Btn::Up);
+    }
+    assert_eq!(a.clip_sel(), 1);
+    press(&mut a, Btn::Left);
+    assert_eq!(a.clip_sel(), 0);
+    for _ in 0..9 {
+        press(&mut a, Btn::Down);
+    }
+    press(&mut a, Btn::A);
+    assert_eq!(a.project.tracks[0].clips.len(), 2, "one press only asks");
+    press(&mut a, Btn::A);
+    assert_eq!(a.project.tracks[0].clips.len(), 1);
+    press(&mut a, Btn::A);
+    press(&mut a, Btn::A);
+    assert_eq!(a.project.tracks[0].clips.len(), 1, "the last clip stays");
+    assert!(a.toast_text().contains("Last clip"), "{}", a.toast_text());
 }

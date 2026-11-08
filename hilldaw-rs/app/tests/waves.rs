@@ -358,3 +358,27 @@ fn the_selected_row_is_framed_and_every_zoom_draws_without_trouble() {
         assert!(fb.px.iter().filter(|p| **p != BG).count() > 12_000);
     }
 }
+
+#[test]
+fn the_picture_shows_clip_gain_fades_and_reversal() {
+    let mut a = new_app();
+    let mut t = 0;
+    record(&mut a, 0, 10.0, &mut t);
+    to_view(&mut a, View::Waves);
+    let (y0, y1) = row(0);
+    let height = |a: &HillDaw, x: i32| count(&render(a), MELODIC, x, y0, x + 1, y1);
+    let plain = height(&a, X0 + 200);
+    a.project.tracks[0].clips[0].gain = 0.25;
+    assert!(height(&a, X0 + 200) < plain, "a quieter clip is drawn smaller");
+    a.project.tracks[0].clips[0].gain = 1.0;
+    // a 2-bar fade in: early pixels shrink, late ones do not
+    let early = height(&a, X0 + 60);
+    a.project.tracks[0].clips[0].fade_in = 2 * BAR;
+    assert!(height(&a, X0 + 60) < early, "inside the fade the picture is lower");
+    assert_eq!(height(&a, X0 + 200), plain, "after the fade it is unchanged");
+    a.project.tracks[0].clips[0].fade_in = 0;
+    // reversed, the rising ramp falls
+    a.project.tracks[0].clips[0].reverse = true;
+    let (e, l) = (height(&a, X0 + 20), height(&a, X0 + 200));
+    assert!(e > l + 4, "a reversed ramp is taller at the start: {e} vs {l}");
+}
