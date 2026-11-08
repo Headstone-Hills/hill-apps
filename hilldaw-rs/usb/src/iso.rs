@@ -134,8 +134,9 @@ impl IsoCapture {
                     return Err(UsbError::Io("the device accepted none of 44.1, 48, 96, 88.2 or 192 kHz".into()));
                 }
             }
-        } else if let Some(r) = rate.filter(|_| alt.rates.len() > 1) {
-            let _ = dev::set_sampling_rate(fd, alt.ep, r);
+        } else if alt.rate_control || (rate.is_some() && alt.rates.len() > 1) {
+            // a device that advertises the control may not stream until it is used (FM-1+VA)
+            let _ = dev::set_sampling_rate(fd, alt.ep, actual);
         }
         let maxpkt = alt.max_packet as usize;
         let bufs = (0..n_urbs.clamp(1, 64)).map(|i| UrbBuf::new(frames_per_urb.max(1), maxpkt, alt.ep, i)).collect();

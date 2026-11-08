@@ -245,6 +245,9 @@ mod tests {
         assert_eq!((a.channels, a.bits, r), (2, 24, 44_100));
         let (a, r) = choose_playback_format(&streams).expect("playback");
         assert_eq!((a.channels, a.bits, r, a.ep), (2, 24, 44_100, 0x02));
+        // the VA firmware advertises the endpoint sampling-frequency control (the old one did not)
+        assert!(streams.iter().all(|s| s.rate_control));
+        assert!(parse_audio_streams(FM1).iter().all(|s| !s.rate_control));
     }
 
     #[test]

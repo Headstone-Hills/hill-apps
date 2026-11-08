@@ -7,6 +7,7 @@
 const DT_INTERFACE: u8 = 0x04;
 const DT_ENDPOINT: u8 = 0x05;
 const DT_CS_INTERFACE: u8 = 0x24;
+const DT_CS_ENDPOINT: u8 = 0x25;
 const CLASS_AUDIO: u8 = 1;
 const SUBCLASS_CONTROL: u8 = 1;
 const SUBCLASS_STREAMING: u8 = 2;
@@ -39,6 +40,9 @@ pub struct StreamAlt {
     /// microseconds between packets: 1000 x 2^(bInterval-1) at full speed, 125 x 2^(bInterval-1) at high speed (UAC2 is assumed high speed
     /// until [`StreamAlt::set_full_speed`] says the bus is not)
     pub interval_us: u32,
+    /// the class-specific endpoint descriptor advertises the sampling-frequency control (UAC1): the host should set the rate on the
+    /// endpoint, and firmware such as FM-1+VA sends nothing until it does
+    pub rate_control: bool,
 }
 
 impl StreamAlt {
@@ -83,6 +87,8 @@ pub fn parse_audio_streams(blob: &[u8]) -> Vec<StreamAlt> {
     let mut out = Vec::new();
     let mut cur: Option<StreamAlt> = None;
     let mut waiting_for_ep = false;
+    // the stream whose endpoint was just read: its class-specific endpoint descriptor follows
+    let mut last_pushed: Option<usize> = None;
     // which audio class version the interface being read belongs to, and the control interface's clock (UAC2)
     let mut v2 = false;
     let mut in_ac = false;
@@ -99,6 +105,7 @@ pub fn parse_audio_streams(blob: &[u8]) -> Vec<StreamAlt> {
         match dt {
             DT_INTERFACE if len >= 9 => {
                 let (num, alt, neps, cls, sub, proto) = (d[2], d[3], d[4], d[5], d[6], d[7]);
+                last_pushed = None;
                 v2 = cls == CLASS_AUDIO && proto == PROTOCOL_V2;
                 in_ac = cls == CLASS_AUDIO && sub == SUBCLASS_CONTROL;
                 if in_ac && v2 {
@@ -161,10 +168,18 @@ pub fn parse_audio_streams(blob: &[u8]) -> Vec<StreamAlt> {
                         c.interval_us = unit << (d[6].clamp(1, 16) - 1).min(12);
                         if c.channels > 0 && !c.rates.is_empty() {
                             out.push(c);
+                            last_pushed = Some(out.len() - 1);
                         }
                     }
                     waiting_for_ep = false;
                 }
+            }
+            // UAC1 class-specific endpoint: bmAttributes bit 0 = sampling frequency control
+            DT_CS_ENDPOINT if !v2 && len >= 4 && d[2] == 1 => {
+                if let Some(c) = last_pushed.and_then(|k| out.get_mut(k)) {
+                    c.rate_control = d[3] & 1 != 0;
+                }
+                last_pushed = None;
             }
             _ => {}
         }

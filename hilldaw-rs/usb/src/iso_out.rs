@@ -124,7 +124,7 @@ impl IsoPlayback {
                 unsafe { libc::close(fd) };
                 return Err(UsbError::Io(format!("the device would not run at {rate} Hz")));
             }
-        } else if alt.rates.len() > 1 {
+        } else if alt.rate_control || alt.rates.len() > 1 {
             let _ = dev::set_sampling_rate(fd, alt.ep, rate);
         }
         let maxpkt = alt.max_packet as usize;
