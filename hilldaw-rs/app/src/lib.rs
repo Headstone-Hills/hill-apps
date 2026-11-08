@@ -145,6 +145,11 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("Y + Left/Right", "cycles -/+"),
     ("A", "add a section after this one"),
     ("X", "delete the section"),
+    ("B", "drum browser: style, pattern, kit"),
+    ("Browser L/R", "style / pattern / kit column"),
+    ("Browser U/D", "pick (L2/R2 jump); heard at once"),
+    ("Browser X", "this kit for every section"),
+    ("Browser A or B", "close"),
 ];
 
 /// The project as it was before an edit, with a name for the toast.
@@ -219,6 +224,8 @@ pub struct HillDaw {
     pub(crate) armed: [bool; MAX_TRACKS],
     pub(crate) click_on: bool,
     pub(crate) arr_sel: usize,
+    /// the Arrange screen's drum browser: `Some(column)` (0 style, 1 pattern, 2 kit) while it is open
+    pub(crate) arr_browse: Option<usize>,
     fm1_out: Option<Box<dyn Fm1Out>>,
     recorder: Option<Box<dyn Recorder>>,
     audio_out: Option<Box<dyn AudioOut>>,
@@ -376,6 +383,7 @@ impl HillDaw {
             armed: [false; MAX_TRACKS],
             click_on: false,
             arr_sel: 0,
+            arr_browse: None,
             fm1_out: None,
             recorder: None,
             audio_out: None,
@@ -502,7 +510,7 @@ impl HillDaw {
         let mut p = Project { name: "SONG".into(), bpm: 100.0, latency_offset_frames: 563, ..Project::default() };
         // a starting groove so START makes sound straight away
         if let Some(x) = presets::builtin().patterns.iter().find(|x| x.style == "Rock").or(presets::builtin().patterns.first()) {
-            p.drums.sections.push(DrumSectionModel { name: x.name.clone(), preset: x.id.clone(), cycles: 4 });
+            p.drums.sections.push(DrumSectionModel { name: x.name.clone(), preset: x.id.clone(), cycles: 4, ..Default::default() });
         }
         p
     }
@@ -973,6 +981,10 @@ impl HillDaw {
     }
 
     fn arrange_act(&mut self, b: Btn) {
+        if self.arr_browse.is_some() {
+            self.browser_act(b);
+            return;
+        }
         let n = self.project.drums.sections.len();
         let all = &presets::builtin().patterns;
         let cur = self.project.drums.sections.get(self.arr_sel).and_then(|s| all.iter().position(|p| p.id == s.preset));
@@ -1011,7 +1023,7 @@ impl HillDaw {
                 } else {
                     self.checkpoint("add section", NO_COALESCE);
                     let new = self.project.drums.sections.get(self.arr_sel).cloned().or_else(|| {
-                        all.first().map(|x| DrumSectionModel { name: x.name.clone(), preset: x.id.clone(), cycles: 4 })
+                        all.first().map(|x| DrumSectionModel { name: x.name.clone(), preset: x.id.clone(), cycles: 4, ..Default::default() })
                     });
                     if let Some(s) = new {
                         let at = if n == 0 { 0 } else { self.arr_sel + 1 };
@@ -1022,6 +1034,7 @@ impl HillDaw {
                     }
                 }
             }
+            Btn::B if n > 0 => self.arr_browse = Some(1),
             Btn::X if n > 0 => {
                 self.checkpoint("delete section", NO_COALESCE);
                 self.project.drums.sections.remove(self.arr_sel);
@@ -1885,6 +1898,70 @@ impl HillDaw {
                 self.fm1_set_fx(sel.cc, v);
             }
             _ => {}
+        }
+    }
+
+    /// The drum browser (Arrange, B): style, pattern and kit of the selected section. Every move applies at once, so it can be
+    /// heard while the transport runs; undo (Y+B) takes it back.
+    fn browser_act(&mut self, b: Btn) {
+        let Some(col) = self.arr_browse else { return };
+        let pres = presets::builtin();
+        let Some(sec) = self.project.drums.sections.get(self.arr_sel).cloned() else {
+            self.arr_browse = None;
+            return;
+        };
+        let cur = pres.patterns.iter().position(|p| p.id == sec.preset);
+        let style = cur.and_then(|c| pres.styles.iter().position(|s| *s == pres.patterns[c].style)).unwrap_or(0);
+        let in_style = if pres.styles.is_empty() { Vec::new() } else { pres.of_style(style) };
+        let kits = self.lib.all_kit_names();
+        let kit_idx = kits.iter().position(|k| *k == sec.kit).map_or(0, |i| i + 1);
+        let dir = match b {
+            Btn::Up | Btn::L2 => -1i64,
+            Btn::Down | Btn::R2 => 1,
+            _ => 0,
+        };
+        let step = if matches!(b, Btn::L2 | Btn::R2) { 5 } else { 1 };
+        match b {
+            Btn::Left => self.arr_browse = Some(col.saturating_sub(1)),
+            Btn::Right => self.arr_browse = Some((col + 1).min(2)),
+            Btn::A | Btn::B => self.arr_browse = None,
+            Btn::Up | Btn::Down | Btn::L2 | Btn::R2 => match col {
+                0 if !pres.styles.is_empty() => {
+                    let si = (style as i64 + dir).rem_euclid(pres.styles.len() as i64) as usize;
+                    if let Some(&first) = pres.of_style(si).first() {
+                        self.set_section_preset(first);
+                    }
+                }
+                1 => {
+                    let pos = in_style.iter().position(|&i| Some(i) == cur).unwrap_or(0) as i64;
+                    if let Some(&i) = in_style.get((pos + dir * step).clamp(0, in_style.len() as i64 - 1).max(0) as usize) {
+                        self.set_section_preset(i);
+                    }
+                }
+                2 => {
+                    let k = (kit_idx as i64 + dir * step).clamp(0, kits.len() as i64) as usize;
+                    self.set_section_kit(if k == 0 { "" } else { kits[k - 1].as_str() });
+                }
+                _ => {}
+            },
+            // the kit of this section for every section
+            Btn::X => {
+                self.checkpoint("kit for all", NO_COALESCE);
+                for s in self.project.drums.sections.iter_mut() {
+                    s.kit = sec.kit.clone();
+                }
+                self.rebuild_drums();
+                self.toast.say(&format!("{} for every section", if sec.kit.is_empty() { "Automatic kit" } else { &sec.kit }));
+            }
+            _ => {}
+        }
+    }
+
+    fn set_section_kit(&mut self, kit: &str) {
+        self.checkpoint("kit", 3200 + self.arr_sel as u32);
+        if let Some(s) = self.project.drums.sections.get_mut(self.arr_sel) {
+            s.kit = kit.to_string();
+            self.rebuild_drums();
         }
     }
 

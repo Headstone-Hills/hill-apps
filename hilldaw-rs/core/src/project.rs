@@ -132,11 +132,13 @@ pub struct DrumSectionModel {
     pub name: String,
     pub preset: String,
     pub cycles: u32,
+    /// the drum kit this section plays ("" = the automatic choice for its style)
+    pub kit: String,
 }
 
 impl Default for DrumSectionModel {
     fn default() -> Self {
-        DrumSectionModel { name: String::new(), preset: String::new(), cycles: 1 }
+        DrumSectionModel { name: String::new(), preset: String::new(), cycles: 1, kit: String::new() }
     }
 }
 
@@ -417,8 +419,8 @@ mod tests {
     fn drum_sections_roundtrip_by_preset_id_and_old_files_have_none() {
         let mut p = Project::default();
         p.drums.sections = vec![
-            DrumSectionModel { name: "Verse".into(), preset: "basic-rock".into(), cycles: 4 },
-            DrumSectionModel { name: "Fill".into(), preset: "funk-1".into(), cycles: 1 },
+            DrumSectionModel { name: "Verse".into(), preset: "basic-rock".into(), cycles: 4, ..Default::default() },
+            DrumSectionModel { name: "Fill".into(), preset: "funk-1".into(), cycles: 1, ..Default::default() },
         ];
         p.drums.vol[2] = 2.5;
         p.drums.mute[5] = true;

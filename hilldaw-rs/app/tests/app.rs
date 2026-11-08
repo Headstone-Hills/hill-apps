@@ -343,7 +343,7 @@ fn a_corrupt_saved_project_or_unknown_preset_does_not_stop_the_app() {
     assert_eq!(a.project.drums.sections.len(), 1, "fell back to a fresh project");
 
     let mut p = hilldaw_core::project::Project::default();
-    p.drums.sections.push(hilldaw_core::project::DrumSectionModel { name: "x".into(), preset: "gone-preset".into(), cycles: 2 });
+    p.drums.sections.push(hilldaw_core::project::DrumSectionModel { name: "x".into(), preset: "gone-preset".into(), cycles: 2, ..Default::default() });
     let mut h = MemHost::default();
     h.save_state(STATE_KEY, &p.to_json());
     let mut a = HillDaw::new(Box::new(h), status());

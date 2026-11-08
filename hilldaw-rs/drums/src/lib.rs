@@ -4,6 +4,7 @@
 //! the kit matching all come from the owner's `hill_core::presets`; nothing is re-implemented or invented here.
 //! This crate only loads the planned sounds from a [`Host`] and packs them into `hilldaw_core::drums` types.
 
+pub mod chip;
 pub mod host;
 
 pub use hill_core::{Host, MemHost};
@@ -22,10 +23,17 @@ pub struct LoadedPattern {
     pub kit: Option<String>,
 }
 
+/// Where the synthesised kits' files pretend to live (no host has such a path).
+const CHIP_PREFIX: &str = "chip:";
+
 /// Loads and caches patterns for one sample library.
 pub struct DrumLibrary {
     host: Box<dyn Host>,
     kits: Vec<Kit>,
+    /// the synthesised 8-bit kits: only used when a section asks for one by name, never by the automatic choice
+    chip_kits: Vec<Kit>,
+    /// the samples of the synthesised kits, by the path their kit lists
+    generated: HashMap<String, Vec<f32>>,
     sounds: HashMap<String, Option<DrumVoice>>,
     patterns: HashMap<String, LoadedPattern>,
 }
@@ -48,7 +56,17 @@ impl DrumLibrary {
                 _ => None,
             })
             .collect();
-        DrumLibrary { host, kits, sounds: HashMap::new(), patterns: HashMap::new() }
+        let (mut chip_kits, mut generated) = (Vec::new(), HashMap::new());
+        for (name, files) in chip::kits() {
+            let mut paths = Vec::new();
+            for (stem, data) in files {
+                let path = format!("{CHIP_PREFIX}{name}/{stem}.wav");
+                generated.insert(path.clone(), data);
+                paths.push(path);
+            }
+            chip_kits.push(Kit::new(name, &paths));
+        }
+        DrumLibrary { host, kits, chip_kits, generated, sounds: HashMap::new(), patterns: HashMap::new() }
     }
 
     /// The sample/state host this library reads from (the app saves its project through it).
@@ -56,8 +74,14 @@ impl DrumLibrary {
         self.host.as_mut()
     }
 
+    /// The kits found in the sample folders.
     pub fn kit_names(&self) -> Vec<&str> {
         self.kits.iter().map(|k| k.name.as_str()).collect()
+    }
+
+    /// Every kit a section can be given: the sample-folder kits, then the synthesised 8-bit ones.
+    pub fn all_kit_names(&self) -> Vec<String> {
+        self.kits.iter().chain(&self.chip_kits).map(|k| k.name.clone()).collect()
     }
 
     fn load_sound(&mut self, s: &Sound) -> Option<DrumVoice> {
@@ -67,6 +91,13 @@ impl DrumLibrary {
         };
         if let Some(v) = self.sounds.get(&key) {
             return v.clone();
+        }
+        if let Sound::File(p) = s {
+            if let Some(mono) = self.generated.get(p) {
+                let voice = DrumVoice { data: Arc::new(mono.iter().flat_map(|x| [*x, *x]).collect()), rate: chip::RATE };
+                self.sounds.insert(key, Some(voice.clone()));
+                return Some(voice);
+            }
         }
         let sample = match s {
             Sound::Builtin(n) => synth::builtin_by_name(n).and_then(|i| i.first().cloned()),
@@ -85,13 +116,27 @@ impl DrumLibrary {
         voice
     }
 
-    /// Lay out preset `id` on the DAW's 8 drum voices.
+    /// Lay out preset `id` on the DAW's 8 drum voices, with the automatically chosen kit.
     pub fn pattern(&mut self, id: &str) -> Result<LoadedPattern, String> {
-        if let Some(p) = self.patterns.get(id) {
+        self.pattern_with_kit(id, "")
+    }
+
+    /// Like [`Self::pattern`] but with the kit called `kit` ("" or a name that is not there = the automatic choice). A named kit that has
+    /// nothing for a pattern's rows leaves those rows to the built-in sounds.
+    pub fn pattern_with_kit(&mut self, id: &str, kit: &str) -> Result<LoadedPattern, String> {
+        let chosen = if kit.is_empty() { None } else { self.kits.iter().chain(&self.chip_kits).position(|k| k.name == kit) };
+        let key = format!("{id}\u{1}{}", if chosen.is_some() { kit } else { "" });
+        if let Some(p) = self.patterns.get(&key) {
             return Ok(p.clone());
         }
         let preset = find_preset(id).ok_or_else(|| format!("unknown drum preset {id:?}"))?;
-        let plan = preset.plan(&self.kits, VOICES);
+        let plan = match chosen {
+            Some(i) => {
+                let k = if i < self.kits.len() { &self.kits[i] } else { &self.chip_kits[i - self.kits.len()] };
+                preset.plan(std::slice::from_ref(k), VOICES)
+            }
+            None => preset.plan(&self.kits, VOICES),
+        };
         let mut pat = DrumPattern::silent(preset.steps, preset.div);
         for (vi, v) in plan.voices.iter().enumerate().take(VOICES) {
             // a sound that fails to load leaves its voice silent rather than failing the whole song
@@ -100,7 +145,7 @@ impl DrumLibrary {
             pat.pitch[vi] = plan.pitch[vi].clone();
         }
         let loaded = LoadedPattern { pattern: Arc::new(pat), kit: plan.kit };
-        self.patterns.insert(id.to_string(), loaded.clone());
+        self.patterns.insert(key, loaded.clone());
         Ok(loaded)
     }
 
@@ -114,7 +159,7 @@ impl DrumLibrary {
         t.looping = m.loop_arrangement;
         t.start = m.start;
         for s in &m.sections {
-            let p = self.pattern(&s.preset)?;
+            let p = self.pattern_with_kit(&s.preset, &s.kit)?;
             t.sections.push(DrumSection { name: s.name.clone(), pattern: p.pattern, cycles: s.cycles });
         }
         Ok(t)
@@ -204,6 +249,76 @@ mod tests {
     }
 
     #[test]
+    fn the_8_bit_kits_are_offered_but_never_chosen_automatically() {
+        let mut lib = DrumLibrary::new(Box::new(kit_host()));
+        assert_eq!(lib.all_kit_names(), vec!["Test Kit", "8-Bit NES", "8-Bit GB"]);
+        assert_eq!(lib.kit_names(), vec!["Test Kit"], "the sample-folder kits are listed separately");
+        let empty_lib = empty();
+        assert_eq!(empty_lib.all_kit_names(), vec!["8-Bit NES", "8-Bit GB"]);
+        // with no sample kits at all the automatic choice is still the plain built-in sounds
+        let mut e = empty();
+        assert!(e.pattern(&rock_like().id).unwrap().kit.is_none());
+        // with a sample kit present the automatic choice is that kit
+        assert_eq!(lib.pattern(&rock_like().id).unwrap().kit.as_deref(), Some("Test Kit"));
+    }
+
+    #[test]
+    fn a_section_can_ask_for_an_8_bit_kit_and_plays_its_sounds() {
+        let mut lib = empty();
+        let p = rock_like();
+        let auto = lib.pattern_with_kit(&p.id, "").unwrap();
+        let nes = lib.pattern_with_kit(&p.id, chip::NES).unwrap();
+        let gb = lib.pattern_with_kit(&p.id, chip::GB).unwrap();
+        assert_eq!((nes.kit.as_deref(), gb.kit.as_deref()), (Some(chip::NES), Some(chip::GB)));
+        assert_eq!(auto.kit, None);
+        // same rhythm, different sounds
+        assert_eq!(nes.pattern.cells, auto.pattern.cells);
+        let first = |lp: &LoadedPattern| -> Vec<f32> { lp.pattern.voices.iter().flatten().map(|v| v.data[..200].iter().sum::<f32>()).collect() };
+        assert_ne!(first(&nes), first(&auto));
+        assert_ne!(first(&nes), first(&gb));
+        let all_voices_there = nes.pattern.voices.iter().enumerate().all(|(vi, v)| v.is_some() || nes.pattern.cells[vi].iter().all(|c| *c == 0));
+        assert!(all_voices_there);
+        assert!(nes.pattern.voices.iter().flatten().all(|v| v.rate == chip::RATE));
+    }
+
+    #[test]
+    fn every_shipped_preset_plays_on_both_8_bit_kits_with_no_missing_sounds() {
+        let mut lib = empty();
+        for kit in [chip::NES, chip::GB] {
+            for p in &presets::builtin().patterns {
+                let lp = lib.pattern_with_kit(&p.id, kit).unwrap_or_else(|e| panic!("{}: {e}", p.id));
+                for vi in 0..VOICES {
+                    let used = lp.pattern.cells[vi].iter().any(|c| *c != 0);
+                    assert!(!used || lp.pattern.voices[vi].is_some(), "{kit} / {} voice {vi}", p.id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_kit_that_is_gone_falls_back_to_the_automatic_choice() {
+        let mut lib = DrumLibrary::new(Box::new(kit_host()));
+        let p = rock_like();
+        let gone = lib.pattern_with_kit(&p.id, "Deleted Kit").unwrap();
+        assert_eq!(gone.kit.as_deref(), Some("Test Kit"));
+    }
+
+    #[test]
+    fn a_track_uses_each_sections_kit() {
+        let id = &rock_like().id;
+        let mut lib = empty();
+        let m = DrumsModel {
+            sections: vec![
+                DrumSectionModel { name: "a".into(), preset: id.clone(), cycles: 1, kit: chip::NES.into() },
+                DrumSectionModel { name: "b".into(), preset: id.clone(), cycles: 1, kit: String::new() },
+            ],
+            ..Default::default()
+        };
+        let t = lib.build_track(&m, 120.0).unwrap();
+        assert!(!Arc::ptr_eq(&t.sections[0].pattern, &t.sections[1].pattern), "different kits give different patterns");
+    }
+
+    #[test]
     fn unknown_preset_is_an_error_not_a_silent_song() {
         assert!(empty().pattern("no-such-preset").err().expect("must fail").contains("no-such-preset"));
     }
@@ -213,8 +328,8 @@ mod tests {
         let id = &rock_like().id;
         let mut m = DrumsModel {
             sections: vec![
-                DrumSectionModel { name: "Verse".into(), preset: id.clone(), cycles: 2 },
-                DrumSectionModel { name: "Again".into(), preset: id.clone(), cycles: 1 },
+                DrumSectionModel { name: "Verse".into(), preset: id.clone(), cycles: 2, ..Default::default() },
+                DrumSectionModel { name: "Again".into(), preset: id.clone(), cycles: 1, ..Default::default() },
             ],
             ..Default::default()
         };
@@ -233,7 +348,7 @@ mod tests {
     #[test]
     fn muting_every_voice_makes_silence() {
         let m = DrumsModel {
-            sections: vec![DrumSectionModel { name: "A".into(), preset: rock_like().id.clone(), cycles: 1 }],
+            sections: vec![DrumSectionModel { name: "A".into(), preset: rock_like().id.clone(), cycles: 1, ..Default::default() }],
             mute: [true; 8],
             ..Default::default()
         };

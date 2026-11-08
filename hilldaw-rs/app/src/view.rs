@@ -210,6 +210,11 @@ impl HillDaw {
 
     fn draw_arrange(&self, fb: &mut Fb) {
         fb.rect(10, 138, 620, 262, PANEL);
+        if let (Some(col), false) = (self.arr_browse, self.project.drums.sections.is_empty()) {
+            self.draw_drum_browser(fb, col);
+            self.draw_pattern_grid(fb);
+            return;
+        }
         let secs = if self.rate > 0 { self.drum_total as f64 / self.rate as f64 } else { 0.0 };
         let cycles: u32 = self.project.drums.sections.iter().map(|s| s.cycles).sum();
         fb.text(22, 146, "DRUM SECTIONS", 2, DRUM);
@@ -248,7 +253,11 @@ impl HillDaw {
             fb.text(420, y, &hill_core::fb::clip(kit, 25), 1, DIM);
         }
 
-        // mini step grid of the selected section: one row per drum voice, brighter = louder, F = flam
+        self.draw_pattern_grid(fb);
+    }
+
+    /// Mini step grid of the selected section: one row per drum voice, brighter = louder, F = flam.
+    fn draw_pattern_grid(&self, fb: &mut Fb) {
         if let Some((pat, _)) = self.section_pats.get(self.arr_sel) {
             let gy = 312;
             fb.text(22, gy - 12, "PATTERN", 1, DIM);
@@ -269,6 +278,70 @@ impl HillDaw {
                 if used {
                     fb.rect(30, gy + v as i32 * 10 + 2, 4, 4, ACCENT);
                 }
+            }
+        }
+    }
+
+    /// The drum browser: three lists side by side (style, pattern, kit) for the selected section. The active column has the frame.
+    fn draw_drum_browser(&self, fb: &mut Fb, col: usize) {
+        let pres = presets::builtin();
+        let Some(sec) = self.project.drums.sections.get(self.arr_sel) else { return };
+        fb.text(22, 146, "DRUM BROWSER", 2, DRUM);
+        fb.text_right(618, 150, &format!("section {}: {}", self.arr_sel + 1, hill_core::fb::clip(&sec.name, 24)), 1, DIM);
+        let cur = pres.patterns.iter().position(|p| p.id == sec.preset);
+        let style = cur.and_then(|c| pres.styles.iter().position(|s| *s == pres.patterns[c].style));
+        let in_style: Vec<usize> = style.map(|si| pres.of_style(si)).unwrap_or_default();
+        let kits = self.lib.all_kit_names();
+        let resolved = self.section_pats.get(self.arr_sel).and_then(|p| p.1.clone());
+
+        let styles: Vec<String> = pres.styles.clone();
+        let patterns: Vec<String> = in_style
+            .iter()
+            .map(|&i| {
+                let p = &pres.patterns[i];
+                match p.tag() {
+                    Some(t) => format!("{} [{}]", p.name, t),
+                    None => p.name.clone(),
+                }
+            })
+            .collect();
+        let mut kit_rows: Vec<String> = vec![match &resolved {
+            Some(k) if sec.kit.is_empty() => format!("Auto: {k}"),
+            _ if sec.kit.is_empty() => "Auto: built-in".to_string(),
+            _ => "Auto".to_string(),
+        }];
+        kit_rows.extend(kits.iter().cloned());
+        let kit_sel = kits.iter().position(|k| *k == sec.kit).map_or(0, |i| i + 1);
+
+        const ROWS: usize = 7;
+        // (title, x, width, rows, selected row, characters that fit)
+        type Column<'a> = (&'a str, i32, i32, &'a [String], Option<usize>, usize);
+        let cols: [Column; 3] = [
+            ("STYLE", 22, 160, &styles, style, 18),
+            ("PATTERN", 190, 250, &patterns, in_style.iter().position(|&i| Some(i) == cur), 30),
+            ("KIT", 450, 170, &kit_rows, Some(kit_sel), 20),
+        ];
+        for (ci, (title, x, w, rows, sel, chars)) in cols.iter().enumerate() {
+            let active = ci == col;
+            fb.text(*x, 168, title, 1, if active { ACCENT } else { DIM });
+            let n = rows.len();
+            let first = sel.unwrap_or(0).saturating_sub(ROWS / 2).min(n.saturating_sub(ROWS));
+            for (r, k) in (first..n).take(ROWS).enumerate() {
+                let y = 182 + r as i32 * 17;
+                let is_sel = Some(k) == *sel;
+                if is_sel {
+                    fb.rect(*x - 4, y - 3, *w, 16, rgb(34, 42, 58));
+                    fb.frame(*x - 4, y - 3, *w, 16, 1, if active { ACCENT } else { rgb(70, 78, 96) });
+                }
+                fb.text(*x, y, &hill_core::fb::clip(&rows[k], *chars), 1, if is_sel { WHITE } else { TEXT });
+            }
+            if n > ROWS {
+                // where the window sits in the list
+                let (bx, by, bh) = (*x + *w - 8, 182, ROWS as i32 * 17 - 4);
+                fb.rect(bx, by, 2, bh, CELL_OFF);
+                let th = (bh as usize * ROWS / n).max(6) as i32;
+                let ty = by + ((bh - th) as usize * first / (n - ROWS).max(1)) as i32;
+                fb.rect(bx, ty, 2, th, if active { ACCENT } else { DIM });
             }
         }
     }
@@ -396,7 +469,8 @@ impl HillDaw {
         let hint = match self.view {
             View::Mixer => "L/R strip U/D level X mute A arm  Y+B undo Y+A redo",
             View::Track => "L2/R2 tab  U/D row  L/R value (Y: big)  B mixer",
-            View::Arrange => "U/D section  L/R pattern  L2/R2 style  A add  X del",
+            View::Arrange if self.arr_browse.is_some() => "L/R column  U/D pick  L2/R2 jump  X kit>all  A done",
+            View::Arrange => "U/D section  L/R pattern  A add  X del  B browser",
             View::Fm1 => "L2/R2 section  U/D row  L/R value  A on/off  X note",
             View::Export => "U/D option  L/R change  A export  B cancel",
             View::Waves => "L/R scroll  L2/R2 zoom  U/D row  A seek  X follow",
