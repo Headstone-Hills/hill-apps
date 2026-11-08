@@ -98,6 +98,8 @@ pub struct IsoCapture {
     bufs: Vec<UrbBuf>,
     maxpkt: usize,
     streaming: bool,
+    /// the sample rate the device is streaming at (what was asked for, or for a USB Audio 2.0 device what it settled on)
+    pub rate: u32,
 }
 
 impl IsoCapture {
@@ -121,12 +123,23 @@ impl IsoCapture {
             unsafe { libc::close(fd) };
             return Err(e);
         }
-        if let Some(r) = rate.filter(|_| alt.rates.len() > 1) {
+        let mut actual = rate.unwrap_or_else(|| alt.rates.first().copied().unwrap_or(0));
+        if let Some(clock) = alt.uac2 {
+            // USB Audio 2.0: the rate is set on the clock source, and must read back; whatever the device settles on is what is captured
+            match dev::negotiate_uac2_rate(fd, clock, actual.max(1)) {
+                Some(r) => actual = r,
+                None => {
+                    dev::release(fd, alt.iface);
+                    unsafe { libc::close(fd) };
+                    return Err(UsbError::Io("the device accepted none of 44.1, 48, 96, 88.2 or 192 kHz".into()));
+                }
+            }
+        } else if let Some(r) = rate.filter(|_| alt.rates.len() > 1) {
             let _ = dev::set_sampling_rate(fd, alt.ep, r);
         }
         let maxpkt = alt.max_packet as usize;
         let bufs = (0..n_urbs.clamp(1, 64)).map(|i| UrbBuf::new(frames_per_urb.max(1), maxpkt, alt.ep, i)).collect();
-        Ok(IsoCapture { fd, iface: alt.iface, bufs, maxpkt, streaming: false })
+        Ok(IsoCapture { fd, iface: alt.iface, bufs, maxpkt, streaming: false, rate: actual })
     }
 
     /// Capture until `stop` is set or `seconds` elapse (0 = until stopped). Payload goes to `sink`.

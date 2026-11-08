@@ -57,6 +57,12 @@ pub trait Recorder: Send {
     fn level(&mut self) -> f32 {
         0.0
     }
+    /// Switch to another song's folder (a slug like `song` or `song-2`): recordings, loading and exports then use it. Not while recording.
+    fn set_project(&mut self, _slug: &str) {}
+    /// The recordings in the current song's `audio/` folder that the app can place: (path relative to the song, length in project frames).
+    fn list_recordings(&mut self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
     /// A new file for an export, named after `stem` (a number is added rather than overwriting an earlier export).
     /// Returns the file and a path to show the user.
     fn create_export(&mut self, _stem: &str) -> Result<(Box<dyn ExportFile>, String), String> {
@@ -92,6 +98,61 @@ pub fn next_take_name(audio_dir: &Path) -> String {
     format!("rec-{:03}.wav", used.iter().max().map_or(1, |m| m + 1))
 }
 
+/// The recordings in `<project_dir>/audio/` (`rec-NNN.wav`), oldest first, with their length in project frames from the WAV header.
+/// A file that is not a readable WAV (a crash before the header was first written) is left out.
+pub fn list_recordings(project_dir: &Path) -> Vec<(String, u64)> {
+    let dir = project_dir.join("audio");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("rec-") && n.ends_with(".wav")).collect())
+        .unwrap_or_default();
+    names.sort();
+    names
+        .into_iter()
+        .filter_map(|n| {
+            let bytes = wav_header_frames(&dir.join(&n))?;
+            Some((format!("audio/{n}"), bytes))
+        })
+        .collect()
+}
+
+/// Frames at the project rate declared by a mono/stereo PCM WAV header (`None` if it is not one): only the first 64 bytes are read.
+fn wav_header_frames(path: &Path) -> Option<u64> {
+    use std::io::Read;
+    let mut h = [0u8; 64];
+    let n = File::open(path).ok()?.read(&mut h).ok()?;
+    let h = &h[..n];
+    if n < 44 || &h[0..4] != b"RIFF" || &h[8..12] != b"WAVE" {
+        return None;
+    }
+    // walk the chunks that fit in the first bytes: fmt, then data (the writer puts them first)
+    let (mut i, mut channels, mut rate, mut bits, mut data) = (12usize, 0u32, 0u32, 0u32, None);
+    while i + 8 <= h.len() {
+        let size = u32::from_le_bytes([h[i + 4], h[i + 5], h[i + 6], h[i + 7]]) as u64;
+        match &h[i..i + 4] {
+            b"fmt " if i + 24 <= h.len() => {
+                channels = u16::from_le_bytes([h[i + 10], h[i + 11]]) as u32;
+                rate = u32::from_le_bytes([h[i + 12], h[i + 13], h[i + 14], h[i + 15]]);
+                bits = u16::from_le_bytes([h[i + 22], h[i + 23]]) as u32;
+            }
+            b"data" => {
+                data = Some(size);
+                break;
+            }
+            _ => {}
+        }
+        i += 8 + size as usize + (size as usize & 1);
+    }
+    let (data, frame) = (data?, (channels * bits / 8) as u64);
+    if frame == 0 || rate == 0 {
+        return None;
+    }
+    let file_len = std::fs::metadata(path).ok()?.len();
+    // a header that was not finished (power cut) can claim more or less than is there: trust the smaller of header and file
+    let data = data.min(file_len.saturating_sub(44));
+    let frames = data / frame;
+    (frames > 0).then_some(frames * RATE as u64 / rate as u64)
+}
+
 /// Read a recording under `project_dir`, refusing paths that could leave the folder and files too big to hold in memory.
 pub fn load_recording(project_dir: &Path, rel: &str) -> Option<Vec<f32>> {
     if !is_safe_relative(rel) {
@@ -114,6 +175,8 @@ pub fn load_recording(project_dir: &Path, rel: &str) -> Option<Vec<f32>> {
 
 /// The pieces of a running capture, before it is filed as the recording or the monitor.
 type Launched = (Arc<AtomicBool>, Arc<AtomicU64>, Arc<AtomicU64>, JoinHandle<Result<(), String>>, u32);
+/// What the capture thread reports once the device is open: the rate it is really streaming at.
+type Ready = Result<u32, String>;
 
 struct Active {
     stop: Arc<AtomicBool>,
@@ -129,6 +192,8 @@ struct Active {
 /// The FM-1 over USB, written under `<project_dir>/audio/`.
 pub struct UsbRecorder {
     project_dir: PathBuf,
+    /// the folder that holds every song (`<root>/<slug>/`), when songs can be switched
+    root: Option<PathBuf>,
     active: Option<Active>,
     /// listening only (no file)
     monitor: Option<Active>,
@@ -142,7 +207,17 @@ pub struct UsbRecorder {
 
 impl UsbRecorder {
     pub fn new(project_dir: impl Into<PathBuf>) -> Self {
-        UsbRecorder { project_dir: project_dir.into(), active: None, monitor: None, selected: None, sysfs: PathBuf::from(SYSFS_USB), peak: Arc::new(AtomicU64::new(0)) }
+        UsbRecorder { project_dir: project_dir.into(), root: None, active: None, monitor: None, selected: None, sysfs: PathBuf::from(SYSFS_USB), peak: Arc::new(AtomicU64::new(0)) }
+    }
+}
+
+impl UsbRecorder {
+    /// Songs live in `<root>/<slug>/`; start in `slug`.
+    pub fn with_root(root: impl Into<PathBuf>, slug: &str) -> Self {
+        let root = root.into();
+        let mut r = Self::new(root.join(slug));
+        r.root = Some(root);
+        r
     }
 }
 
@@ -150,16 +225,17 @@ impl UsbRecorder {
     /// Open the chosen input's capture stream and run it on its own thread. With a writer the audio goes to disk too; without one it is only
     /// measured (the input meter). The iso handle is created on the capture thread and never leaves it.
     fn launch(&self, input: AudioInput, tx: Option<mpsc::SyncSender<Vec<u8>>>) -> Result<Launched, String> {
-        let rate = input.rate;
         let stop = Arc::new(AtomicBool::new(false));
         let captured = Arc::new(AtomicU64::new(0));
         let overruns = Arc::new(AtomicU64::new(0));
         let (st, cf, ov, pk) = (stop.clone(), captured.clone(), overruns.clone(), self.peak.clone());
-        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+        let (ready_tx, ready_rx) = mpsc::channel::<Ready>();
+        // about 16 ms per URB: 16 packets at full speed's 1 ms, 128 (the most usbfs allows) at high speed's 125 us
+        let per_urb = (16_000 / input.alt.interval_us.max(125) as usize).clamp(1, 128);
         let capture = std::thread::spawn(move || {
-            let mut cp = match IsoCapture::open_with_rate(&input.info, &input.alt, Some(input.rate), 16, 8).map_err(|e| e.to_string()) {
+            let mut cp = match IsoCapture::open_with_rate(&input.info, &input.alt, Some(input.rate), per_urb, 8).map_err(|e| e.to_string()) {
                 Ok(c) => {
-                    let _ = ready_tx.send(Ok(()));
+                    let _ = ready_tx.send(Ok(c.rate));
                     c
                 }
                 Err(e) => {
@@ -184,7 +260,7 @@ impl UsbRecorder {
             .map_err(|e| e.to_string())
         });
         match ready_rx.recv_timeout(Duration::from_secs(3)) {
-            Ok(Ok(())) => Ok((stop, captured, overruns, capture, rate)),
+            Ok(Ok(rate)) => Ok((stop, captured, overruns, capture, rate)),
             Ok(Err(e)) => {
                 let _ = capture.join();
                 Err(e)
@@ -225,7 +301,6 @@ impl Recorder for UsbRecorder {
             return Err("already recording".into());
         }
         let input = self.pick()?;
-        let dev_rate = input.rate;
         self.stop_monitor(); // the interface can be claimed once: recording takes over from monitoring
         let audio_dir = self.project_dir.join("audio");
         std::fs::create_dir_all(&audio_dir).map_err(|e| format!("cannot create {}: {e}", audio_dir.display()))?;
@@ -234,7 +309,10 @@ impl Recorder for UsbRecorder {
 
         // capture thread -> bounded queue -> writer thread -> SD card
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(512); // ~512 USB-sized chunks of slack
+        // the file's header needs the rate the device really runs at (a USB Audio 2.0 device settles it when it opens)
+        let (rate_tx, rate_rx) = mpsc::channel::<u32>();
         let writer = std::thread::spawn(move || {
+            let Ok(dev_rate) = rate_rx.recv() else { return 0 }; // the capture failed to open: nothing to write
             let Ok(mut w) = StreamingWav::new(BufWriter::with_capacity(256 * 1024, file), 1, 3, dev_rate) else { return 0 };
             let mut last_flush = Instant::now();
             for chunk in rx {
@@ -252,11 +330,13 @@ impl Recorder for UsbRecorder {
         });
         match self.launch(input, Some(tx)) {
             Ok((stop, captured, overruns, capture, rate)) => {
+                let _ = rate_tx.send(rate);
                 self.active = Some(Active { stop, captured, overruns, capture, writer: Some(writer), rate });
                 Ok(format!("audio/{name}"))
             }
             Err(e) => {
-                let _ = writer.join(); // the sender went away with the failed launch
+                drop(rate_tx);
+                let _ = writer.join(); // the writer stops: nothing was captured
                 Err(e)
             }
         }
@@ -264,6 +344,16 @@ impl Recorder for UsbRecorder {
 
     fn select_input(&mut self, id: Option<String>) {
         self.selected = id;
+    }
+
+    fn set_project(&mut self, slug: &str) {
+        if let (Some(root), true) = (&self.root, hilldaw_core::project::is_safe_relative(slug) && !slug.contains('/')) {
+            self.project_dir = root.join(slug);
+        }
+    }
+
+    fn list_recordings(&mut self) -> Vec<(String, u64)> {
+        list_recordings(&self.project_dir)
     }
 
     fn monitor(&mut self, on: bool) -> Result<(), String> {
@@ -427,4 +517,49 @@ mod tests {
         assert_eq!(r.frames(), 0);
         assert!(r.finish(0).is_err());
     }
+
+    #[test]
+    fn recordings_are_listed_with_their_length_in_project_frames_including_a_crashed_one() {
+        let d = tmp("list");
+        let audio = d.join("audio");
+        std::fs::create_dir_all(&audio).unwrap();
+        // a finished 48 kHz mono 24-bit file of 2 s
+        let mut w = StreamingWav::new(File::create(audio.join("rec-001.wav")).unwrap(), 1, 3, 48_000).unwrap();
+        w.write(&vec![1u8; 3 * 96_000]).unwrap();
+        w.finish().unwrap();
+        // one that was running when the power failed: the header was refreshed after 1 s of audio, then 1 more second arrived
+        let mut w = StreamingWav::new(File::create(audio.join("rec-002.wav")).unwrap(), 1, 3, 44_100).unwrap();
+        w.write(&vec![1u8; 3 * 44_100]).unwrap();
+        w.flush_header().unwrap();
+        w.write(&vec![1u8; 3 * 44_100]).unwrap();
+        std::mem::forget(w); // no finish: whatever reached the file stays, the header still says 1 s
+        // not recordings, or not usable
+        std::fs::write(audio.join("notes.txt"), b"x").unwrap();
+        std::fs::write(audio.join("rec-003.wav"), b"RIFF").unwrap();
+        let mut w = StreamingWav::new(File::create(audio.join("rec-004.wav")).unwrap(), 1, 3, 44_100).unwrap();
+        w.write(&[]).unwrap();
+        w.finish().unwrap(); // an empty capture
+        let l = list_recordings(&d);
+        assert_eq!(l.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), vec!["audio/rec-001.wav", "audio/rec-002.wav"], "{l:?}");
+        assert_eq!(l[0].1, 88_200, "2 s at 48 kHz is 88 200 frames at the project rate");
+        assert_eq!(l[1].1, 44_100, "the crashed file counts the second the header knows about");
+        assert!(list_recordings(&d.join("missing")).is_empty());
+    }
+
+    #[test]
+    fn songs_are_separate_folders_under_the_root_and_a_bad_name_cannot_leave_it() {
+        let d = tmp("songs");
+        let mut r = UsbRecorder::with_root(&d, "song");
+        assert_eq!(r.project_dir, d.join("song"));
+        r.set_project("song-2");
+        assert_eq!(r.project_dir, d.join("song-2"));
+        r.set_project("../elsewhere");
+        r.set_project("a/b");
+        assert_eq!(r.project_dir, d.join("song-2"), "unsafe names are ignored");
+        // a recorder made for one fixed folder ignores song switches
+        let mut fixed = UsbRecorder::new(d.join("only"));
+        fixed.set_project("song-2");
+        assert_eq!(fixed.project_dir, d.join("only"));
+    }
 }
+

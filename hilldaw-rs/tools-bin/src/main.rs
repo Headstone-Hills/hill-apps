@@ -275,7 +275,7 @@ fn probe_cc(args: &[String]) {
 fn inputs() {
     let list = hilldaw_usb::audio::list_inputs(Path::new(SYSFS_USB));
     if list.is_empty() {
-        println!("no USB audio input found (class-compliant USB Audio 1.0 devices with a capture stream; USB Audio 2.0 is not supported yet)");
+        println!("no USB audio input found (class-compliant USB Audio 1.0 and 2.0 devices with a capture stream)");
         return;
     }
     for i in &list {

@@ -17,20 +17,25 @@ use std::time::Duration;
 
 /// How many frames go in each packet so that the average over time is exactly the sample rate.
 pub struct PacketSizer {
-    rate_per_packet: u32,
-    acc: u32,
+    rate_per_packet: u64,
+    acc: u64,
 }
 
 impl PacketSizer {
     /// `rate` in Hz; `interval_ms` is the endpoint's packet interval in milliseconds (1 for the usual full-speed audio endpoint).
     pub fn new(rate: u32, interval_ms: u32) -> Self {
-        PacketSizer { rate_per_packet: rate * interval_ms.max(1), acc: 0 }
+        Self::new_us(rate, interval_ms.max(1) * 1000)
+    }
+
+    /// Like [`Self::new`] with the packet interval in microseconds (125 for a high-speed USB Audio 2.0 endpoint).
+    pub fn new_us(rate: u32, interval_us: u32) -> Self {
+        PacketSizer { rate_per_packet: rate as u64 * interval_us.max(1) as u64, acc: 0 }
     }
 
     pub fn next_frames(&mut self) -> usize {
         self.acc += self.rate_per_packet;
-        let f = self.acc / 1000;
-        self.acc %= 1000;
+        let f = self.acc / 1_000_000;
+        self.acc %= 1_000_000;
         f as usize
     }
 }
@@ -92,7 +97,7 @@ pub struct IsoPlayback {
     maxpkt: usize,
     frame_bytes: usize,
     rate: u32,
-    interval_ms: u32,
+    interval_us: u32,
     streaming: bool,
 }
 
@@ -112,18 +117,25 @@ impl IsoPlayback {
             unsafe { libc::close(fd) };
             return Err(e);
         }
-        if alt.rates.len() > 1 {
+        if let Some(clock) = alt.uac2 {
+            // the packets are sized for `rate`, so the device must really run at it
+            if dev::negotiate_uac2_rate(fd, clock, rate) != Some(rate) {
+                dev::release(fd, alt.iface);
+                unsafe { libc::close(fd) };
+                return Err(UsbError::Io(format!("the device would not run at {rate} Hz")));
+            }
+        } else if alt.rates.len() > 1 {
             let _ = dev::set_sampling_rate(fd, alt.ep, rate);
         }
         let maxpkt = alt.max_packet as usize;
         let bufs = (0..n_urbs.clamp(2, 64)).map(|i| PlayBuf::new(packets_per_urb.max(1), maxpkt, alt.ep, i)).collect();
-        Ok(IsoPlayback { fd, iface: alt.iface, bufs, maxpkt, frame_bytes: alt.frame_bytes(), rate, interval_ms: alt.interval.max(1) as u32, streaming: false })
+        Ok(IsoPlayback { fd, iface: alt.iface, bufs, maxpkt, frame_bytes: alt.frame_bytes(), rate, interval_us: alt.interval_us.max(125), streaming: false })
     }
 
     /// Stream until `stop`. `fill(bytes, frames)` must write exactly `frames` device frames into `bytes` (silence when it has nothing).
     pub fn run(&mut self, stop: &AtomicBool, mut fill: impl FnMut(&mut [u8], usize)) -> Result<IsoStats, UsbError> {
         let mut st = IsoStats::default();
-        let mut sizer = PacketSizer::new(self.rate, self.interval_ms);
+        let mut sizer = PacketSizer::new_us(self.rate, self.interval_us);
         let (maxpkt, frame_bytes) = (self.maxpkt, self.frame_bytes);
         // prime the whole queue (it starts playing as soon as it is submitted), then keep it topped up
         for i in 0..self.bufs.len() {
@@ -258,6 +270,21 @@ mod tests {
         // refilling continues the sizer's rhythm instead of starting over
         let again = fill_urb(&mut buf, &mut sizer, 6, 270, &mut |_, f| packet_frames.push(f));
         assert_eq!(again, 441 * 6);
+    }
+
+    #[test]
+    fn packet_sizes_average_the_rate_exactly_at_125_us_too() {
+        for rate in [44_100u32, 48_000, 96_000] {
+            let mut z = PacketSizer::new_us(rate, 125);
+            let total: usize = (0..8000).map(|_| z.next_frames()).sum(); // one second of microframes
+            assert_eq!(total, rate as usize, "{rate}");
+        }
+        let mut z = PacketSizer::new_us(44_100, 125);
+        let sizes: Vec<usize> = (0..16).map(|_| z.next_frames()).collect();
+        assert!(sizes.iter().all(|s| *s == 5 || *s == 6), "{sizes:?}");
+        let mut ms = PacketSizer::new(44_100, 1);
+        let v: Vec<usize> = (0..10).map(|_| ms.next_frames()).collect();
+        assert_eq!(v.iter().filter(|s| **s == 45).count(), 1, "the 1 ms pattern is unchanged: nine 44s and one 45");
     }
 
     #[test]

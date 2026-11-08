@@ -76,6 +76,7 @@ impl HillDaw {
             View::Export => self.draw_export(fb),
             View::Track => self.draw_track(fb),
             View::Waves => self.draw_waves(fb),
+            View::Songs => self.draw_songs(fb),
         }
         self.draw_footer(fb);
         self.draw_clock(fb);
@@ -399,10 +400,44 @@ impl HillDaw {
             View::Fm1 => "L2/R2 section  U/D row  L/R value  A on/off  X note",
             View::Export => "U/D option  L/R change  A export  B cancel",
             View::Waves => "L/R scroll  L2/R2 zoom  U/D row  A seek  X follow",
+            View::Songs => "U/D pick  A open/new  X x2 remove  B back",
         };
         fb.text(12, 469, hint, 1, DIM);
         fb.text_right(630, 453, "FN+SEL help", 1, DIM);
         fb.text_right(630, 469, "START play  SELECT rec", 1, DIM);
+    }
+
+    /// The song browser: one row per song, then a row that makes a new one.
+    fn draw_songs(&self, fb: &mut Fb) {
+        fb.rect(10, 138, 620, 262, PANEL);
+        fb.text(22, 146, "SONGS", 2, DRUM);
+        const ROWS: usize = 8;
+        let n = self.songs.len() + 1;
+        let first = self.song_sel.saturating_sub(ROWS - 1).min(n.saturating_sub(ROWS));
+        for (r, k) in (first..n).take(ROWS).enumerate() {
+            let y = 172 + r as i32 * 26;
+            if k == self.song_sel {
+                fb.rect(16, y - 4, 608, 24, rgb(34, 42, 58));
+            }
+            match self.songs.get(k) {
+                Some(s) => {
+                    fb.text(26, y, &hill_core::fb::clip(&s.name, 16), 2, if s.open { ACCENT } else { TEXT });
+                    if s.bpm > 0.0 {
+                        fb.text(300, y + 2, &format!("{:.0} bpm", s.bpm), 2, DIM);
+                        fb.text(420, y + 2, &format!("{} take{}", s.takes, if s.takes == 1 { "" } else { "s" }), 2, DIM);
+                    } else {
+                        fb.text(300, y + 2, "not saved yet", 2, DIM);
+                    }
+                    if s.open {
+                        fb.text_right(618, y + 4, "OPEN", 1, ACCENT);
+                    }
+                }
+                None => {
+                    fb.text(26, y, "+ New song", 2, WHITE);
+                }
+            }
+        }
+        fb.text(22, 386, "Songs are folders on the card. Removing one only takes it off this list.", 1, DIM);
     }
 
     /// Waves screen: every track's recorded audio over time, the drum arrangement, the playhead and the loop / punch regions.
@@ -573,6 +608,9 @@ impl HillDaw {
                     return;
                 }
                 let tm = &self.project.tracks[i];
+                if !self.orphans.is_empty() {
+                    fb.text(22, 374, &format!("{} recording(s) on the card are in no take: Y+X puts the oldest here.", self.orphans.len()), 1, WARN);
+                }
                 if tm.takes.is_empty() {
                     fb.text(22, 190, "No takes yet. Arm this track on the Mixer (A) and press SELECT.", 1, DIM);
                     return;
@@ -680,7 +718,7 @@ impl HillDaw {
                 fb.text(22, 372, "The meter runs while a track is armed or this tab is open.", 1, DIM);
                 fb.text(22, 384, "Play your loudest part; set the input volume so peaks reach about -6.", 1, DIM);
                 fb.text(22, 396, "Raising the latency offset moves takes earlier (a USB output adds delay).", 1, DIM);
-                fb.text(22, 408, "Left/Right picks Auto/Built-in or a device. USB Audio 2.0 is not supported.", 1, DIM);
+                fb.text(22, 408, "Left/Right picks Auto/Built-in or a device. UAC1 and UAC2 devices work.", 1, DIM);
             }
             TrackTab::Clip => {
                 let Some(c) = (i != DRUMS).then(|| self.edit_clip(i)).flatten() else {

@@ -13,6 +13,7 @@ pub mod export;
 pub mod fm1link;
 pub mod recorder;
 pub mod status;
+pub mod songs;
 pub mod usbout;
 mod view;
 
@@ -69,6 +70,8 @@ pub enum View {
     Track,
     /// every track's audio drawn over time (waveforms), the drum arrangement, the playhead and the loop/punch regions
     Waves,
+    /// the song browser (FN+R1): not in the L1/R1 order
+    Songs,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -98,6 +101,7 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("FN + B", "back to the start"),
     ("FN + Y", "repeat the drum arrangement on / off"),
     ("FN + L2/R2", "drum swing -/+"),
+    ("FN + R1", "song browser: open, new, remove songs"),
     ("FN + SELECT", "this help"),
     ("START + SELECT hold", "quit"),
     ("Mixer", ""),
@@ -240,6 +244,11 @@ pub struct HillDaw {
     pub(crate) track_row: usize,
     pub(crate) take_sel: usize,
     clip_sel: usize,
+    /// recordings on the card that no take names (see `songs`), the song browser rows, the picked row, and the row waiting for a second X
+    pub(crate) orphans: Vec<(String, u64)>,
+    pub(crate) songs: Vec<songs::SongRow>,
+    pub(crate) song_sel: usize,
+    pub(crate) song_confirm: Option<usize>,
     /// a take waiting for a second X: (track, take, ms left)
     confirm_delete: Option<(usize, usize, u32)>,
     /// the FM-1 input meter (see `monitor_tick`)
@@ -328,7 +337,7 @@ impl HillDaw {
         let mut lib = DrumLibrary::new(host);
         let mut toast = Toast::default();
         let settings = lib.host_mut().load_state(SETTINGS_KEY).map(|t| Settings::from_json(&t)).unwrap_or_default();
-        let mut project = match lib.host_mut().load_state(STATE_KEY) {
+        let mut project = match lib.host_mut().load_state(&hilldaw_core::settings::state_key(&settings.current_project)) {
             Some(text) => Project::from_json(&text).unwrap_or_else(|e| {
                 toast.say("Saved project unreadable: new one");
                 eprintln!("hilldaw: {e}");
@@ -387,6 +396,10 @@ impl HillDaw {
             track_row: 0,
             take_sel: 0,
             clip_sel: 0,
+            orphans: Vec::new(),
+            songs: Vec::new(),
+            song_sel: 0,
+            song_confirm: None,
             confirm_delete: None,
             monitoring: false,
             monitor_block_ms: 0,
@@ -444,9 +457,14 @@ impl HillDaw {
         self.recorder = Some(r);
         if let Some(r) = self.recorder.as_mut() {
             r.select_input(self.settings.input_device.clone());
+            r.set_project(&self.settings.current_project);
         }
         for i in 0..MAX_TRACKS {
             self.rebuild_track(i);
+        }
+        self.refresh_orphans();
+        if !self.orphans.is_empty() {
+            self.toast.say(&format!("{} unused recording(s): Takes, Y+A", self.orphans.len()));
         }
         self
     }
@@ -860,6 +878,7 @@ impl HillDaw {
             View::Export => self.export_act(b),
             View::Track => self.track_act(b),
             View::Waves => self.waves_act(b),
+            View::Songs => self.songs_act(b),
         }
     }
 
@@ -1293,6 +1312,7 @@ impl HillDaw {
         match b {
             Btn::Up => self.take_sel = self.take_sel.saturating_sub(1),
             Btn::Down => self.take_sel = (self.take_sel + 1).min(n.saturating_sub(1)),
+            Btn::X if self.held.is(Btn::Y) => self.recover_orphan(strip),
             Btn::A if n > 0 => match self.set_active_take(strip, self.take_sel) {
                 Ok(()) => self.toast.say(&format!("Take {} plays", self.take_sel + 1)),
                 Err(e) => self.toast.say(&hill_core::fb::clip(&e, 28)),
@@ -2163,6 +2183,7 @@ impl HillDaw {
                 self.project.count_in = !self.project.count_in;
                 self.toast.say(if self.project.count_in { "Count-in on" } else { "Count-in off" });
             }
+            Btn::R1 if self.held.is(Btn::Fn) => self.open_songs(),
             Btn::L1 | Btn::R1 => {
                 const ORDER: [View; 6] = [View::Mixer, View::Track, View::Waves, View::Arrange, View::Fm1, View::Export];
                 let i = ORDER.iter().position(|v| *v == self.view).unwrap_or(0);
@@ -2218,7 +2239,8 @@ impl App for HillDaw {
 
     fn save(&mut self) {
         let json = self.project.to_json();
-        self.lib.host_mut().save_state(STATE_KEY, &json);
+        let key = hilldaw_core::settings::state_key(&self.settings.current_project);
+        self.lib.host_mut().save_state(&key, &json);
         // the measured output clock, for the drift test (read it from hilldaw-drift_state.txt next to the program)
         if let Some(f) = self.out_clock() {
             let text = format!("output clock {:.3} Hz = {:+.1} ppm over {:.0} s, {} samples, timestamp jitter {:.1} ms\n", f.rate_hz, f.ppm, f.span_s, f.samples, f.jitter_ms);

@@ -9,14 +9,15 @@ use std::sync::{Arc, Mutex};
 fn main() {
     let status = Arc::new(Mutex::new(Status::default()));
     spawn_poller(status.clone(), default_storage_path());
-    // recordings live in <project folder>/audio/; the launcher sets HILL_DATA to the program's own folder
-    let project_dir = std::env::var("HILL_PROJECTS")
+    // every song is a folder under <root>/ (recordings in <root>/<song>/audio/); the first song keeps the old `projects/song` folder.
+    // The launcher sets HILL_DATA to the program's own folder; HILL_PROJECTS overrides the root.
+    let root = std::env::var("HILL_PROJECTS")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from(std::env::var("HILL_DATA").unwrap_or_else(|_| ".".into())).join("projects").join("song"));
+        .unwrap_or_else(|_| std::path::PathBuf::from(std::env::var("HILL_DATA").unwrap_or_else(|_| ".".into())).join("projects"));
     let result = hill_device::run_with("hilldaw", move |host| {
         let app = HillDaw::new(host, status)
             .with_fm1(Box::new(Fm1Link::spawn_usb(Channels::default())))
-            .with_recorder(Box::new(UsbRecorder::new(project_dir)))
+            .with_recorder(Box::new(UsbRecorder::with_root(root, hilldaw_app::songs::FIRST_SONG)))
             .with_audio_out(Box::new(hilldaw_app::usbout::UsbAudioOut::new()));
         Some(Box::new(app))
     });

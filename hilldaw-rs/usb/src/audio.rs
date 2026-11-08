@@ -3,7 +3,7 @@
 //! The kernel exposes each device's descriptors under `/sys/bus/usb/devices/<dev>/descriptors`; [`crate::desc`] decodes them into the
 //! formats the device offers, and [`choose_format`] picks one. HillDAW records mono 24-bit files at 44.1 kHz, so a device that cannot do
 //! 44.1 kHz is read at its own rate (48 kHz, usually) and resampled afterwards (`hilldaw-core`'s `wav` module).
-//! USB Audio Class 2.0 devices (most high-speed USB-C interfaces) are not decoded yet and do not appear in the list.
+//! USB Audio Class 2.0 devices (most high-speed USB-C interfaces) are listed too; their rate is negotiated when the stream opens.
 
 use crate::desc::{parse_audio_streams, StreamAlt};
 use crate::dev::DeviceInfo;
@@ -27,7 +27,7 @@ impl AudioInput {
     /// `2ch 24-bit 44.1 kHz`
     pub fn summary(&self) -> String {
         let khz = self.rate as f64 / 1000.0;
-        format!("{}ch {}-bit {} kHz", self.alt.channels, self.alt.bits, if (khz - khz.round()).abs() < 1e-9 { format!("{khz:.0}") } else { format!("{khz:.1}") })
+        format!("{}ch {}-bit {} kHz{}", self.alt.channels, self.alt.bits, if (khz - khz.round()).abs() < 1e-9 { format!("{khz:.0}") } else { format!("{khz:.1}") }, if self.alt.uac2.is_some() { " UAC2" } else { "" })
     }
 }
 
@@ -82,7 +82,7 @@ impl AudioOutput {
     /// `2ch 24-bit 44.1 kHz`
     pub fn summary(&self) -> String {
         let khz = self.rate as f64 / 1000.0;
-        format!("{}ch {}-bit {} kHz", self.alt.channels, self.alt.bits, if (khz - khz.round()).abs() < 1e-9 { format!("{khz:.0}") } else { format!("{khz:.1}") })
+        format!("{}ch {}-bit {} kHz{}", self.alt.channels, self.alt.bits, if (khz - khz.round()).abs() < 1e-9 { format!("{khz:.0}") } else { format!("{khz:.1}") }, if self.alt.uac2.is_some() { " UAC2" } else { "" })
     }
 }
 
@@ -124,7 +124,7 @@ pub fn list_outputs(sysfs: &Path) -> Vec<AudioOutput> {
         let (Some(v), Some(p)) = (read_trim(&d.join("idVendor")), read_trim(&d.join("idProduct"))) else { continue };
         let (Some(bus), Some(dev)) = (read_trim(&d.join("busnum")).and_then(|s| s.parse().ok()), read_trim(&d.join("devnum")).and_then(|s| s.parse().ok())) else { continue };
         let Ok(blob) = fs::read(d.join("descriptors")) else { continue };
-        let Some((alt, rate)) = choose_playback_format(&parse_audio_streams(&blob)) else { continue };
+        let Some((alt, rate)) = choose_playback_format(&streams_of(&d, &blob)) else { continue };
         let id = format!("{}:{}", v.to_lowercase(), p.to_lowercase());
         let product = read_trim(&d.join("product")).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("USB audio {id}"));
         let async_clock = alt.sync == "async";
@@ -137,6 +137,15 @@ pub fn list_outputs(sysfs: &Path) -> Vec<AudioOutput> {
 /// unplugged, so playback falls back to the built-in output instead of going silent.
 pub fn pick_output<'a>(found: &'a [AudioOutput], selected: &Option<String>) -> Option<&'a AudioOutput> {
     selected.as_ref().and_then(|id| found.iter().find(|o| o.id == *id))
+}
+
+/// The streams of a device folder, with the packet timing corrected when the bus runs at full speed (sysfs `speed` is in Mbit/s).
+fn streams_of(dir: &Path, blob: &[u8]) -> Vec<StreamAlt> {
+    let mut v = parse_audio_streams(blob);
+    if read_trim(&dir.join("speed")).is_some_and(|s| s == "12" || s == "1.5") {
+        v.iter_mut().for_each(StreamAlt::set_full_speed);
+    }
+    v
 }
 
 fn read_trim(p: &Path) -> Option<String> {
@@ -154,7 +163,7 @@ pub fn list_inputs(sysfs: &Path) -> Vec<AudioInput> {
         let (Some(v), Some(p)) = (read_trim(&d.join("idVendor")), read_trim(&d.join("idProduct"))) else { continue };
         let (Some(bus), Some(dev)) = (read_trim(&d.join("busnum")).and_then(|s| s.parse().ok()), read_trim(&d.join("devnum")).and_then(|s| s.parse().ok())) else { continue };
         let Ok(blob) = fs::read(d.join("descriptors")) else { continue };
-        let Some((alt, rate)) = choose_format(&parse_audio_streams(&blob)) else { continue };
+        let Some((alt, rate)) = choose_format(&streams_of(&d, &blob)) else { continue };
         let id = format!("{}:{}", v.to_lowercase(), p.to_lowercase());
         let product = read_trim(&d.join("product")).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("USB audio {id}"));
         out.push(AudioInput {
@@ -325,4 +334,30 @@ mod tests {
         assert_eq!(l[0].info.path(), "/dev/bus/usb/008/002");
         assert!(list_inputs(&root.join("missing")).is_empty());
     }
+
+    #[test]
+    fn a_uac2_interface_is_listed_and_a_full_speed_bus_changes_its_packet_timing() {
+        let blob = {
+            let mut b = vec![9, 4, 0, 0, 0, 1, 1, 0x20, 0];
+            b.extend([8, 0x24, 0x0A, 5, 3, 7, 0, 0]);
+            b.extend([9, 4, 1, 1, 1, 1, 2, 0x20, 0]);
+            b.extend([16, 0x24, 1, 7, 0, 1, 1, 0, 0, 0, 2, 3, 0, 0, 0, 0]);
+            b.extend([6, 0x24, 2, 1, 4, 24]);
+            b.extend([7, 5, 0x81, 0x05, 0x40, 0x00, 1]);
+            b
+        };
+        let root = std::env::temp_dir().join(format!("hilldaw-uac2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fake_device(&root, ("8-1", "1397", "0509", Some("USB-C Interface"), 8, 2), &blob);
+        fake_device(&root, ("8-2", "1398", "0510", Some("Slow Interface"), 8, 3), &blob);
+        fs::write(root.join("8-1/speed"), "480\n").unwrap();
+        fs::write(root.join("8-2/speed"), "12\n").unwrap();
+        let l = list_inputs(&root);
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[0].summary(), "2ch 24-bit 44.1 kHz UAC2");
+        assert_eq!((l[0].alt.interval_us, l[1].alt.interval_us), (125, 1000));
+        assert!(l[0].alt.uac2.is_some());
+    }
 }
+

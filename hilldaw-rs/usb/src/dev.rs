@@ -158,6 +158,24 @@ pub(crate) fn set_sampling_rate(fd: i32, ep: u8, rate: u32) -> Result<(), UsbErr
     Ok(())
 }
 
+/// USB Audio Class 2.0: the clock source's current sampling frequency (GET_CUR, CS_SAM_FREQ_CONTROL), or set it (SET_CUR).
+fn uac2_rate(fd: i32, c: crate::desc::Uac2Clock, set: Option<u32>) -> Result<u32, UsbError> {
+    let mut data = set.unwrap_or(0).to_le_bytes();
+    let (request_type, what) = if set.is_some() { (0x21u8, "set clock rate") } else { (0xA1u8, "read clock rate") };
+    let mut t = sys::CtrlTransfer { request_type, request: 0x01, value: 0x0100, index: (c.clock_id as u16) << 8 | c.ac_iface as u16, length: 4, timeout: 1000, data: data.as_mut_ptr() as *mut std::os::raw::c_void };
+    if unsafe { sys::ioctl(fd, sys::CONTROL, &mut t) } < 0 {
+        return Err(os_error(what));
+    }
+    Ok(u32::from_le_bytes(data))
+}
+
+/// Ask a USB Audio 2.0 device for `wanted` Hz, then for each candidate rate, until one is accepted **and reads back the same**; returns the
+/// rate the device is really running. `None` if it accepts none of them.
+pub(crate) fn negotiate_uac2_rate(fd: i32, c: crate::desc::Uac2Clock, wanted: u32) -> Option<u32> {
+    let mut order = std::iter::once(wanted).chain(crate::desc::UAC2_CANDIDATE_RATES);
+    order.find(|&r| uac2_rate(fd, c, Some(r)).is_ok() && uac2_rate(fd, c, None).ok() == Some(r))
+}
+
 pub(crate) fn release(fd: i32, iface: u8) {
     let mut i: u32 = iface as u32;
     unsafe { sys::ioctl(fd, sys::RELEASEINTERFACE, &mut i) };

@@ -164,8 +164,9 @@ impl AudioOut for UsbAudioOut {
         let (sh, st) = (shared.clone(), stop.clone());
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         let thread = std::thread::spawn(move || {
-            // 4 packets (4 ms) per URB, 4 URBs in flight: about 16 ms in the USB queue
-            let mut pb = match IsoPlayback::open(&out.info, &out.alt, out.rate, 4, 4) {
+            // about 4 ms of packets per URB (4 at full speed, 32 at high speed's 125 us), 4 URBs in flight: about 16 ms in the USB queue
+            let per_urb = (4000 / out.alt.interval_us.max(125) as usize).max(1);
+            let mut pb = match IsoPlayback::open(&out.info, &out.alt, out.rate, per_urb, 4) {
                 Ok(p) => {
                     let _ = ready_tx.send(Ok(()));
                     p
