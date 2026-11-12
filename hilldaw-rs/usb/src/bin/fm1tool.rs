@@ -7,6 +7,7 @@
 //!   fm1tool midi-in [--seconds S]
 //!   fm1tool capture SECONDS OUT.wav [--note N] [--frames F] [--urbs U]
 //!   fm1tool wavcheck FILE.wav
+//!   fm1tool loopback [SECONDS]   (plays quiet noise INTO the unit and measures how much of it comes back in the capture)
 
 use hilldaw_usb::desc::{parse_audio_streams, pick_capture};
 use hilldaw_usb::dev::{class_request, find_devices, AltHold, DeviceInfo, MidiDevice, SYSFS_USB};
@@ -186,6 +187,62 @@ fn main() {
             wav::write_wav(std::fs::File::create(&out).unwrap_or_else(|e| { eprintln!("{out}: {e}"); exit(2) }), cap.channels as u16, cap.subframe as u16, rate, &pcm).unwrap();
             println!("wrote {out}");
             println!("{}", wav::analyze(&pcm, cap.channels as usize, cap.subframe as usize, rate));
+        }
+        "loopback" => {
+            use hilldaw_usb::audio::choose_playback_format;
+            use hilldaw_usb::iso_out::IsoPlayback;
+            use std::sync::atomic::Ordering;
+            use std::sync::{Arc, Mutex};
+            let secs = rest.first().and_then(|v| v.parse::<f64>().ok()).unwrap_or(4.0).clamp(2.0, 20.0);
+            let d = need_device();
+            let streams = parse_audio_streams(&d.descriptors().unwrap_or_default());
+            let cap = pick_capture(&streams, 44100).unwrap_or_else(|| { eprintln!("no capture endpoint"); exit(2) }).clone();
+            let (play, rate) = choose_playback_format(&streams).unwrap_or_else(|| { eprintln!("no playback endpoint"); exit(2) });
+            if play.channels != 2 || play.subframe != 3 || cap.channels != 2 || cap.subframe != 3 {
+                eprintln!("this test only handles 2-channel 24-bit streams");
+                exit(2);
+            }
+            println!("TAKE YOUR EARBUDS OUT: quiet noise plays into the FM-1 for {secs:.0} s. Do not play it.");
+            let sent: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let (s2, st2, d2, p2) = (sent.clone(), stop.clone(), d.clone(), play.clone());
+            let th = std::thread::spawn(move || {
+                let mut pb = IsoPlayback::open(&d2, &p2, rate, 4, 8).unwrap_or_else(|e| { eprintln!("{e}"); exit(2) });
+                let mut seed = 12345u32;
+                let _ = pb.run(&st2, |bytes, frames| {
+                    let mut log = s2.lock().unwrap();
+                    for f in 0..frames {
+                        for ch in 0..2 {
+                            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                            let v = ((seed >> 8) as f32 / (1 << 23) as f32 - 1.0) * 0.1; // -20 dBFS white noise, different on each side
+                            let i = ((v * 8_388_607.0) as i32).clamp(-8_388_608, 8_388_607);
+                            bytes[f * 6 + ch * 3..f * 6 + ch * 3 + 3].copy_from_slice(&i.to_le_bytes()[..3]);
+                            if ch == 0 {
+                                log.push(v);
+                            }
+                        }
+                    }
+                });
+            });
+            std::thread::sleep(Duration::from_millis(400));
+            let mut pcm: Vec<u8> = Vec::new();
+            let mut cp = IsoCapture::open(&d, &cap, 16, 8).unwrap_or_else(|e| { eprintln!("{e}"); exit(2) });
+            let st = cp.run(&AtomicBool::new(false), secs, |p| pcm.extend_from_slice(p)).unwrap_or_else(|e| { eprintln!("{e}"); exit(2) });
+            stop.store(true, Ordering::Relaxed);
+            let _ = th.join();
+            println!("capture stats: {}", st.summary());
+            let left: Vec<f32> = pcm.chunks_exact(6).map(|f| (i32::from_le_bytes([0, f[0], f[1], f[2]]) >> 8) as f32 / 8_388_608.0).collect();
+            let sent = sent.lock().unwrap();
+            println!("sent {} frames, captured {} frames", sent.len(), left.len());
+            let start = 10_000usize.min(left.len() / 3);
+            let len = 16_384usize.min(left.len().saturating_sub(start));
+            match hilldaw_usb::loopback::estimate(&sent, &left, start, len, -8_000..=30_000) {
+                None => println!("RESULT: nothing to measure (the capture is silent, so nothing of the playback comes back)"),
+                Some(r) => {
+                    println!("RESULT: lag {} frames ({:.1} ms)  gain {:.3} ({:+.1} dB)  correlation {:.3}  left after removing it {:.1} dB", r.lag, r.lag as f64 * 1000.0 / rate as f64, r.gain, 20.0 * r.gain.abs().max(1e-6).log10(), r.corr, r.residual_db);
+                    println!("{}", if r.corr > 0.3 { "=> the unit sends what it is given back to the host" } else { "=> no real loopback in the capture" });
+                }
+            }
         }
         "wavcheck" => {
             let f = rest.first().cloned().unwrap_or_default();
