@@ -193,7 +193,6 @@ fn main() {
             use hilldaw_usb::iso_out::IsoPlayback;
             use std::sync::atomic::Ordering;
             use std::sync::{Arc, Mutex};
-            let secs = rest.first().and_then(|v| v.parse::<f64>().ok()).unwrap_or(4.0).clamp(2.0, 20.0);
             let d = need_device();
             let streams = parse_audio_streams(&d.descriptors().unwrap_or_default());
             let cap = pick_capture(&streams, 44100).unwrap_or_else(|| { eprintln!("no capture endpoint"); exit(2) }).clone();
@@ -202,19 +201,32 @@ fn main() {
                 eprintln!("this test only handles 2-channel 24-bit streams");
                 exit(2);
             }
-            println!("TAKE YOUR EARBUDS OUT: quiet noise plays into the FM-1 for {secs:.0} s. Do not play it.");
+            let r = rate as f64;
+            // what is played into the unit: 1.5 s of silence, 2 s of a 1 kHz tone, 2 s of white noise (both at -20 dBFS), then silence
+            println!("TAKE YOUR EARBUDS OUT: quiet silence, a 1 kHz tone and noise play into the FM-1 for about 6 s. Do not play it.");
             let sent: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
             let stop = Arc::new(AtomicBool::new(false));
             let (s2, st2, d2, p2) = (sent.clone(), stop.clone(), d.clone(), play.clone());
             let th = std::thread::spawn(move || {
                 let mut pb = IsoPlayback::open(&d2, &p2, rate, 4, 8).unwrap_or_else(|e| { eprintln!("{e}"); exit(2) });
-                let mut seed = 12345u32;
+                let (mut seed, mut n) = (12345u32, 0u64);
                 let _ = pb.run(&st2, |bytes, frames| {
                     let mut log = s2.lock().unwrap();
                     for f in 0..frames {
+                        let t = n as f64 / rate as f64;
+                        n += 1;
                         for ch in 0..2 {
                             seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                            let v = ((seed >> 8) as f32 / (1 << 23) as f32 - 1.0) * 0.1; // -20 dBFS white noise, different on each side
+                            let white = (seed >> 8) as f32 / (1 << 23) as f32 - 1.0;
+                            let v = if t < 1.5 {
+                                0.0
+                            } else if t < 3.5 {
+                                (std::f64::consts::TAU * 1000.0 * t).sin() as f32 * 0.1
+                            } else if t < 5.5 {
+                                white * 0.1
+                            } else {
+                                0.0
+                            };
                             let i = ((v * 8_388_607.0) as i32).clamp(-8_388_608, 8_388_607);
                             bytes[f * 6 + ch * 3..f * 6 + ch * 3 + 3].copy_from_slice(&i.to_le_bytes()[..3]);
                             if ch == 0 {
@@ -224,24 +236,41 @@ fn main() {
                     }
                 });
             });
-            std::thread::sleep(Duration::from_millis(400));
+            std::thread::sleep(Duration::from_millis(200));
             let mut pcm: Vec<u8> = Vec::new();
             let mut cp = IsoCapture::open(&d, &cap, 16, 8).unwrap_or_else(|e| { eprintln!("{e}"); exit(2) });
-            let st = cp.run(&AtomicBool::new(false), secs, |p| pcm.extend_from_slice(p)).unwrap_or_else(|e| { eprintln!("{e}"); exit(2) });
+            let st = cp.run(&AtomicBool::new(false), 6.2, |p| pcm.extend_from_slice(p)).unwrap_or_else(|e| { eprintln!("{e}"); exit(2) });
             stop.store(true, Ordering::Relaxed);
             let _ = th.join();
             println!("capture stats: {}", st.summary());
-            let left: Vec<f32> = pcm.chunks_exact(6).map(|f| (i32::from_le_bytes([0, f[0], f[1], f[2]]) >> 8) as f32 / 8_388_608.0).collect();
+            let chan = |c: usize| -> Vec<f32> { pcm.chunks_exact(6).map(|f| (i32::from_le_bytes([0, f[c * 3], f[c * 3 + 1], f[c * 3 + 2]]) >> 8) as f32 / 8_388_608.0).collect() };
+            let (left, right) = (chan(0), chan(1));
             let sent = sent.lock().unwrap();
             println!("sent {} frames, captured {} frames", sent.len(), left.len());
-            let start = 10_000usize.min(left.len() / 3);
-            let len = 16_384usize.min(left.len().saturating_sub(start));
-            match hilldaw_usb::loopback::estimate(&sent, &left, start, len, -8_000..=30_000) {
-                None => println!("RESULT: nothing to measure (the capture is silent, so nothing of the playback comes back)"),
-                Some(r) => {
-                    println!("RESULT: lag {} frames ({:.1} ms)  gain {:.3} ({:+.1} dB)  correlation {:.3}  left after removing it {:.1} dB", r.lag, r.lag as f64 * 1000.0 / rate as f64, r.gain, 20.0 * r.gain.abs().max(1e-6).log10(), r.corr, r.residual_db);
-                    println!("{}", if r.corr > 0.3 { "=> the unit sends what it is given back to the host" } else { "=> no real loopback in the capture" });
+            let win = |v: &[f32], a: f64, b: f64| -> Vec<f32> { v[((a * r) as usize).min(v.len())..((b * r) as usize).min(v.len())].to_vec() };
+            let rms_db = |v: &[f32]| 10.0 * (v.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>() / v.len().max(1) as f64).max(1e-14).log10();
+            // amplitude of a 1 kHz tone in a window (Goertzel), in dBFS peak
+            let tone_db = |v: &[f32]| {
+                let w = std::f64::consts::TAU * 1000.0 / r;
+                let (mut re, mut im) = (0.0f64, 0.0f64);
+                for (i, x) in v.iter().enumerate() {
+                    re += *x as f64 * (w * i as f64).cos();
+                    im += *x as f64 * (w * i as f64).sin();
                 }
+                20.0 * (2.0 * (re * re + im * im).sqrt() / v.len().max(1) as f64).max(1e-9).log10()
+            };
+            // (what it is, capture window in seconds); the capture started about 0.2 s after the playback, plus the unit's own delay
+            let phases = [("silence", 0.2, 1.0), ("1 kHz tone", 1.9, 3.0), ("white noise", 3.9, 5.0), ("silence again", 5.8, 6.1)];
+            println!("                 left rms   right rms   1 kHz level (left)");
+            for (name, a, b) in phases {
+                let (l, rr) = (win(&left, a, b), win(&right, a, b));
+                println!("{name:<14} {:>8.1} dB {:>8.1} dB {:>10.1} dBFS", rms_db(&l), rms_db(&rr), tone_db(&l));
+            }
+            println!("(the tone was played at -20.0 dBFS peak)");
+            let start = (4.0 * r) as usize;
+            match hilldaw_usb::loopback::estimate(&sent, &left, start.min(left.len()), 16_384.min(left.len().saturating_sub(start)), -2_000..=40_000) {
+                None => println!("noise correlation: nothing to measure"),
+                Some(l) => println!("noise correlation: lag {} frames ({:.1} ms)  gain {:.3}  correlation {:.3}  left after removing it {:.1} dB", l.lag, l.lag as f64 * 1000.0 / r, l.gain, l.corr, l.residual_db),
             }
         }
         "wavcheck" => {
