@@ -37,7 +37,17 @@ pub trait AudioOut: Send {
     fn active(&self) -> Option<String>;
     /// (underruns, overruns) so far, for the screen.
     fn stats(&self) -> (u64, u64);
+    /// Start (`true`, clearing any earlier copy) or stop (`false`) keeping a mono copy of what is sent to the device, in the device's own
+    /// frames: the reference for taking the device's echo out of a recording made through it.
+    fn tap(&mut self, _on: bool) {}
+    /// The copy kept since `tap(true)` (empty if there is none), and stop keeping it.
+    fn take_tap(&mut self) -> Vec<f32> {
+        Vec::new()
+    }
 }
+
+/// The most the tap keeps: 6 minutes of 44.1 kHz mono (a longer take is only cleaned as far as this reaches).
+pub const TAP_MAX: usize = 44_100 * 360;
 
 /// The buffer between the audio callback and the USB stream.
 #[derive(Default)]
@@ -76,15 +86,23 @@ pub struct Packetizer {
     base: f64,
     channels: u8,
     subframe: u8,
+    /// what the last `fill` sent, as mono (left + right) / 2, one value per device frame (zeros for silence): the tap's source
+    pub last_mono: Vec<f32>,
 }
 
 impl Packetizer {
     pub fn new(device_rate: u32, channels: u8, subframe: u8) -> Self {
-        Packetizer { rs: StreamResampler::new(), base: 44_100.0 / device_rate.max(1) as f64, channels, subframe }
+        Packetizer { rs: StreamResampler::new(), base: 44_100.0 / device_rate.max(1) as f64, channels, subframe, last_mono: Vec::new() }
     }
 
     /// Write `frames` device frames into `bytes`.
     pub fn fill(&mut self, ring: &mut OutRing, bytes: &mut [u8], frames: usize) {
+        self.last_mono.clear();
+        self.fill_inner(ring, bytes, frames);
+        self.last_mono.resize(frames, 0.0); // silence (not primed, or ran dry) is part of the stream too
+    }
+
+    fn fill_inner(&mut self, ring: &mut OutRing, bytes: &mut [u8], frames: usize) {
         let fb = self.channels as usize * self.subframe as usize;
         if !ring.primed {
             if ring.q.len() >= TARGET_FRAMES {
@@ -98,7 +116,10 @@ impl Packetizer {
         for f in 0..frames {
             let mut src = || ring.q.pop_front();
             match self.rs.pull(step, &mut src) {
-                Some([l, r]) => encode_frame(l, r, self.channels, self.subframe, &mut bytes[f * fb..(f + 1) * fb]),
+                Some([l, r]) => {
+                    self.last_mono.push((l + r) * 0.5);
+                    encode_frame(l, r, self.channels, self.subframe, &mut bytes[f * fb..(f + 1) * fb]);
+                }
                 None => {
                     // ran dry: the rest of this packet is silence, and the buffer refills to its target before playing again
                     bytes[f * fb..frames * fb].fill(0);
@@ -113,6 +134,8 @@ impl Packetizer {
 
 struct Shared {
     ring: Mutex<OutRing>,
+    /// `Some` while a copy of the stream is being kept (see [`AudioOut::tap`])
+    tap: Mutex<Option<Vec<i16>>>,
     running: AtomicBool,
     name: String,
 }
@@ -159,7 +182,7 @@ impl AudioOut for UsbAudioOut {
         let Some(id) = id else { return Ok(()) };
         let found = list_outputs(&self.sysfs);
         let out = pick_output(&found, &Some(id)).cloned().ok_or("the chosen output is not connected")?;
-        let shared = Arc::new(Shared { ring: Mutex::new(OutRing::default()), running: AtomicBool::new(false), name: out.name.clone() });
+        let shared = Arc::new(Shared { ring: Mutex::new(OutRing::default()), tap: Mutex::new(None), running: AtomicBool::new(false), name: out.name.clone() });
         let stop = Arc::new(AtomicBool::new(false));
         let (sh, st) = (shared.clone(), stop.clone());
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
@@ -183,6 +206,13 @@ impl AudioOut for UsbAudioOut {
                     pk.fill(&mut ring, bytes, frames);
                 } else {
                     bytes.fill(0);
+                    pk.last_mono.clear();
+                    pk.last_mono.resize(frames, 0.0);
+                }
+                if let Ok(mut t) = sh.tap.lock() {
+                    if let Some(buf) = t.as_mut().filter(|b| b.len() < TAP_MAX) {
+                        buf.extend(pk.last_mono.iter().map(|m| (m.clamp(-1.0, 1.0) * 32767.0) as i16));
+                    }
                 }
             });
             sh.running.store(false, Ordering::Relaxed); // unplugged, or stopped: the built-in output takes over again
@@ -221,6 +251,20 @@ impl AudioOut for UsbAudioOut {
         self.stream.as_ref().filter(|s| s.shared.running.load(Ordering::Relaxed)).map(|s| s.shared.name.clone())
     }
 
+    fn tap(&mut self, on: bool) {
+        if let Some(s) = &self.stream {
+            if let Ok(mut t) = s.shared.tap.lock() {
+                *t = on.then(Vec::new);
+            }
+        }
+    }
+
+    fn take_tap(&mut self) -> Vec<f32> {
+        let Some(s) = &self.stream else { return Vec::new() };
+        let kept = s.shared.tap.lock().ok().and_then(|mut t| t.take()).unwrap_or_default();
+        kept.into_iter().map(|v| v as f32 / 32767.0).collect()
+    }
+
     fn stats(&self) -> (u64, u64) {
         match &self.stream {
             Some(s) => s.shared.ring.lock().map_or(self.last_stats, |r| (r.underruns, r.overruns)),
@@ -246,6 +290,20 @@ mod tests {
     fn decode24(b: &[u8]) -> Vec<(i32, i32)> {
         let s = |c: &[u8]| (((c[2] as i8) as i32) << 16) | ((c[1] as i32) << 8) | c[0] as i32;
         b.chunks(6).map(|f| (s(&f[..3]), s(&f[3..]))).collect()
+    }
+
+    #[test]
+    fn the_tap_source_is_the_mono_of_what_was_sent_with_zeros_for_silence() {
+        let mut ring = OutRing::default();
+        let mut pk = Packetizer::new(44_100, 2, 3);
+        let mut bytes = vec![0u8; 6 * 10];
+        pk.fill(&mut ring, &mut bytes, 10); // not primed: silence
+        assert_eq!(pk.last_mono, vec![0.0; 10]);
+        let loud: Vec<f32> = (0..TARGET_FRAMES).flat_map(|_| [0.5f32, -0.25]).collect();
+        ring.push(&loud);
+        pk.fill(&mut ring, &mut bytes, 10);
+        assert_eq!(pk.last_mono.len(), 10);
+        assert!(pk.last_mono.iter().all(|m| (m - 0.125).abs() < 1e-3), "{:?}", pk.last_mono);
     }
 
     #[test]

@@ -10,6 +10,7 @@
 
 pub mod drift;
 pub mod drums;
+pub mod echo;
 pub mod edit;
 pub mod export;
 pub mod fm1;

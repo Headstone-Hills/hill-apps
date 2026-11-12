@@ -781,6 +781,10 @@ impl HillDaw {
         };
         // the capture stream is running from about now: every capture index is counted from this moment
         let t_capture = self.now_s();
+        // while a USB output plays the other tracks into the unit, keep a copy of it: the unit may mix it into what it sends back
+        if let Some(o) = self.audio_out.as_mut().filter(|o| o.active().is_some()) {
+            o.tap(true);
+        }
         let bpb = self.project.beats_per_bar.max(1);
         let count_in = if self.project.count_in { (bpb as f64 * self.transport.frames_per_beat()).round() as u64 } else { 0 };
         let latency = self.project.latency_offset_frames.max(0) as u64;
@@ -816,6 +820,14 @@ impl HillDaw {
                 return;
             }
         };
+        // the copy of what was played runs until the capture has ended, so it covers every captured frame
+        let reference = self.audio_out.as_mut().map(|o| {
+            let r = o.take_tap();
+            o.tap(false);
+            r
+        });
+        // the unit may have mixed the other tracks (played into it for monitoring) into its own signal: take them back out of the file
+        let echo = reference.filter(|r| !r.is_empty()).and_then(|r| recorder.remove_echo(&rec.file, &r));
         let track = rec.track;
         self.checkpoint("recording", NO_COALESCE);
         let mut added = 0;
@@ -841,6 +853,8 @@ impl HillDaw {
             self.toast.say("Nothing recorded");
         } else if info.overruns > 0 {
             self.toast.say(&format!("Recorded, {} chunks dropped", info.overruns));
+        } else if let Some(e) = echo {
+            self.toast.say(&format!("Recorded {added} take{}, echo {:.0} dB", if added == 1 { "" } else { "s" }, e.removed_db));
         } else {
             self.toast.say(&format!("Recorded {added} take{}", if added == 1 { "" } else { "s" }));
         }

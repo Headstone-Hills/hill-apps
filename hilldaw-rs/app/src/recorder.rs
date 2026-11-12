@@ -46,6 +46,11 @@ pub trait Recorder: Send {
     fn finish(&mut self, min_frames: u64) -> Result<RecInfo, String>;
     /// A recording as mono float, for playback.
     fn load(&mut self, rel: &str) -> Option<Vec<f32>>;
+    /// Take the echo of `reference` (what was played into the device while recording, mono, in the device's frames) out of the finished
+    /// recording `rel`. The original is kept under `audio/raw/`. `None` when no echo was found (the file is left alone).
+    fn remove_echo(&mut self, _rel: &str, _reference: &[f32]) -> Option<hilldaw_core::echo::EchoReport> {
+        None
+    }
     /// Which USB audio input to use: `Some("vid:pid")` for that device, `None` for automatic (the FM-1 if it is there, else the first input
     /// found). Takes effect the next time the capture is opened.
     fn select_input(&mut self, _id: Option<String>) {}
@@ -171,6 +176,41 @@ pub fn load_recording(project_dir: &Path, rel: &str) -> Option<Vec<f32>> {
     // a take from a device that cannot do 44.1 kHz was captured at its own rate (48 kHz usually); bring it to the project rate once,
     // here, so the rest of the app works in project frames
     Some(if rate == RATE { mono } else { resample_mono(&mono, rate, RATE) })
+}
+
+/// How far apart, in device frames, the capture and the reference may start (the two streams are opened a moment apart).
+const ECHO_SEARCH: usize = 30_000;
+
+/// See [`Recorder::remove_echo`]: rewrite `rel` (mono 24-bit) without the echo of `reference`, after copying the original to `audio/raw/`.
+pub fn remove_echo_from(project_dir: &Path, rel: &str, reference: &[f32]) -> Option<hilldaw_core::echo::EchoReport> {
+    if !is_safe_relative(rel) || reference.len() < 8_192 {
+        return None;
+    }
+    let path = project_dir.join(rel);
+    if std::fs::metadata(&path).ok()?.len() > MAX_LOAD_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(&path).ok()?;
+    let (rate, mut y) = decode_mono(&bytes).ok()?;
+    let report = hilldaw_core::echo::cancel(&mut y, reference, ECHO_SEARCH)?;
+    // keep the original, then replace the file through a temporary one so a power cut leaves one or the other whole
+    let raw_dir = path.parent()?.join("raw");
+    std::fs::create_dir_all(&raw_dir).ok()?;
+    std::fs::copy(&path, raw_dir.join(path.file_name()?)).ok()?;
+    let tmp = path.with_extension("clean.tmp");
+    let write = || -> std::io::Result<()> {
+        let mut w = StreamingWav::new(BufWriter::with_capacity(256 * 1024, File::create(&tmp)?), 1, 3, rate)?;
+        for chunk in y.chunks(16_384) {
+            let pcm: Vec<u8> = chunk.iter().flat_map(|v| ((v.clamp(-1.0, 1.0) * 8_388_607.0).round() as i32).to_le_bytes()[..3].to_vec()).collect();
+            w.write(&pcm)?;
+        }
+        w.finish()?.flush()
+    };
+    if write().is_err() || std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    }
+    Some(report)
 }
 
 /// The pieces of a running capture, before it is filed as the recording or the monitor.
@@ -403,6 +443,10 @@ impl Recorder for UsbRecorder {
         load_recording(&self.project_dir, rel)
     }
 
+    fn remove_echo(&mut self, rel: &str, reference: &[f32]) -> Option<hilldaw_core::echo::EchoReport> {
+        remove_echo_from(&self.project_dir, rel, reference)
+    }
+
     fn create_export(&mut self, stem: &str) -> Result<(Box<dyn ExportFile>, String), String> {
         // the stem comes from the project name and track names: keep it to a plain file name
         let stem: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' }).collect();
@@ -560,6 +604,61 @@ mod tests {
         let mut fixed = UsbRecorder::new(d.join("only"));
         fixed.set_project("song-2");
         assert_eq!(fixed.project_dir, d.join("only"));
+    }
+
+    fn lcg(n: usize, seed: u32) -> Vec<f32> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(1664525).wrapping_add(1013904223);
+                (s >> 8) as f32 / (1 << 23) as f32 - 1.0
+            })
+            .collect()
+    }
+
+    fn write_mono24(path: &Path, v: &[f32]) {
+        let mut w = StreamingWav::new(BufWriter::new(File::create(path).unwrap()), 1, 3, RATE).unwrap();
+        let pcm: Vec<u8> = v.iter().flat_map(|x| ((x.clamp(-1.0, 1.0) * 8_388_607.0).round() as i32).to_le_bytes()[..3].to_vec()).collect();
+        w.write(&pcm).unwrap();
+        w.finish().unwrap().flush().unwrap();
+    }
+
+    #[test]
+    fn an_echo_is_taken_out_of_the_file_and_the_original_is_kept() {
+        let dir = tmp("echo");
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        let n = 300_000;
+        // what was played into the unit: noise with a changing level, so every stretch is different
+        let reference: Vec<f32> = lcg(n + 10_000, 1).iter().enumerate().map(|(i, v)| v * 0.3 * (1.0 + ((i / 7_000) % 3) as f32)).collect();
+        let wanted: Vec<f32> = lcg(n, 2).iter().map(|v| v * 0.05).collect();
+        let y: Vec<f32> = (0..n).map(|c| wanted[c] + 0.7 * reference[c + 4_000]).collect();
+        write_mono24(&dir.join("audio/rec-001.wav"), &y);
+        let original = std::fs::read(dir.join("audio/rec-001.wav")).unwrap();
+
+        let r = remove_echo_from(&dir, "audio/rec-001.wav", &reference).expect("the echo is found");
+        assert!((r.gain - 0.7).abs() < 0.05 && (r.lag - 4_000.0).abs() < 1.0, "{r:?}");
+        let cleaned = load_recording(&dir, "audio/rec-001.wav").unwrap();
+        assert_eq!(cleaned.len(), n);
+        let err: f64 = cleaned.iter().zip(&wanted).map(|(a, b)| ((a - b) as f64).powi(2)).sum();
+        let echo: f64 = y.iter().zip(&wanted).map(|(a, b)| ((a - b) as f64).powi(2)).sum();
+        assert!(10.0 * (err / echo).log10() < -25.0, "only {:.1} dB of the echo is gone", 10.0 * (err / echo).log10());
+        assert_eq!(std::fs::read(dir.join("audio/raw/rec-001.wav")).unwrap(), original, "the original is kept");
+        assert!(!dir.join("audio/rec-001.clean.tmp").exists());
+        // the raw copy is not offered as a recording to place
+        assert_eq!(list_recordings(&dir).len(), 1);
+    }
+
+    #[test]
+    fn without_an_echo_or_a_usable_reference_the_file_is_left_alone() {
+        let dir = tmp("echo-none");
+        std::fs::create_dir_all(dir.join("audio")).unwrap();
+        write_mono24(&dir.join("audio/rec-001.wav"), &lcg(200_000, 5));
+        let before = std::fs::read(dir.join("audio/rec-001.wav")).unwrap();
+        assert!(remove_echo_from(&dir, "audio/rec-001.wav", &lcg(200_000, 9)).is_none(), "unrelated reference");
+        assert!(remove_echo_from(&dir, "audio/rec-001.wav", &lcg(100, 9)).is_none(), "reference too short");
+        assert!(remove_echo_from(&dir, "../rec-001.wav", &lcg(200_000, 9)).is_none(), "path outside the song");
+        assert_eq!(std::fs::read(dir.join("audio/rec-001.wav")).unwrap(), before);
+        assert!(!dir.join("audio/raw").exists(), "no backup when nothing changed");
     }
 }
 
