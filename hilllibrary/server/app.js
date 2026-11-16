@@ -323,7 +323,7 @@ export function createApp({ db, lookup, lookupDisc = async () => null, tmdb = { 
     send(res, 200, r);
   });
 
-  route('GET', '/api/facets', async (req, res) => send(res, 200, db.facets()));
+  route('GET', '/api/facets', async (req, res) => send(res, 200, db.facets(['book', 'movie', 'dvd', 'bluray'].includes(req.url.searchParams.get('media')) ? req.url.searchParams.get('media') : '', req.url.searchParams.get('genre') ?? '')));
 
   route('GET', '/api/lookup/([0-9Xx-]+)', async (req, res, m) => {
     const r = resolveCode(m[1]);

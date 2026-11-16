@@ -170,6 +170,14 @@ The default library view is a **shelf**: Genre → Subgenre → Author surname �
 (leading "The/A/An" ignored), with Uncategorized last. Other sorts: title, author,
 recently added, publication date.
 
+### Filtering by genre and tag
+Both the **Library** and **Movies** tabs have *Genre* and *Tag* dropdowns (plus *Subgenre* in the Library once a genre
+is picked). Options only list what exists for the current view and show how many results each would leave: tag counts
+follow the chosen genre and genre counts follow the chosen tag, and the Library's lists follow the media filter
+(books, movies, DVDs, Blu-rays). Filters live in the address (`#/library?media=book&genre=Horror&tag=classic`,
+`#/movies?show=server&genre=Comedy`), so a refresh or a bookmark keeps them. Server-only films get tags from
+Jellyfin's genres plus their decade, so they filter the same way as discs.
+
 ### Search
 One box. Every word is a prefix match, all words must match (`frank her` finds Herbert),
 across title, subtitle, author, tags, genre, description, notes and ISBN. Case and accents

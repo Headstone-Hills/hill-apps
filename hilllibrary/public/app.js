@@ -178,6 +178,8 @@ async function viewLibrary(page, params) {
   let sort = pref.get('sort', 'genre');
   let view = pref.get('view', 'grid');
   let seq = 0;
+  // Genres and tags to offer, limited to the chosen media type so every option leads to results.
+  const fx = await api(`/api/facets?${new URLSearchParams(Object.entries({ media: filters.media, genre: filters.genre }).filter(([, v]) => v))}`).catch(() => state.facets);
 
   const list = h('div', { 'aria-live': 'polite' });
   const count = h('span', { class: 'count' });
@@ -205,8 +207,31 @@ async function viewLibrary(page, params) {
   const statusSel = h('select', { 'aria-label': 'Reading or watching status', onchange: () => { location.hash = urlFor({ status: statusSel.value }); } },
     h('option', { value: '' }, 'Any status'),
     ...['unread', 'reading', 'read'].map((s) => h('option', { value: s, selected: filters.status === s }, `${STATUS_LABELS.book[s]} / ${STATUS_LABELS.movie[s].toLowerCase()}`)));
-  const mediaSel = h('select', { 'aria-label': 'Media type', onchange: () => { location.hash = urlFor({ media: mediaSel.value }); } },
+  const mediaSel = h('select', { 'aria-label': 'Media type', onchange: () => { location.hash = urlFor({ media: mediaSel.value, genre: '', subgenre: '', tag: '' }); } },
     ...MEDIA_FILTERS.map(([v, l]) => h('option', { value: v, selected: filters.media === v }, l)));
+  // Genre / subgenre / tag dropdowns. A selection coming from the URL stays listed even if it has no items here.
+  const merged = new Map();
+  for (const g of filters.media === 'book' ? fx.genres : filters.media ? fx.movieGenres : [...fx.genres, ...fx.movieGenres]) {
+    const m = merged.get(g.genre) ?? { count: 0, subs: new Map() };
+    m.count += g.count;
+    for (const s of g.subgenres) m.subs.set(s.name, (m.subs.get(s.name) ?? 0) + s.count);
+    merged.set(g.genre, m);
+  }
+  if (filters.genre && !merged.has(filters.genre)) merged.set(filters.genre, { count: 0, subs: new Map() });
+  const genreNames = [...merged.keys()].sort((a, b) => (a === 'Uncategorized') - (b === 'Uncategorized') || a.localeCompare(b));
+  const genreSel = h('select', { 'aria-label': 'Genre', onchange: () => { location.hash = urlFor({ genre: genreSel.value, subgenre: '' }); } },
+    h('option', { value: '' }, 'Any genre'),
+    ...genreNames.map((n) => h('option', { value: n, selected: filters.genre === n }, `${n} · ${merged.get(n).count}`)));
+  const subs = filters.genre ? [...merged.get(filters.genre).subs.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])) : [];
+  if (filters.subgenre && !subs.some(([n]) => n === filters.subgenre)) subs.push([filters.subgenre, 0]);
+  const subSel = subs.length ? h('select', { 'aria-label': 'Subgenre', onchange: () => { location.hash = urlFor({ subgenre: subSel.value }); } },
+    h('option', { value: '' }, 'Any subgenre'),
+    ...subs.map(([n, c]) => h('option', { value: n, selected: filters.subgenre === n }, `${n} · ${c}`))) : null;
+  const tagList = fx.tags.slice(0, 120);
+  if (filters.tag && !tagList.some((t) => t.name === filters.tag)) tagList.push({ name: filters.tag, count: 0 });
+  const tagSel = h('select', { 'aria-label': 'Tag', onchange: () => { location.hash = urlFor({ tag: tagSel.value }); } },
+    h('option', { value: '' }, 'Any tag'),
+    ...tagList.map((t) => h('option', { value: t.name, selected: filters.tag === t.name }, `${t.name} · ${t.count}`)));
   const viewBtn = h('button', {
     class: 'btn small', type: 'button', 'aria-label': 'Toggle grid or list',
     onclick: () => { view = view === 'grid' ? 'list' : 'grid'; pref.set('view', view); viewBtn.textContent = view === 'grid' ? 'List' : 'Grid'; draw(); },
@@ -278,6 +303,7 @@ async function viewLibrary(page, params) {
       h('button', { class: 'btn small', type: 'button', onclick: () => openBook(null, { media: 'dvd' }) }, '+ Movie'))),
     h('div', { class: 'searchbar' }, search),
     h('div', { class: 'filters' }, mediaSel, sortSel, statusSel, viewBtn, count),
+    h('div', { class: 'filters' }, genreSel, subSel, tagSel),
     chips, list,
   );
   const onChange = () => { if (document.body.contains(list)) { loadFacets(true).then(load); } else window.removeEventListener('library-changed', onChange); };
@@ -300,9 +326,15 @@ function moviePoster(e) {
 
 async function viewMovies(page, params) {
   let avail = params.get('show') || '';
+  let genre = params.get('genre') || '';
+  let tag = params.get('tag') || '';
   let q = '';
   let sort = pref.get('movieSort', 'title');
   let data = null;
+  const sync = () => {   // keep the filters in the address so a refresh or a shared link shows the same view
+    const p = new URLSearchParams(Object.entries({ show: avail, genre, tag }).filter(([, v]) => v));
+    history.replaceState(null, '', `#/movies${p.toString() ? `?${p}` : ''}`);
+  };
 
   const grid = h('div', { 'aria-live': 'polite' });
   const status = h('div');
@@ -310,6 +342,8 @@ async function viewMovies(page, params) {
   const search = h('input', { type: 'search', placeholder: 'Search title, director, genre…', autocomplete: 'off', 'aria-label': 'Search movies' });
   const sortSel = h('select', { 'aria-label': 'Sort', onchange: () => { sort = sortSel.value; pref.set('movieSort', sort); draw(); } },
     ...[['title', 'Title'], ['year', 'Newest first'], ['genre', 'Shelve by genre']].map(([v, l]) => h('option', { value: v, selected: v === sort }, l)));
+  const genreSel = h('select', { 'aria-label': 'Genre', onchange: () => { genre = genreSel.value; sync(); draw(); } });
+  const tagSel = h('select', { 'aria-label': 'Tag', onchange: () => { tag = tagSel.value; sync(); draw(); } });
   const refreshBtn = h('button', { class: 'btn small', type: 'button', onclick: () => load(true) }, 'Refresh server');
   search.addEventListener('input', debounce(() => { q = search.value.trim().toLowerCase(); draw(); }, 120));
 
@@ -324,10 +358,29 @@ async function viewMovies(page, params) {
     const all = data.items;
     const counts = Object.fromEntries(AVAIL.map(([v]) => [v, v ? all.filter((e) => e.availability === v).length : all.length]));
     chips.replaceChildren(...AVAIL.filter(([v]) => !v || data.jellyfin.enabled).map(([v, l]) => h('button', {
-      class: `chip${avail === v ? ' active' : ''}`, type: 'button', onclick: () => { avail = v; history.replaceState(null, '', `#/movies${v ? `?show=${v}` : ''}`); draw(); },
+      class: `chip${avail === v ? ' active' : ''}`, type: 'button', onclick: () => { avail = v; sync(); draw(); },
     }, `${l} · ${counts[v]}`)));
-    let rows = all.filter((e) => (!avail || e.availability === avail)
-      && (!q || `${e.title} ${e.directors.join(' ')} ${e.genre} ${e.subgenre} ${e.year}`.toLowerCase().includes(q)));
+
+    // Genre and tag options are counted among the films that match the other filters (availability + search),
+    // so each choice shows what picking it would leave. The current pick always stays listed.
+    const matchesBase = (e) => (!avail || e.availability === avail)
+      && (!q || `${e.title} ${e.directors.join(' ')} ${e.genre} ${e.subgenre} ${e.tags.join(' ')} ${e.year}`.toLowerCase().includes(q));
+    const base = all.filter(matchesBase);
+    // Cross-faceted: genre counts respect the chosen tag, and tag counts respect the chosen genre.
+    const tally = (list, pick) => { const m = new Map(); for (const e of list) for (const k of pick(e)) m.set(k, (m.get(k) ?? 0) + 1); return m; };
+    const gCounts = tally(base.filter((e) => !tag || e.tags.includes(tag)), (e) => [e.genre]);
+    const tCounts = tally(base.filter((e) => !genre || e.genre === genre), (e) => e.tags);
+    if (genre && !gCounts.has(genre)) gCounts.set(genre, 0);
+    if (tag && !tCounts.has(tag)) tCounts.set(tag, 0);
+    genreSel.replaceChildren(h('option', { value: '' }, 'Any genre'),
+      ...[...gCounts.keys()].sort((a, b) => (a === 'Uncategorized') - (b === 'Uncategorized') || a.localeCompare(b))
+        .map((n) => h('option', { value: n, selected: n === genre }, `${n} · ${gCounts.get(n)}`)));
+    tagSel.replaceChildren(h('option', { value: '' }, 'Any tag'),
+      ...[...tCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 120)
+        .map(([n, c]) => h('option', { value: n, selected: n === tag }, `${n} · ${c}`)));
+    genreSel.value = genre; tagSel.value = tag;
+
+    let rows = base.filter((e) => (!genre || e.genre === genre) && (!tag || e.tags.includes(tag)));
     if (sort === 'year') rows = [...rows].sort((a, b) => (b.year || '0').localeCompare(a.year || '0') || a.title.localeCompare(b.title));
     if (!rows.length) {
       grid.replaceChildren(h('div', { class: 'empty' }, all.length ? 'No movies match.' : 'No movies yet.', h('br'),
@@ -362,7 +415,7 @@ async function viewMovies(page, params) {
   add(page,
     h('div', { class: 'topbar' }, h('h1', {}, 'Movies'), refreshBtn),
     h('div', { class: 'searchbar' }, search),
-    h('div', { class: 'filters' }, sortSel), chips, status, grid);
+    h('div', { class: 'filters' }, sortSel, genreSel, tagSel), chips, status, grid);
   const onChange = () => { if (document.body.contains(grid)) load(); else window.removeEventListener('library-changed', onChange); };
   window.addEventListener('library-changed', onChange);
   await load();

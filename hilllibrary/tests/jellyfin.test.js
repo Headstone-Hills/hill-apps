@@ -305,3 +305,45 @@ test('API /api/movies reports which library it read, and a missing library shows
     assert.equal(r.items.length, 1);
   } finally { await bad.close(); }
 });
+
+// ------------------------------------------------------------------ tags for filtering
+
+test('movie entries carry tags: server films from Jellyfin genres + decade, discs from their own tags, both merged', () => {
+  const server = [
+    { Id: id(1), Name: 'Alien', ProductionYear: 1979, Genres: ['Horror', 'Science Fiction'] },
+    { Id: id(2), Name: 'Heat', ProductionYear: 1995, Genres: ['Crime', 'Drama'] },
+  ].map(normalizeItem);
+  const discs = [
+    { id: 1, title: 'Alien', published: '1979', media: 'bluray', tags: ['xenomorph', 'horror'], meta_raw: {}, genre: 'Horror', authors: [] },
+    { id: 2, title: 'Primer', published: '2004', media: 'dvd', tags: ['time travel', '2000s'], meta_raw: {}, genre: 'Science Fiction', authors: [] },
+  ];
+  const by = Object.fromEntries(combineMovies(discs, server).map((e) => [e.title, e.tags]));
+  assert.deepEqual(by.Alien, ['1970s', 'horror', 'science fiction', 'xenomorph']);   // union, no duplicates, sorted
+  assert.deepEqual(by.Heat, ['1990s', 'crime', 'drama']);
+  assert.deepEqual(by.Primer, ['2000s', 'time travel']);
+});
+
+test('/api/facets?media= scopes tags, locations and genre trees to one media type', async () => {
+  const t = await boot({});
+  try {
+    await t.req('POST', '/api/books', { title: 'A Novel', genre: 'Horror', tags: ['gothic'], location: 'Study' });
+    await t.req('POST', '/api/books', { media: 'dvd', title: 'Heat', genre: 'Crime', tags: ['heist'], location: 'Basement' });
+    await t.req('POST', '/api/books', { media: 'bluray', title: 'Alien', genre: 'Horror', tags: ['space', 'gothic'], location: 'Basement' });
+    const f = async (q = '') => (await t.req('GET', `/api/facets${q}`)).json;
+    const names = (a) => a.map((x) => x.name ?? x.genre).sort();
+    assert.deepEqual(names((await f()).tags), ['gothic', 'heist', 'space']);
+    assert.deepEqual(names((await f('?media=book')).tags), ['gothic']);
+    assert.deepEqual(names((await f('?media=movie')).tags), ['gothic', 'heist', 'space']);
+    assert.deepEqual(names((await f('?media=dvd')).tags), ['heist']);
+    assert.deepEqual(names((await f('?media=bluray')).locations), ['Basement']);
+    assert.deepEqual(names((await f('?media=book')).locations), ['Study']);
+    assert.deepEqual(names((await f('?media=bluray')).movieGenres), ['Horror']);          // genre tree follows the media filter too
+    assert.deepEqual(names((await f('?media=bluray')).genres), []);
+    assert.deepEqual(names((await f('?media=nonsense')).tags), ['gothic', 'heist', 'space']); // unknown value = no scoping
+    assert.deepEqual(names((await f('?genre=Crime')).tags), ['heist']);                          // tags narrow to the chosen genre
+    assert.deepEqual((await f('?media=movie&genre=Horror')).tags.map((x) => [x.name, x.count]).sort(), [['gothic', 1], ['space', 1]]);
+    // list filters the dropdowns feed
+    assert.equal((await t.req('GET', '/api/books?media=movie&genre=Horror&tag=gothic')).json.total, 1);
+    assert.equal((await t.req('GET', '/api/books?genre=Horror&tag=gothic')).json.total, 2);
+  } finally { await t.close(); }
+});

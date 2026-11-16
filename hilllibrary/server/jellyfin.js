@@ -173,10 +173,11 @@ export function combineMovies(discs, server) {
     const year = yearOf(b.published);
     let e = find(tmdbId, b.title, year);
     if (!e) {
-      e = { title: b.title, year, tmdbId: null, copies: [], jellyfin: null, genre: b.genre, subgenre: b.subgenre, directors: b.authors ?? [], runtime: b.runtime ?? null, overview: b.description ?? '', coverFile: null, coverV: '' };
+      e = { title: b.title, year, tmdbId: null, copies: [], jellyfin: null, tags: new Set(), genre: b.genre, subgenre: b.subgenre, directors: b.authors ?? [], runtime: b.runtime ?? null, overview: b.description ?? '', coverFile: null, coverV: '' };
       register(e);
     }
     adopt(e, tmdbId);
+    for (const t of b.tags ?? []) e.tags.add(t);
     e.copies.push({ id: b.id, media: b.media, barcode: b.barcode, status: b.status, location: b.location, needs_review: b.needs_review });
     if (!e.coverFile && b.has_cover) { e.coverFile = b.cover_file; e.coverV = b.updated_at ?? ''; }
     if (!e.year && year) e.year = year;
@@ -186,10 +187,12 @@ export function combineMovies(discs, server) {
     let e = find(j.tmdbId, j.title, j.year);
     if (!e) {
       const c = classifyMovie({ title: j.title, description: j.overview, genres: j.genres, year: j.year });
-      e = { title: j.title, year: j.year, tmdbId: null, copies: [], jellyfin: null, genre: c.genre, subgenre: c.subgenre, directors: j.directors, runtime: j.runtime, overview: j.overview, coverFile: null, coverV: '' };
+      e = { title: j.title, year: j.year, tmdbId: null, copies: [], jellyfin: null, tags: new Set(), genre: c.genre, subgenre: c.subgenre, directors: j.directors, runtime: j.runtime, overview: j.overview, coverFile: null, coverV: '' };
       register(e);
     }
     adopt(e, j.tmdbId);
+    // Tags for server films come from Jellyfin's genres (same words TMDB uses for discs) plus the decade.
+    for (const t of classifyMovie({ title: j.title, genres: j.genres, year: j.year }).tags) e.tags.add(t);
     // Jellyfin often lists a film twice (two copies/versions) and one entry may carry a stale poster, so keep every candidate.
     if (!e.jellyfin) e.jellyfin = { id: j.id, posters: [] };
     if (j.imageTag) e.jellyfin.posters.push({ id: j.id, tag: j.imageTag });
@@ -200,7 +203,7 @@ export function combineMovies(discs, server) {
 
   return entries.map((e) => ({
     key: e.copies.length ? `d${e.copies[0].id}` : `j${e.jellyfin.id}`,
-    title: e.title, year: e.year, genre: e.genre, subgenre: e.subgenre, directors: e.directors, runtime: e.runtime, overview: e.overview,
+    title: e.title, year: e.year, genre: e.genre, subgenre: e.subgenre, tags: [...e.tags].sort(), directors: e.directors, runtime: e.runtime, overview: e.overview,
     availability: e.copies.length && e.jellyfin ? 'both' : e.copies.length ? 'disc' : 'server',
     copies: e.copies,
     jellyfin: e.jellyfin ? { id: e.jellyfin.id } : null,

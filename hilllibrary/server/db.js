@@ -146,10 +146,12 @@ export class LibraryDb {
   }
 
   /** Genre tree with counts, tags with counts, locations, statuses. */
-  facets() {
+  facets(media = '', genre = '') {
+    // Tags and locations can be scoped to one media type so a filter dropdown only offers what exists there.
+    const scope = media === 'movie' ? { sql: "b.media <> 'book'", params: [] } : media ? { sql: 'b.media = ?', params: [media] } : { sql: '1', params: [] };
     // Books and movies are shelved separately: a film's "Science Fiction" is not a novel's.
     const tree = (cond) => {
-      const g = this.db.prepare(`SELECT genre, subgenre, COUNT(*) n FROM books WHERE ${cond} GROUP BY genre, subgenre`).all();
+      const g = this.db.prepare(`SELECT b.genre AS genre, b.subgenre AS subgenre, COUNT(*) n FROM books b WHERE ${cond} AND ${scope.sql} GROUP BY b.genre, b.subgenre`).all(...scope.params);
       const byGenre = new Map();
       for (const r of g) {
         if (!byGenre.has(r.genre)) byGenre.set(r.genre, { genre: r.genre, count: 0, subgenres: [] });
@@ -161,14 +163,15 @@ export class LibraryDb {
         .map((e) => ({ ...e, subgenres: e.subgenres.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)) }))
         .sort((a, b) => (a.genre === UNCATEGORIZED) - (b.genre === UNCATEGORIZED) || a.genre.localeCompare(b.genre));
     };
-    const genres = tree("media = 'book'");
-    const movieGenres = tree("media <> 'book'");
+    const genres = tree("b.media = 'book'");
+    const movieGenres = tree("b.media <> 'book'");
     const mediaCounts = Object.fromEntries(this.db.prepare('SELECT media AS name, COUNT(*) AS n FROM books GROUP BY media').all().map((r) => [r.name, r.n]));
     return {
       genres, movieGenres,
       media: { book: mediaCounts.book ?? 0, dvd: mediaCounts.dvd ?? 0, bluray: mediaCounts.bluray ?? 0 },
-      tags: this.db.prepare('SELECT tag AS name, COUNT(*) AS count FROM book_tags GROUP BY tag ORDER BY count DESC, tag LIMIT 200').all(),
-      locations: this.db.prepare("SELECT location AS name, COUNT(*) AS count FROM books WHERE location <> '' GROUP BY location ORDER BY location").all(),
+      // Tag counts follow the chosen media and genre, so each tag shows how many results picking it leaves.
+      tags: this.db.prepare(`SELECT t.tag AS name, COUNT(*) AS count FROM book_tags t JOIN books b ON b.id = t.book_id WHERE ${scope.sql}${genre ? ' AND b.genre = ?' : ''} GROUP BY t.tag ORDER BY count DESC, t.tag LIMIT 200`).all(...scope.params, ...(genre ? [genre] : [])),
+      locations: this.db.prepare(`SELECT b.location AS name, COUNT(*) AS count FROM books b WHERE b.location <> '' AND ${scope.sql} GROUP BY b.location ORDER BY b.location`).all(...scope.params),
       statuses: this.db.prepare('SELECT status AS name, COUNT(*) AS count FROM books GROUP BY status').all(),
       needsReview: this.db.prepare('SELECT COUNT(*) n FROM books WHERE needs_review = 1').get().n,
       total: this.count(),
