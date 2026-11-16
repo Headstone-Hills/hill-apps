@@ -7,6 +7,10 @@ A suite of four custom music apps for the RG35XXSP handheld (muOS / PortMaster):
 - **HillSequencer** — 8-track step sequencer built on HillChord's instrument engine
 - **HillBand** — 8-track × 16-step hybrid (4 melodic tracks + 4 drum tracks)
 
+**Hill Library** (`hilllibrary/`) is unrelated to the handheld apps: a self-hosted web app for
+cataloguing a home book collection (barcode scanning, auto-metadata, genre shelving, search).
+See its own README; it is Node, not Python.
+
 Each app has its own `README.md` with architecture notes, button bindings, and known quirks.
 
 ## Layout

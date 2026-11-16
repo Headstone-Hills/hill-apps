@@ -1,0 +1,12 @@
+{
+  "name": "hilllibrary",
+  "version": "1.0.0",
+  "description": "Personal home library: barcode scanning, automatic metadata, genre auto-tagging, search.",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.js"
+  }
+}
