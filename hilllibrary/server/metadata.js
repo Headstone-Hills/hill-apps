@@ -140,7 +140,7 @@ export function createLookup({ fetchImpl = fetch, googleApiKey = '', ttlMs = 10 
 
 // ------------------------------------------------------------------- covers
 
-const COVER_HOSTS = [/(^|\.)openlibrary\.org$/, /(^|\.)archive\.org$/, /(^|\.)books\.google\.com$/, /(^|\.)googleusercontent\.com$/, /(^|\.)gstatic\.com$/];
+const COVER_HOSTS = [/(^|\.)openlibrary\.org$/, /(^|\.)archive\.org$/, /(^|\.)books\.google\.com$/, /(^|\.)googleusercontent\.com$/, /(^|\.)gstatic\.com$/, /^image\.tmdb\.org$/];
 const MAX_COVER_BYTES = 3 * 1024 * 1024;
 const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
 

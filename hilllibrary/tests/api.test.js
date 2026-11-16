@@ -36,13 +36,13 @@ function fakeFetch({ ol = OL, gb = GB, olStatus = 200, gbStatus = 200 } = {}) {
   return f;
 }
 
-async function boot({ password = '', fetchImpl = fakeFetch(), lookup } = {}) {
+async function boot({ password = '', fetchImpl = fakeFetch(), lookup, trustProxy = false } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), 'hl-test-'));
   const db = new LibraryDb(':memory:');
   const publicDir = join(dataDir, 'public');
   mkdirSync(publicDir);
   writeFileSync(join(publicDir, 'index.html'), '<h1>hi</h1>');
-  const handler = createApp({ db, lookup: lookup ?? createLookup({ fetchImpl }), dataDir, publicDir, password, fetchImpl });
+  const handler = createApp({ db, lookup: lookup ?? createLookup({ fetchImpl }), dataDir, publicDir, password, fetchImpl, trustProxy });
   const server = createServer(handler);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -360,6 +360,27 @@ test('login is rate limited after repeated failures', async () => {
     for (let i = 0; i < 10; i++) assert.equal((await t.req('POST', '/api/login', { password: 'bad' + i })).status, 401);
     assert.equal((await t.req('POST', '/api/login', { password: 'bad' })).status, 429);
     assert.equal((await t.req('POST', '/api/login', { password: 'correct horse battery' })).status, 429); // locked out even with the right one
+  } finally { await t.close(); }
+});
+
+test('trustProxy: lockout is per real client IP, not shared by everyone behind the proxy', async () => {
+  const t = await boot({ password: 'correct horse battery', trustProxy: true });
+  try {
+    const attacker = { 'CF-Connecting-IP': '203.0.113.9' };
+    for (let i = 0; i < 10; i++) await t.req('POST', '/api/login', { password: 'bad' + i }, attacker);
+    assert.equal((await t.req('POST', '/api/login', { password: 'bad' }, attacker)).status, 429);
+    const owner = { 'CF-Connecting-IP': '198.51.100.7' };
+    assert.equal((await t.req('POST', '/api/login', { password: 'correct horse battery' }, owner)).status, 200);
+    const xff = { 'X-Forwarded-For': '192.0.2.1, 10.0.0.1' };
+    assert.equal((await t.req('POST', '/api/login', { password: 'correct horse battery' }, xff)).status, 200);
+  } finally { await t.close(); }
+});
+
+test('without trustProxy, spoofed proxy headers cannot dodge the lockout', async () => {
+  const t = await boot({ password: 'correct horse battery' });
+  try {
+    for (let i = 0; i < 10; i++) await t.req('POST', '/api/login', { password: 'bad' + i }, { 'CF-Connecting-IP': '1.1.1.' + i });
+    assert.equal((await t.req('POST', '/api/login', { password: 'bad' }, { 'CF-Connecting-IP': '9.9.9.9' })).status, 429);
   } finally { await t.close(); }
 });
 

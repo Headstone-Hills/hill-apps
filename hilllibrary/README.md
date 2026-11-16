@@ -1,6 +1,6 @@
 # Hill Library
 
-A personal home-library web app: scan a book's barcode, get its metadata automatically,
+A personal home-library web app: scan a book's (or DVD's / Blu-ray's) barcode, get its metadata automatically,
 have it shelved by genre with auto-generated tags, and find anything with one search box.
 It runs on a machine at home (a Raspberry Pi, an old laptop, a NAS) and you use it from
 any phone, tablet or computer with a browser. Personal use, one library, no accounts.
@@ -71,6 +71,72 @@ entry) is distinguished from "couldn't reach the internet" (retry). Covers are d
 once to `data/covers/`, from an allow-list of hosts only. Google Books works without a key
 but may rate-limit; a free key in `GOOGLE_BOOKS_API_KEY` avoids that.
 
+### Covers without a barcode (`server/cover.js`)
+On the Scan page, **No barcode? Photograph the cover** opens the phone camera (or photo picker). The
+photo is shrunk in the browser to 1800 px, sent to the server, and turned into a short list of likely books:
+
+1. **Read** the text on the cover with the best reader available, tried in order until one finds a good match:
+   - **Apple Vision** (macOS, on-device, free). Far better than classic OCR on stylised covers. A small Swift
+     helper (`server/native/cover-ocr.swift`) is compiled once into `data/bin/` at first start; needs the Xcode
+     command line tools (`xcode-select --install`).
+   - **Claude** (optional, `ANTHROPIC_API_KEY`): used only when the local reader finds no decent match. The
+     photo is then sent to Anthropic. Off unless you set a key.
+   - **Tesseract** (`brew install tesseract`), the fallback on non-Mac servers. Noticeably weaker.
+2. **Search** Open Library and Google Books with the biggest words on the cover (single words and pairs, so one
+   misread word can't sink the search).
+3. **Rank** each hit by how much of its title and author surname appears in the cover text (tolerating one OCR slip),
+   weighting big type over small blurbs, demoting books titled with just the author's name, and breaking ties by
+   how widely published the work is. The ISBN comes from the edition whose cover Open Library shows.
+
+You always pick from the list; nothing is added until you tap a book and confirm the normal preview. A printed
+ISBN on the cover (checksum-validated) is offered directly. Set `COVER_SCAN=off` to disable the feature.
+
+**Measured** on 18 well-known covers (catalogue images from Open Library, not phone photos): Apple Vision put the
+right book first for 16 and in the top three for 17; Tesseract alone managed 9 and 12. The misses were a cover
+with no readable text and one where only the author was legible. Expect worse on glare, curved spines, busy
+photos and non-English covers (the readers are set to English).
+
+### DVDs and Blu-rays (`server/discs.js`, `server/moviegenres.js`)
+Scan a disc's barcode (UPC-A / EAN-13) the same way. The server tells a book ISBN from a
+disc barcode by checksum and prefix, then:
+
+| Step | Source | Gives | Docs |
+|---|---|---|---|
+| 1 | UPCitemdb free "trial" API, no key | retail title, studio/brand, description | <https://www.upcitemdb.com/wp/docs/main/development/getting-started/> |
+| 2 | TMDB, **optional** (`TMDB_API_KEY`, free) | genres, director, runtime, year, overview, poster | <https://developer.themoviedb.org/docs/getting-started> |
+
+- The free UPCitemdb tier allows roughly **100 lookups a day** per IP, and its database is
+  patchy: if a code isn't a recognisable disc it is treated as not found (add it by hand).
+- **Genres come from TMDB.** Without a key, discs still scan, but the genre is only a keyword
+  guess on the title/description and is flagged *needs review*.
+- Listings often don't say DVD vs Blu-ray, so the scan preview shows a format dropdown
+  (with a "please check" note when it's a guess). 4K/UHD is treated as Blu-ray plus a `4k` tag.
+- Movies have their own genre shelves (Action & Adventure, Animation, Comedy, Horror, ...)
+  and are never mixed with book genres. Director is stored as the "author", runtime in minutes.
+- **Fixing a wrong or "needs review" title:** open the movie, and the *Find this title on TMDB* box
+  (needs `TMDB_API_KEY`) searches by title and optional year. Pick the right result and the form fills in
+  director, studio, year, runtime, description, genre and tags; the poster is fetched when you save.
+  Your DVD/Blu-ray choice, location, notes, status, and any genre you set yourself are kept. The server
+  re-fetches the chosen title from TMDB on save rather than trusting what the browser sends.
+- Existing libraries upgrade automatically on start (new columns are added; nothing is lost).
+
+### Jellyfin and the Movies tab (`server/jellyfin.js`)
+The **Movies** tab lists every disc you own *and* every movie on your Jellyfin server as one
+list, each marked *Disc*, *Server* or both, with filters for disc-only / server-only. Tapping a film
+shows where you have it, lets you edit the disc, open it in Jellyfin, or (for a server-only film) add
+the disc you own with the details pre-filled.
+
+- Configure with `JELLYFIN_API_KEY` (create one in Jellyfin: Dashboard > Advanced > API Keys),
+  `JELLYFIN_URL` (default `http://127.0.0.1:8096`) and optionally `JELLYFIN_PUBLIC_URL` for
+  "Open in Jellyfin" links. Read-only: the app never changes anything on Jellyfin.
+- A disc and a server movie are the same film when their TMDB ids match, otherwise when the titles
+  match (ignoring "(Criterion Collection)", "The", punctuation, case) and the years are within one.
+  Pick a disc's TMDB match in the editor to make the link exact.
+- The key stays on the server; posters are fetched through the app (`/api/jellyfin/image/...`), so
+  the browser never sees it. If Jellyfin is down or the key is wrong, the tab still lists your
+  discs and says why the server side is missing. The server list is cached for 5 minutes
+  (*Refresh server* forces it). Only movies for now, not TV series.
+
 ### Genres and tags (`server/genres.js`)
 Library catalogue data is messy: Open Library gives free-form subject headings
 ("Fantasy fiction", "Description and travel"); Google gives paths like
@@ -112,7 +178,7 @@ Reference: <https://www.sqlite.org/fts5.html>
 ## Configuration
 
 See `.env.example`. `LIBRARY_PASSWORD`, `PORT`, `HOST`, `DATA_DIR`, `GOOGLE_BOOKS_API_KEY`,
-`TLS_CERT`/`TLS_KEY`, `ALLOWED_ORIGINS`.
+`TLS_CERT`/`TLS_KEY`, `ALLOWED_ORIGINS`, `TRUST_PROXY`, `TMDB_API_KEY`, `JELLYFIN_API_KEY`, `JELLYFIN_URL`, `JELLYFIN_PUBLIC_URL`, `ANTHROPIC_API_KEY`, `COVER_VISION_MODEL`, `COVER_SCAN`, `TESSERACT_PATH`.
 
 ## Security notes
 
@@ -146,6 +212,14 @@ barcode from a fake camera feed**, including a rotated/noisy/dim variant, via th
    book's details and use *needs review*. Mismatches are cheap to correct and the
    rules in `genres.js` are plain data.
 5. Installing to the home screen, and the HTTPS setups above.
+8. **Cover scanning:** the pipeline ran end to end in a browser and on your live server with real Open Library
+   searches, but only on catalogue images. Not yet tried with the phone camera (iOS Safari / Android Chrome file
+   capture), real-world glare and angles, or the Claude reader against the real API (tested with a fake only).
+7. **Jellyfin:** the integration is tested against a fake Jellyfin shaped like its documented API
+   (<https://api.jellyfin.org/>), not yet against a real server. Matching quality on your real library is unknown.
+6. **DVD/Blu-ray support:** UPCitemdb and TMDB responses (movie and TV) were each checked live once
+   and the full barcode-to-genre path worked for the Spider-Man DVD. Accuracy across many real discs,
+   format guesses, and TV box sets is untested.
 
 ## Layout
 
@@ -156,6 +230,12 @@ server/db.js         SQLite schema, FTS5 search, queries
 server/metadata.js   Open Library + Google Books lookup, merge, covers
 server/genres.js     genre/tag classifier (rules are data at the top)
 server/isbn.js       ISBN-10/13 validation and conversion
+server/barcode.js    UPC/EAN validation for discs
+server/discs.js      DVD/Blu-ray lookup (UPCitemdb + TMDB), title cleanup
+server/moviegenres.js movie genre shelves + classifier
+server/jellyfin.js   Jellyfin client + disc/server movie matching
+server/cover.js      cover photo -> text readers, search, ranking
+server/native/       Swift helper for Apple Vision text recognition
 public/              the app (vanilla JS, no build step) + service worker
 tests/               node:test suites; tests/e2e is the browser run
 ```

@@ -3,12 +3,15 @@
 // Strategy: use the browser's native BarcodeDetector when it supports EAN-13
 // (Chrome/Edge/Android). Otherwise load the vendored ZXing decoder and decode
 // canvas frames ourselves (Safari, Firefox, desktop Linux). Either way, only
-// checksum-valid ISBN-13 barcodes (978/979 prefix) are reported.
+// checksum-valid EAN-13 / UPC-A barcodes are reported: book ISBNs (978/979 prefix) and the
+// retail barcodes on DVDs and Blu-rays. The server decides which of the two it is.
 //
 // Camera access requires a secure context (HTTPS or localhost) in every browser.
 
-export function isIsbn13(s) {
-  if (!/^97[89]\d{10}$/.test(s)) return false;
+/** True for a checksum-valid EAN-13, or a UPC-A (12 digits, i.e. an EAN-13 with a leading zero). */
+export function isRetailCode(raw) {
+  if (!/^\d{12,13}$/.test(raw)) return false;
+  const s = raw.length === 12 ? `0${raw}` : raw;
   let sum = 0;
   for (let i = 0; i < 12; i++) sum += Number(s[i]) * (i % 2 ? 3 : 1);
   return (10 - (sum % 10)) % 10 === Number(s[12]);
@@ -36,7 +39,7 @@ async function makeDetector() {
     try {
       const formats = await window.BarcodeDetector.getSupportedFormats();
       if (formats.includes('ean_13')) {
-        const d = new window.BarcodeDetector({ formats: ['ean_13'] });
+        const d = new window.BarcodeDetector({ formats: ['ean_13', 'upc_a'].filter((f) => formats.includes(f)) });
         return { name: 'native', interval: 120, detect: async (video) => (await d.detect(video))[0]?.rawValue ?? null };
       }
     } catch { /* fall through to ZXing */ }
@@ -45,7 +48,7 @@ async function makeDetector() {
   const Z = window.ZXing;
   const reader = new Z.MultiFormatReader();
   const hints = new Map();
-  hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13]);
+  hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.UPC_A]);
   hints.set(Z.DecodeHintType.TRY_HARDER, true);
   reader.setHints(hints);
   const canvas = document.createElement('canvas');
@@ -73,7 +76,7 @@ async function makeDetector() {
 }
 
 /**
- * @param {{video: HTMLVideoElement, onCode: (isbn13:string)=>void, onStatus?: (msg:string)=>void}} o
+ * @param {{video: HTMLVideoElement, onCode: (code:string)=>void, onStatus?: (msg:string)=>void}} o
  */
 export function createScanner({ video, onCode, onStatus = () => {} }) {
   let stream = null;
@@ -89,7 +92,7 @@ export function createScanner({ video, onCode, onStatus = () => {} }) {
     if (!paused && video.readyState >= 2) {
       let raw = null;
       try { raw = await detector.detect(video); } catch { /* transient decode error */ }
-      if (raw && isIsbn13(raw) && !(raw === lastCode && Date.now() - lastAt < 3000)) {
+      if (raw && isRetailCode(raw) && !(raw === lastCode && Date.now() - lastAt < 3000)) {
         lastCode = raw; lastAt = Date.now();
         navigator.vibrate?.(60);
         paused = true;

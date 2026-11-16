@@ -7,6 +7,11 @@ import { toIsbn13 } from './isbn.js';
 import { isStatus, cleanTag } from './db.js';
 import { classify, GENRE_NAMES, TAXONOMY, UNCATEGORIZED } from './genres.js';
 import { downloadCover, enrich, LookupError } from './metadata.js';
+import { toGtin13, isDisc } from './barcode.js';
+import { classifyMovie, MOVIE_GENRES } from './moviegenres.js';
+import { enrichDisc } from './discs.js';
+import { combineMovies, JellyfinError } from './jellyfin.js';
+import { scanCover } from './cover.js';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -15,6 +20,7 @@ const MIME = {
 };
 const SESSION_DAYS = 90;
 const MAX_BODY = 1024 * 1024;
+const MAX_IMAGE = 8 * 1024 * 1024;
 
 class HttpError extends Error {
   constructor(status, message, extra = {}) { super(message); this.status = status; this.extra = extra; }
@@ -24,13 +30,18 @@ class HttpError extends Error {
  * @param {object} o
  * @param {import('./db.js').LibraryDb} o.db
  * @param {(isbn13:string)=>Promise<object|null>} o.lookup
+ * @param {(gtin13:string)=>Promise<object|null>} [o.lookupDisc]  DVD/Blu-ray barcode lookup
+ * @param {{enabled:boolean, search?:Function, details?:Function}} [o.tmdb]  title search + details for the movie editor
+ * @param {{enabled:boolean, publicUrl?:string, movies?:Function, image?:Function}} [o.jellyfin]  media-server connection
+ * @param {object[]} [o.coverReaders]  cover text readers tried in order (see cover.js); empty disables cover scanning
  * @param {string} o.dataDir       where covers/ and .secret live
  * @param {string} o.publicDir
  * @param {string} [o.password]    empty/undefined = no auth (only safe on localhost)
  * @param {typeof fetch} [o.fetchImpl]  used for cover downloads
  * @param {string[]} [o.allowedOrigins]
+ * @param {boolean} [o.trustProxy] take the client IP for login rate limiting from CF-Connecting-IP / X-Forwarded-For
  */
-export function createApp({ db, lookup, dataDir, publicDir, password = '', fetchImpl = fetch, allowedOrigins = [] }) {
+export function createApp({ db, lookup, lookupDisc = async () => null, tmdb = { enabled: false }, jellyfin = { enabled: false }, coverReaders = [], googleApiKey = '', dataDir, publicDir, password = '', fetchImpl = fetch, allowedOrigins = [], trustProxy = false }) {
   const coversDir = join(dataDir, 'covers');
   const root = resolve(publicDir);
   let secretPromise;
@@ -54,6 +65,14 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
     const given = Buffer.from(token);
     return expected.length === given.length && timingSafeEqual(expected, given);
   }
+  // Only honour proxy headers when told to: otherwise anyone could spoof them to dodge the lockout.
+  const clientIp = (req) => {
+    if (trustProxy) {
+      const h = req.headers['cf-connecting-ip'] || String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
+      if (h) return h;
+    }
+    return req.socket.remoteAddress ?? '?';
+  };
   const isHttps = (req) => !!req.socket.encrypted || req.headers['x-forwarded-proto'] === 'https';
 
   function originOk(req) {
@@ -85,6 +104,20 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
     catch { throw new HttpError(400, 'Invalid JSON'); }
   }
 
+  async function readImage(req) {
+    const mime = (req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(mime)) throw new HttpError(415, 'Send the photo as image/jpeg, image/png or image/webp.');
+    let size = 0;
+    const chunks = [];
+    for await (const c of req) {
+      size += c.length;
+      if (size > MAX_IMAGE) throw new HttpError(413, 'That photo is too large (8 MB max).');
+      chunks.push(c);
+    }
+    if (!size) throw new HttpError(400, 'Empty photo.');
+    return { buffer: Buffer.concat(chunks), mime };
+  }
+
   /** Validate and normalise user-editable fields. Throws HttpError(400). */
   function cleanFields(body, { requireTitle = false } = {}) {
     const out = {};
@@ -108,6 +141,18 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
         if (!Number.isInteger(n) || n < 0 || n > 100000) throw new HttpError(400, 'pages must be a whole number');
         out.pages = n;
       }
+    }
+    if (body.runtime !== undefined) {
+      if (body.runtime === null || body.runtime === '') out.runtime = null;
+      else {
+        const n = Number(body.runtime);
+        if (!Number.isInteger(n) || n < 0 || n > 10000) throw new HttpError(400, 'runtime must be a whole number of minutes');
+        out.runtime = n;
+      }
+    }
+    if (body.media !== undefined) {
+      if (body.media !== 'book' && !isDisc(body.media)) throw new HttpError(400, 'media must be book, dvd or bluray');
+      out.media = body.media;
     }
     if (body.status !== undefined) {
       if (!isStatus(body.status)) throw new HttpError(400, 'status must be unread, reading or read');
@@ -140,7 +185,9 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
 
   /** Apply classifier output to a book unless the user locked it. */
   function reclassifyRow(book) {
-    const c = classify({ title: book.title, subtitle: book.subtitle, description: book.description, ...book.meta_raw });
+    const c = isDisc(book.media)
+      ? classifyMovie({ title: book.title, description: book.description, genres: book.meta_raw.genres, tv: book.meta_raw.tv, year: book.published, fourK: book.meta_raw.fourK })
+      : classify({ title: book.title, subtitle: book.subtitle, description: book.description, ...book.meta_raw });
     const patch = { confidence: c.confidence };
     if (!book.genre_locked) Object.assign(patch, { genre: c.genre, subgenre: c.subgenre, needs_review: c.needsReview });
     if (!book.tags_locked) patch.tags = c.tags;
@@ -155,6 +202,33 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
     }
   };
 
+  const lookupDiscSafe = async (gtin13) => {
+    try { return { meta: await lookupDisc(gtin13), error: null }; }
+    catch (e) {
+      if (e instanceof LookupError) return { meta: null, error: e };
+      throw e;
+    }
+  };
+
+  /** Validate a client-chosen {id, kind} and fetch the authoritative TMDB record ourselves (never trust client-sent metadata). */
+  async function tmdbMatch(spec) {
+    if (!tmdb.enabled) throw new HttpError(501, 'Movie search needs a TMDB API key. Set TMDB_API_KEY (see .env.example).');
+    if (!spec || !Number.isInteger(spec.id) || spec.id <= 0 || (spec.kind !== 'movie' && spec.kind !== 'tv')) throw new HttpError(400, 'tmdb must be {id, kind: "movie"|"tv"}');
+    let det;
+    try { det = await tmdb.details(spec.kind, spec.id); }
+    catch (e) { throw new HttpError(502, 'Could not reach TMDB.', { providers: [{ provider: 'tmdb', error: String(e?.message ?? e) }] }); }
+    if (!det) throw new HttpError(404, 'TMDB has no such title.');
+    return det;
+  }
+
+  /** A scanned/typed code is either a valid ISBN (book) or a valid UPC/EAN (DVD/Blu-ray). */
+  function resolveCode(raw) {
+    const isbn13 = toIsbn13(raw);
+    if (isbn13) return { kind: 'book', code: isbn13 };
+    const gtin = toGtin13(raw);
+    return gtin ? { kind: 'disc', code: gtin } : null;
+  }
+
   // ------------------------------------------------------------ routes
   const routes = [];
   const route = (method, pattern, handler, { auth = true } = {}) => routes.push({ method, re: new RegExp(`^${pattern}$`), handler, auth });
@@ -163,7 +237,7 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
 
   route('POST', '/api/login', async (req, res) => {
     if (!password) return send(res, 200, { ok: true });
-    const ip = req.socket.remoteAddress ?? '?';
+    const ip = clientIp(req);
     const now = Date.now();
     const a = loginAttempts.get(ip);
     if (a && a.reset > now && a.n >= 10) throw new HttpError(429, 'Too many attempts. Try again in a few minutes.');
@@ -186,24 +260,91 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
   route('GET', '/api/taxonomy', async (req, res) => send(res, 200, {
     genres: TAXONOMY.map((g) => ({ name: g.name, kind: g.kind, subgenres: [...new Set(g.rules.map((r) => r.sub).filter(Boolean))] })),
     uncategorized: UNCATEGORIZED,
+    tmdb: !!tmdb.enabled,
+    coverScan: coverReaders.length > 0,
+    movieGenres: MOVIE_GENRES.map((name) => ({ name, subgenres: MOVIE_GENRES.filter((n) => n !== name) })),
   }));
+
+  route('GET', '/api/tmdb/search', async (req, res) => {
+    if (!tmdb.enabled) throw new HttpError(501, 'Movie search needs a TMDB API key. Set TMDB_API_KEY (see .env.example).');
+    const q = (req.url.searchParams.get('q') ?? '').trim().slice(0, 200);
+    const year = (req.url.searchParams.get('year') ?? '').trim();
+    if (!q) throw new HttpError(400, 'Type a title to search for.');
+    if (year && !/^\d{4}$/.test(year)) throw new HttpError(400, 'Year must be 4 digits.');
+    try { send(res, 200, { results: await tmdb.search(q, year) }); }
+    catch (e) { throw new HttpError(502, 'Could not reach TMDB.', { providers: [{ provider: 'tmdb', error: String(e?.message ?? e) }] }); }
+  });
+
+  route('GET', '/api/tmdb/(movie|tv)/(\\d+)', async (req, res, m) => {
+    send(res, 200, await tmdbMatch({ kind: m[1], id: Number(m[2]) }));
+  });
+
+  // Movies tab: every disc you own plus every movie on Jellyfin, lined up as one list.
+  route('GET', '/api/movies', async (req, res) => {
+    const discs = db.list({ media: 'movie', limit: 2000 }).books;
+    const info = { enabled: !!jellyfin.enabled, ok: false, error: '', count: 0, fetchedAt: null, publicUrl: jellyfin.publicUrl ?? '' };
+    let server = [];
+    if (jellyfin.enabled) {
+      try {
+        const r = await jellyfin.movies({ force: req.url.searchParams.get('refresh') === '1' });
+        server = r.items; info.ok = true; info.count = server.length; info.fetchedAt = new Date(r.at).toISOString();
+      } catch (e) {
+        if (!(e instanceof JellyfinError)) throw e;
+        info.error = e.message;   // still show the discs, with the reason the server side is missing
+      }
+    }
+    send(res, 200, { items: combineMovies(discs, server), jellyfin: info });
+  });
+
+  route('GET', '/api/jellyfin/image/([0-9a-fA-F]{32})', async (req, res, m) => {
+    if (!jellyfin.enabled) throw new HttpError(404, 'Jellyfin is not configured.');
+    // Duplicate Jellyfin entries for one film may have a stale poster: try the main id, then `also` (id.tag,...) in order.
+    const tries = [[m[1], req.url.searchParams.get('tag') ?? '']];
+    for (const pair of (req.url.searchParams.get('also') ?? '').split(',').slice(0, 5)) {
+      const [aid, atag = ''] = pair.split('.');
+      if (/^[0-9a-fA-F]{32}$/.test(aid) && /^[0-9a-zA-Z]{0,64}$/.test(atag)) tries.push([aid, atag]);
+    }
+    let img = null;
+    try { for (const [tid, ttag] of tries) { img = await jellyfin.image(tid, ttag); if (img) break; } }
+    catch (e) { if (e instanceof JellyfinError) throw new HttpError(502, e.message); throw e; }
+    if (!img) throw new HttpError(404, 'No poster');
+    send(res, 200, img.buffer, { 'Content-Type': img.type, 'Cache-Control': 'private, max-age=86400' });
+  });
+
+  // Cover scanning: a photo of a cover with no barcode -> candidate books (the user picks; nothing is added here).
+  route('POST', '/api/cover/scan', async (req, res) => {
+    if (!coverReaders.length) throw new HttpError(501, 'Cover scanning is not set up on this server.');
+    const { buffer, mime } = await readImage(req);
+    let r;
+    try { r = await scanCover(buffer, mime, { readers: coverReaders, fetchImpl, googleApiKey }); }
+    catch (e) { if (e.noReader) throw new HttpError(503, e.message); throw e; }
+    for (const c of r.candidates) c.existing = c.isbn13 ? (db.findByIsbn(c.isbn13)?.id ?? null) : null;
+    if (r.isbn) r.isbnExisting = db.findByIsbn(r.isbn)?.id ?? null;
+    send(res, 200, r);
+  });
 
   route('GET', '/api/facets', async (req, res) => send(res, 200, db.facets()));
 
   route('GET', '/api/lookup/([0-9Xx-]+)', async (req, res, m) => {
-    const isbn13 = toIsbn13(m[1]);
-    if (!isbn13) throw new HttpError(400, 'That is not a valid ISBN (checksum failed).');
-    const existing = db.findByIsbn(isbn13);
-    const { meta, error } = await lookupSafe(isbn13);
-    if (error) throw new HttpError(502, 'Could not reach the book databases. Check the server\'s internet connection.', { providers: error.providers, existing });
-    send(res, 200, { isbn13, found: !!meta, book: meta, existing });
+    const r = resolveCode(m[1]);
+    if (!r) throw new HttpError(400, 'That is not a valid ISBN or DVD/Blu-ray barcode (checksum failed).');
+    if (r.kind === 'book') {
+      const existing = db.findByIsbn(r.code);
+      const { meta, error } = await lookupSafe(r.code);
+      if (error) throw new HttpError(502, 'Could not reach the book databases. Check the server\'s internet connection.', { providers: error.providers, existing });
+      return send(res, 200, { isbn13: r.code, code: r.code, media: 'book', found: !!meta, book: meta, existing });
+    }
+    const existing = db.findByBarcode(r.code);
+    const { meta, error } = await lookupDiscSafe(r.code);
+    if (error) throw new HttpError(502, 'Could not look up that barcode. Check the server\'s internet connection (the free barcode service also allows only about 100 lookups a day).', { providers: error.providers, existing });
+    send(res, 200, { barcode: r.code, code: r.code, media: meta?.media ?? 'dvd', found: !!meta, book: meta, existing });
   });
 
   route('GET', '/api/books', async (req, res) => {
     const q = req.url.searchParams;
     send(res, 200, db.list({
       q: q.get('q') ?? '', genre: q.get('genre') ?? '', subgenre: q.get('subgenre') ?? '', tag: q.get('tag') ?? '',
-      status: q.get('status') ?? '', location: q.get('location') ?? '', review: q.get('review') === '1',
+      media: q.get('media') ?? '', status: q.get('status') ?? '', location: q.get('location') ?? '', review: q.get('review') === '1',
       sort: q.get('sort') || undefined, limit: q.get('limit') ?? 500, offset: q.get('offset') ?? 0,
     }));
   });
@@ -218,11 +359,20 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
     const body = await readJson(req);
     const isbn13 = body.isbn ? toIsbn13(body.isbn) : null;
     if (body.isbn && !isbn13) throw new HttpError(400, 'That is not a valid ISBN (checksum failed).');
+    const gtin13 = body.barcode ? toGtin13(body.barcode) : null;
+    if (body.barcode && !gtin13) throw new HttpError(400, 'That is not a valid barcode (checksum failed).');
+    const fields = cleanFields(body);
+    const disc = !isbn13 && (!!gtin13 || isDisc(fields.media));
+    if (disc && !isDisc(fields.media) && !gtin13) throw new HttpError(400, 'media must be dvd or bluray for a disc');
     if (isbn13) {
       const dup = db.findByIsbn(isbn13);
       if (dup) throw new HttpError(409, 'Already in your library', { existing: dup });
     }
-    const fields = cleanFields(body);
+    if (gtin13) {
+      const dup = db.findByBarcode(gtin13);
+      if (dup) throw new HttpError(409, 'Already in your library', { existing: dup });
+    }
+
     let meta = null;
     if (isbn13) {
       const r = await lookupSafe(isbn13);
@@ -231,18 +381,36 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
         if (r.error) throw new HttpError(502, 'Could not reach the book databases and no title was given.', { providers: r.error.providers });
         throw new HttpError(404, 'No metadata found for that ISBN. Add the title manually.', { notFound: true });
       }
+    } else if (gtin13) {
+      const r = await lookupDiscSafe(gtin13);
+      meta = r.meta;
+      if (!meta && !fields.title) {
+        if (r.error) throw new HttpError(502, 'Could not look up that barcode and no title was given.', { providers: r.error.providers });
+        throw new HttpError(404, 'No movie found for that barcode. Add the title manually.', { notFound: true });
+      }
+    }
+    let chosen = null;
+    if (body.tmdb !== undefined) {
+      if (!disc) throw new HttpError(400, 'A TMDB match only applies to DVDs/Blu-rays.');
+      chosen = await tmdbMatch(body.tmdb);
+      // The user's pick wins over the barcode lookup's guess, except the disc format and barcode, which TMDB doesn't know.
+      const { media: _m, format_guess: _f, barcode: _b, sources, ...rest } = chosen;
+      meta = { ...meta, ...rest, sources: [...new Set([...(meta?.sources ?? []), ...sources])] };
     }
     if (!meta && !fields.title) throw new HttpError(400, 'title is required');
 
     // Start from provider data, overlay the user's own fields, classify if the user didn't choose a genre.
-    const base = meta ?? { subjects: [], categories: [], dewey: [] };
+    const media = disc ? (fields.media ?? meta?.media ?? 'dvd') : 'book';
+    const base = meta ?? { subjects: [], categories: [], dewey: [], genres: [] };
     const merged = {
-      isbn13, isbn10: meta?.isbn10 ?? null,
+      media, isbn13, isbn10: meta?.isbn10 ?? null, barcode: gtin13, runtime: meta?.runtime ?? null,
       title: base.title, subtitle: base.subtitle, authors: base.authors, publisher: base.publisher,
       published: base.published, pages: base.pages, description: base.description,
-      ...fields,
+      ...fields, media,
     };
-    const c = enrich({ ...merged, subjects: base.subjects, categories: base.categories, dewey: base.dewey });
+    const c = disc
+      ? enrichDisc({ ...merged, genres: base.genres, tv: base.tv, fourK: base.fourK, tmdb_match: base.tmdb_match ?? 'none' })
+      : enrich({ ...merged, subjects: base.subjects, categories: base.categories, dewey: base.dewey });
     const userGenre = fields.genre && fields.genre !== 'auto';
     const row = {
       ...merged,
@@ -253,7 +421,9 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
       tags: fields.tags ?? c.tags,
       needs_review: userGenre ? false : c.needs_review,
       confidence: c.confidence,
-      meta_raw: { subjects: base.subjects, categories: base.categories, dewey: base.dewey, sources: base.sources ?? [] },
+      meta_raw: disc
+        ? { genres: base.genres ?? [], tv: !!base.tv, fourK: !!base.fourK, sources: base.sources ?? [], ...(base.tmdb ? { tmdb: base.tmdb } : {}) }
+        : { subjects: base.subjects, categories: base.categories, dewey: base.dewey, sources: base.sources ?? [] },
     };
     let book = db.insert(row);
     const file = await saveCover(book.id, base.cover_url);
@@ -267,6 +437,9 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
     if (!cur) throw new HttpError(404, 'Book not found');
     const body = await readJson(req);
     const patch = cleanFields(body);
+    if ('media' in patch && patch.media !== cur.media && (patch.media === 'book' || cur.media === 'book')) {
+      throw new HttpError(400, 'A book can\'t be changed into a DVD/Blu-ray (or the other way round). Only DVD <-> Blu-ray.');
+    }
     let reclass = false;
     if ('genre' in patch) {
       if (patch.genre === '' || patch.genre === 'auto') {      // hand control back to the classifier
@@ -278,6 +451,20 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
         patch.needs_review = false;
         patch.subgenre ??= '';                                 // an old subgenre belongs to the old genre
       }
+    }
+    if (body.tmdb !== undefined) {
+      if (!isDisc(cur.media)) throw new HttpError(400, 'A TMDB match only applies to DVDs/Blu-rays.');
+      const det = await tmdbMatch(body.tmdb);
+      patch.meta_raw = {
+        ...cur.meta_raw, genres: det.genres, tv: det.tv, tmdb: det.tmdb,
+        sources: [...new Set([...(cur.meta_raw.sources ?? []), 'tmdb'])],
+      };
+      const file = await saveCover(id, det.cover_url);   // the user chose this film, so its poster replaces the old cover
+      if (file) {
+        patch.cover_file = file;
+        if (cur.cover_file && cur.cover_file !== file) await unlink(join(coversDir, cur.cover_file)).catch(() => {});
+      }
+      if (!('genre' in patch)) reclass = true;           // re-shelve from the new genres (a genre the user locked is kept)
     }
     if ('tags' in patch) patch.tags_locked = true;
     if (body.autoTags === true) { delete patch.tags; patch.tags_locked = false; reclass = true; }
@@ -298,14 +485,19 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
   route('POST', '/api/books/(\\d+)/refresh', async (req, res, m) => {
     const book = db.get(Number(m[1]));
     if (!book) throw new HttpError(404, 'Book not found');
-    if (!book.isbn13) throw new HttpError(400, 'This book has no ISBN to look up.');
-    const { meta, error } = await lookupSafe(book.isbn13);
-    if (error) throw new HttpError(502, 'Could not reach the book databases.', { providers: error.providers });
-    if (!meta) throw new HttpError(404, 'No metadata found for this ISBN.', { notFound: true });
+    const code = book.isbn13 || book.barcode;
+    if (!code) throw new HttpError(400, 'This item has no ISBN or barcode to look up.');
+    const isDiscItem = !book.isbn13;
+    const { meta, error } = isDiscItem ? await lookupDiscSafe(code) : await lookupSafe(code);
+    if (error) throw new HttpError(502, 'Could not reach the metadata databases.', { providers: error.providers });
+    if (!meta) throw new HttpError(404, 'No metadata found for this code.', { notFound: true });
     // Fill blanks only: never overwrite what the user may have edited.
-    const patch = { meta_raw: { subjects: meta.subjects, categories: meta.categories, dewey: meta.dewey, sources: meta.sources } };
+    const patch = { meta_raw: isDiscItem
+      ? { genres: meta.genres, tv: meta.tv, fourK: meta.fourK, sources: meta.sources, ...(meta.tmdb ? { tmdb: meta.tmdb } : {}) }
+      : { subjects: meta.subjects, categories: meta.categories, dewey: meta.dewey, sources: meta.sources } };
     for (const k of ['subtitle', 'publisher', 'published', 'description']) if (!book[k] && meta[k]) patch[k] = meta[k];
     if (!book.pages && meta.pages) patch.pages = meta.pages;
+    if (!book.runtime && meta.runtime) patch.runtime = meta.runtime;
     if (!book.authors.length && meta.authors.length) patch.authors = meta.authors;
     if (!book.has_cover) { const f = await saveCover(book.id, meta.cover_url); if (f) patch.cover_file = f; }
     send(res, 200, reclassifyRow(db.update(book.id, patch)));
@@ -328,7 +520,7 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
         'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="library-${stamp}.json"`,
       });
     }
-    const cols = ['isbn13', 'title', 'subtitle', 'authors', 'publisher', 'published', 'pages', 'genre', 'subgenre', 'tags', 'status', 'location', 'notes', 'added_at'];
+    const cols = ['media', 'isbn13', 'barcode', 'title', 'subtitle', 'authors', 'publisher', 'published', 'pages', 'runtime', 'genre', 'subgenre', 'tags', 'status', 'location', 'notes', 'added_at'];
     const rows = [cols.join(',')].concat(books.map((b) => cols.map((c) => csv(Array.isArray(b[c]) ? b[c].join('; ') : b[c])).join(',')));
     send(res, 200, '﻿' + rows.join('\r\n') + '\r\n', {
       'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="library-${stamp}.csv"`,
@@ -388,7 +580,7 @@ function baseHeaders() {
     'Referrer-Policy': 'no-referrer',
     'X-Frame-Options': 'DENY',
     // Everything is self-hosted: covers are cached locally, the scanner library is vendored.
-    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob: https://covers.openlibrary.org https://*.archive.org https://books.google.com https://*.googleusercontent.com; media-src 'self' blob:; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob: https://covers.openlibrary.org https://*.archive.org https://books.google.com https://*.googleusercontent.com https://image.tmdb.org; media-src 'self' blob:; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     'Permissions-Policy': 'camera=(self), microphone=(), geolocation=()',
   };
 }

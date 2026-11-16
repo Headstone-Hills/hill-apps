@@ -4,6 +4,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { authorSortKey, titleSortKey } from './text.js';
 import { UNCATEGORIZED } from './genres.js';
+import { DISC_MEDIA } from './barcode.js';
 
 const STATUSES = ['unread', 'reading', 'read'];
 
@@ -58,6 +59,18 @@ export class LibraryDb {
   constructor(path = ':memory:') {
     this.db = new DatabaseSync(path);
     this.db.exec(SCHEMA);
+    this.#migrate();
+  }
+
+  /** Add the DVD/Blu-ray columns to libraries created before they existed. Safe to run on every start. */
+  #migrate() {
+    const have = new Set(this.db.prepare('PRAGMA table_info(books)').all().map((c) => c.name));
+    if (!have.has('media')) this.db.exec("ALTER TABLE books ADD COLUMN media TEXT NOT NULL DEFAULT 'book'");
+    if (!have.has('barcode')) this.db.exec('ALTER TABLE books ADD COLUMN barcode TEXT');
+    if (!have.has('runtime')) this.db.exec('ALTER TABLE books ADD COLUMN runtime INTEGER');
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_books_barcode ON books(barcode) WHERE barcode IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_books_media ON books(media);`);
   }
 
   close() { this.db.close(); }
@@ -78,6 +91,7 @@ export class LibraryDb {
   }
 
   get(id) { return this.#select('WHERE b.id = ?', [id])[0] ?? null; }
+  findByBarcode(gtin13) { return this.#select('WHERE b.barcode = ?', [gtin13])[0] ?? null; }
   findByIsbn(isbn13) { return this.#select('WHERE b.isbn13 = ?', [isbn13])[0] ?? null; }
   all() { return this.#select('', [], 'ORDER BY b.id'); }
   count() { return this.db.prepare('SELECT COUNT(*) n FROM books').get().n; }
@@ -100,6 +114,8 @@ export class LibraryDb {
       params.push(fts);
       rank = 'bm25(books_fts, 10, 4, 8, 5, 3, 1, 2, 6)'; // weights follow the FTS column order
     }
+    if (p.media === 'movie') where.push(`b.media IN (${DISC_MEDIA.map((m) => `'${m}'`).join(',')})`);
+    else if (p.media) { where.push('b.media = ?'); params.push(p.media); }
     if (p.genre) { where.push('b.genre = ?'); params.push(p.genre); }
     if (p.subgenre) { where.push('b.subgenre = ?'); params.push(p.subgenre); }
     if (p.status) { where.push('b.status = ?'); params.push(p.status); }
@@ -112,7 +128,7 @@ export class LibraryDb {
     const unc = `(b.genre = '${UNCATEGORIZED}')`; // shelve Uncategorized last
     const orders = {
       relevance: rank ? `${rank}, b.title_sort` : 'b.title_sort',
-      genre: `${unc}, b.genre COLLATE NOCASE, (b.subgenre = ''), b.subgenre COLLATE NOCASE, b.author_sort, b.title_sort`,
+      genre: `(b.media <> 'book'), ${unc}, b.genre COLLATE NOCASE, (b.subgenre = ''), b.subgenre COLLATE NOCASE, b.author_sort, b.title_sort`,
       title: 'b.title_sort, b.author_sort',
       author: 'b.author_sort, b.title_sort',
       added: 'b.added_at DESC, b.id DESC',
@@ -131,19 +147,26 @@ export class LibraryDb {
 
   /** Genre tree with counts, tags with counts, locations, statuses. */
   facets() {
-    const g = this.db.prepare('SELECT genre, subgenre, COUNT(*) n FROM books GROUP BY genre, subgenre').all();
-    const byGenre = new Map();
-    for (const r of g) {
-      if (!byGenre.has(r.genre)) byGenre.set(r.genre, { genre: r.genre, count: 0, subgenres: [] });
-      const e = byGenre.get(r.genre);
-      e.count += r.n;
-      if (r.subgenre) e.subgenres.push({ name: r.subgenre, count: r.n });
-    }
-    const genres = [...byGenre.values()]
-      .map((e) => ({ ...e, subgenres: e.subgenres.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)) }))
-      .sort((a, b) => (a.genre === UNCATEGORIZED) - (b.genre === UNCATEGORIZED) || a.genre.localeCompare(b.genre));
+    // Books and movies are shelved separately: a film's "Science Fiction" is not a novel's.
+    const tree = (cond) => {
+      const g = this.db.prepare(`SELECT genre, subgenre, COUNT(*) n FROM books WHERE ${cond} GROUP BY genre, subgenre`).all();
+      const byGenre = new Map();
+      for (const r of g) {
+        if (!byGenre.has(r.genre)) byGenre.set(r.genre, { genre: r.genre, count: 0, subgenres: [] });
+        const e = byGenre.get(r.genre);
+        e.count += r.n;
+        if (r.subgenre) e.subgenres.push({ name: r.subgenre, count: r.n });
+      }
+      return [...byGenre.values()]
+        .map((e) => ({ ...e, subgenres: e.subgenres.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)) }))
+        .sort((a, b) => (a.genre === UNCATEGORIZED) - (b.genre === UNCATEGORIZED) || a.genre.localeCompare(b.genre));
+    };
+    const genres = tree("media = 'book'");
+    const movieGenres = tree("media <> 'book'");
+    const mediaCounts = Object.fromEntries(this.db.prepare('SELECT media AS name, COUNT(*) AS n FROM books GROUP BY media').all().map((r) => [r.name, r.n]));
     return {
-      genres,
+      genres, movieGenres,
+      media: { book: mediaCounts.book ?? 0, dvd: mediaCounts.dvd ?? 0, bluray: mediaCounts.bluray ?? 0 },
       tags: this.db.prepare('SELECT tag AS name, COUNT(*) AS count FROM book_tags GROUP BY tag ORDER BY count DESC, tag LIMIT 200').all(),
       locations: this.db.prepare("SELECT location AS name, COUNT(*) AS count FROM books WHERE location <> '' GROUP BY location ORDER BY location").all(),
       statuses: this.db.prepare('SELECT status AS name, COUNT(*) AS count FROM books GROUP BY status').all(),
@@ -159,11 +182,11 @@ export class LibraryDb {
     return this.#tx(() => {
       const authors = b.authors ?? [];
       const r = this.db.prepare(`
-        INSERT INTO books (isbn13, isbn10, title, subtitle, authors, author_sort, title_sort, publisher, published, pages,
+        INSERT INTO books (media, barcode, runtime, isbn13, isbn10, title, subtitle, authors, author_sort, title_sort, publisher, published, pages,
                            description, cover_file, genre, subgenre, genre_locked, tags_locked, needs_review, confidence,
                            status, location, notes, meta_raw)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        b.isbn13 ?? null, b.isbn10 ?? null, b.title, b.subtitle ?? '', JSON.stringify(authors),
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        b.media ?? 'book', b.barcode ?? null, b.runtime ?? null, b.isbn13 ?? null, b.isbn10 ?? null, b.title, b.subtitle ?? '', JSON.stringify(authors),
         authorSortKey(authors[0] ?? ''), titleSortKey(b.title), b.publisher ?? '', b.published ?? '',
         b.pages ?? null, b.description ?? '', b.cover_file ?? null,
         b.genre ?? UNCATEGORIZED, b.subgenre ?? '', b.genre_locked ? 1 : 0, b.tags_locked ? 1 : 0,
@@ -181,7 +204,7 @@ export class LibraryDb {
     return this.#tx(() => {
       const cur = this.db.prepare('SELECT * FROM books WHERE id = ?').get(id);
       if (!cur) return null;
-      const cols = ['isbn13', 'isbn10', 'title', 'subtitle', 'publisher', 'published', 'pages', 'description', 'cover_file',
+      const cols = ['media', 'barcode', 'runtime', 'isbn13', 'isbn10', 'title', 'subtitle', 'publisher', 'published', 'pages', 'description', 'cover_file',
         'genre', 'subgenre', 'genre_locked', 'tags_locked', 'needs_review', 'confidence', 'status', 'location', 'notes'];
       const sets = [];
       const vals = [];
@@ -221,7 +244,9 @@ export class LibraryDb {
     this.db.prepare(`INSERT INTO books_fts (rowid, title, subtitle, authors, tags, genre, description, notes, isbn)
                      VALUES (?,?,?,?,?,?,?,?,?)`).run(
       id, row.title, row.subtitle, row.authors.join(' '), row.tags.join(' '),
-      `${row.genre} ${row.subgenre}`, row.description, row.notes, `${row.isbn13 ?? ''} ${row.isbn10 ?? ''}`);
+      `${row.genre} ${row.subgenre}`, row.description, row.notes,
+      // The "isbn" column also holds identifiers/labels users search by: barcode, and "dvd" / "blu-ray".
+      `${row.isbn13 ?? ''} ${row.isbn10 ?? ''} ${row.barcode ?? ''} ${row.media === 'bluray' ? 'blu-ray bluray' : row.media === 'dvd' ? 'dvd' : ''}`.trim());
   }
 
   /** Rebuild the whole search index (e.g. after manual DB edits). */

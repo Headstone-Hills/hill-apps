@@ -6,6 +6,9 @@ import { readFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { LibraryDb } from './db.js';
+import { createDiscLookup, createTmdbClient } from './discs.js';
+import { createJellyfin } from './jellyfin.js';
+import { createVisionReader, createTesseractReader, createClaudeReader } from './cover.js';
 import { createLookup } from './metadata.js';
 import { createApp } from './app.js';
 
@@ -30,8 +33,25 @@ if (password && password.length < 8) {
 mkdirSync(dataDir, { recursive: true });
 const db = new LibraryDb(join(dataDir, 'library.db'));
 const lookup = createLookup({ googleApiKey: env.GOOGLE_BOOKS_API_KEY ?? '' });
+const tmdbKey = (env.TMDB_API_KEY ?? '').trim();
+const lookupDisc = createDiscLookup({ tmdbKey });
+const tmdb = createTmdbClient({ key: tmdbKey });
+const jellyfinKey = (env.JELLYFIN_API_KEY ?? '').trim();
+const jellyfin = createJellyfin({
+  url: jellyfinKey ? (env.JELLYFIN_URL || 'http://127.0.0.1:8096') : '', apiKey: jellyfinKey, publicUrl: env.JELLYFIN_PUBLIC_URL ?? '',
+});
+// Cover readers, best first: Apple Vision (macOS, local), then Claude (only if you set a key: the photo is then
+// sent to Anthropic, but only when the local reader found nothing), then Tesseract if installed.
+const anthropicKey = (env.ANTHROPIC_API_KEY ?? '').trim();
+const coverReaders = env.COVER_SCAN === 'off' ? [] : [
+  createVisionReader({ binDir: join(dataDir, 'bin') }),
+  ...(anthropicKey ? [createClaudeReader({ apiKey: anthropicKey, model: env.COVER_VISION_MODEL || undefined })] : []),
+  createTesseractReader({ bin: env.TESSERACT_PATH || 'tesseract' }),
+];
+coverReaders[0]?.warm?.();
 const app = createApp({
-  db, lookup, dataDir, publicDir: join(here, '..', 'public'), password,
+  db, lookup, lookupDisc, tmdb, jellyfin, coverReaders, googleApiKey: env.GOOGLE_BOOKS_API_KEY ?? '', dataDir, publicDir: join(here, '..', 'public'), password,
+  trustProxy: /^(1|true|yes)$/i.test(env.TRUST_PROXY ?? ''),
   allowedOrigins: (env.ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
 });
 
@@ -41,7 +61,7 @@ const server = tls ? createHttps(tls, app) : createHttp(app);
 server.listen(port, host, () => {
   const scheme = tls ? 'https' : 'http';
   console.log(`Hill Library running at ${scheme}://${host === '0.0.0.0' ? 'localhost' : host}:${port}`);
-  console.log(`  data: ${dataDir}  |  books: ${db.count()}  |  auth: ${password ? 'password' : 'none (localhost only)'}`);
+  console.log(`  data: ${dataDir}  |  books: ${db.count()}  |  auth: ${password ? 'password' : 'none (localhost only)'}  |  movie genres: ${env.TMDB_API_KEY ? 'TMDB' : 'keyword guess (set TMDB_API_KEY for accurate genres)'}  |  jellyfin: ${jellyfin.enabled ? 'connected' : 'off (set JELLYFIN_API_KEY)'}  |  cover scan: ${coverReaders.map((r) => r.name).join(' > ') || 'off'}`);
   if (!tls) console.log('  note: phone/tablet cameras only work over HTTPS (or localhost). See README "Using it from your phone".');
 });
 

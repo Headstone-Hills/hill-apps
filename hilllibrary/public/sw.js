@@ -1,6 +1,6 @@
 // Service worker: lets the app install to a home screen and open instantly.
 // The library data itself is never cached here (it is private and must stay fresh).
-const CACHE = 'hl-shell-v1';
+const CACHE = 'hl-shell-v3';
 const SHELL = ['/', '/style.css', '/app.js', '/scanner.js', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (e) => {
