@@ -38,7 +38,7 @@ const lookupDisc = createDiscLookup({ tmdbKey });
 const tmdb = createTmdbClient({ key: tmdbKey });
 const jellyfinKey = (env.JELLYFIN_API_KEY ?? '').trim();
 const jellyfin = createJellyfin({
-  url: jellyfinKey ? (env.JELLYFIN_URL || 'http://127.0.0.1:8096') : '', apiKey: jellyfinKey, publicUrl: env.JELLYFIN_PUBLIC_URL ?? '',
+  url: jellyfinKey ? (env.JELLYFIN_URL || 'http://127.0.0.1:8096') : '', apiKey: jellyfinKey, publicUrl: env.JELLYFIN_PUBLIC_URL ?? '', library: env.JELLYFIN_MOVIE_LIBRARY ?? '',
 });
 // Cover readers, best first: Apple Vision (macOS, local), then Claude (only if you set a key: the photo is then
 // sent to Anthropic, but only when the local reader found nothing), then Tesseract if installed.

@@ -18,16 +18,28 @@ const JF = [
   { Id: 'not-an-id', Name: 'Broken' },
 ];
 
-function fakeJellyfin({ status = 200, items = JF, onCall } = {}) {
+const MOVIES_LIB = id(900), LYNCH_LIB = id(901), HOME_LIB = id(902);
+const LIBRARIES = [
+  { Name: 'Movies', CollectionType: 'movies', ItemId: MOVIES_LIB },
+  { Name: 'David Lynch Ephemera', ItemId: LYNCH_LIB },                 // no type set, like on a real server
+  { Name: 'Concerts', CollectionType: 'homevideos', ItemId: HOME_LIB },
+  { Name: 'Shows', CollectionType: 'tvshows', ItemId: id(903) },
+];
+
+function fakeJellyfin({ status = 200, items = JF, libraries = LIBRARIES, onCall } = {}) {
   const calls = [];
   const f = async (url, opts = {}) => {
     const u = new URL(String(url));
     calls.push({ path: u.pathname, search: u.searchParams, auth: opts.headers?.Authorization });
     onCall?.(u);
     if (status !== 200) return { ok: false, status, json: async () => ({}) };
+    if (u.pathname === '/Library/VirtualFolders') {
+      return { ok: true, status: 200, json: async () => libraries };
+    }
     if (u.pathname === '/Items') {
       const start = Number(u.searchParams.get('StartIndex')), limit = Number(u.searchParams.get('Limit'));
-      return { ok: true, status: 200, json: async () => ({ Items: items.slice(start, start + limit), TotalRecordCount: items.length }) };
+      const mine = items.filter((x) => (x._lib ?? MOVIES_LIB) === u.searchParams.get('ParentId'));   // only the requested library
+      return { ok: true, status: 200, json: async () => ({ Items: mine.slice(start, start + limit), TotalRecordCount: mine.length }) };
     }
     if (u.pathname.endsWith('/Images/Primary')) {
       if (u.pathname.includes(id(2))) return { ok: false, status: 404 };
@@ -119,14 +131,15 @@ test('client: sends the API key as a MediaBrowser token, pages through the libra
   const jf = createJellyfin({ url: 'http://jf.local:8096/', apiKey: 'SECRET', fetchImpl: f });
   const { items } = await jf.movies();
   assert.equal(items.length, 1200);
-  assert.equal(f.calls.length, 3);                                                   // 500 + 500 + 200
+  const itemCalls = () => f.calls.filter((c) => c.path === '/Items');
+  assert.equal(itemCalls().length, 3);                                               // 500 + 500 + 200
   assert.equal(f.calls[0].auth, 'MediaBrowser Token="SECRET"');
-  assert.equal(f.calls[0].search.get('IncludeItemTypes'), 'Movie');
-  assert.match(f.calls[0].search.get('Fields'), /ProviderIds/);
+  assert.equal(itemCalls()[0].search.get('IncludeItemTypes'), 'Movie');
+  assert.match(itemCalls()[0].search.get('Fields'), /ProviderIds/);
   await jf.movies();
-  assert.equal(f.calls.length, 3);                                                   // cached
+  assert.equal(itemCalls().length, 3);                                               // cached
   await jf.movies({ force: true });
-  assert.equal(f.calls.length, 6);
+  assert.equal(itemCalls().length, 6);
 });
 
 test('client: not configured means disabled and empty; auth and network failures are described', async () => {
@@ -212,10 +225,11 @@ test('API /api/movies?refresh=1 refetches from Jellyfin', async () => {
   const f = fakeJellyfin();
   const t = await boot({ jellyfin: createJellyfin({ url: 'http://jf', apiKey: 'k', fetchImpl: f }) });
   try {
+    const items = () => f.calls.filter((c) => c.path === '/Items').length;
     await t.req('GET', '/api/movies'); await t.req('GET', '/api/movies');
-    assert.equal(f.calls.length, 1);
+    assert.equal(items(), 1);
     await t.req('GET', '/api/movies?refresh=1');
-    assert.equal(f.calls.length, 2);
+    assert.equal(items(), 2);
   } finally { await t.close(); }
 });
 
@@ -238,4 +252,56 @@ test('a disc added by barcode remembers its exact TMDB id, which makes the Jelly
     const r = (await t.req('GET', '/api/movies')).json;
     assert.deepEqual(r.items.map((e) => e.availability), ['both']);            // different titles, same TMDB id: still one film
   } finally { await t.close(); }
+});
+
+// ------------------------------------------------------------------ library selection
+
+test('only the Movies library is read: ephemera, home-video and other libraries never appear', async () => {
+  const items = [
+    { Id: id(1), Name: 'Alien', ProductionYear: 1979 },
+    { Id: id(2), Name: 'Heat', ProductionYear: 1995 },
+    { Id: id(20), Name: 'David Lynch Daily Weather Report', ProductionYear: 2009, _lib: LYNCH_LIB },
+    { Id: id(21), Name: 'Concert Film', ProductionYear: 2001, _lib: HOME_LIB },
+  ];
+  const f = fakeJellyfin({ items });
+  const jf = createJellyfin({ url: 'http://jf', apiKey: 'k', fetchImpl: f });
+  const r = await jf.movies();
+  assert.deepEqual(r.items.map((i) => i.title), ['Alien', 'Heat']);
+  assert.deepEqual(r.libraries, ['Movies']);
+  assert.deepEqual([...new Set(f.calls.filter((c) => c.path === '/Items').map((c) => c.search.get('ParentId')))], [MOVIES_LIB]);
+});
+
+test('JELLYFIN_MOVIE_LIBRARY picks a library by name (case-insensitive); an unknown name is a clear error', async () => {
+  const items = [{ Id: id(1), Name: 'Alien' }, { Id: id(20), Name: 'Lynch Short', _lib: LYNCH_LIB }];
+  const named = createJellyfin({ url: 'http://jf', apiKey: 'k', library: 'david lynch ephemera', fetchImpl: fakeJellyfin({ items }) });
+  assert.deepEqual((await named.movies()).items.map((i) => i.title), ['Lynch Short']);
+  const wrong = createJellyfin({ url: 'http://jf', apiKey: 'k', library: 'Films', fetchImpl: fakeJellyfin({ items }) });
+  await assert.rejects(() => wrong.movies(), /no library named "Films".*Movies, David Lynch Ephemera/);
+});
+
+test('several Movies-type libraries are combined without duplicates; none at all is an explanatory error', async () => {
+  const libs = [{ Name: 'Movies', CollectionType: 'movies', ItemId: MOVIES_LIB }, { Name: 'Kids Movies', CollectionType: 'Movies', ItemId: LYNCH_LIB }];
+  const items = [{ Id: id(1), Name: 'Alien' }, { Id: id(30), Name: 'Up', _lib: LYNCH_LIB }];
+  const both = await createJellyfin({ url: 'http://jf', apiKey: 'k', fetchImpl: fakeJellyfin({ items, libraries: libs }) }).movies();
+  assert.deepEqual(both.items.map((i) => i.title).sort(), ['Alien', 'Up']);
+  assert.deepEqual(both.libraries, ['Movies', 'Kids Movies']);
+  const none = createJellyfin({ url: 'http://jf', apiKey: 'k', fetchImpl: fakeJellyfin({ libraries: [{ Name: 'Shows', CollectionType: 'tvshows', ItemId: id(903) }] }) });
+  await assert.rejects(() => none.movies(), /no library of type Movies.*JELLYFIN_MOVIE_LIBRARY/);
+});
+
+test('API /api/movies reports which library it read, and a missing library shows as a Jellyfin error with discs intact', async () => {
+  const t = await boot({ jellyfin: client({ items: [{ Id: id(1), Name: 'Alien' }, { Id: id(20), Name: 'Lynch Short', _lib: LYNCH_LIB }] }) });
+  try {
+    const r = (await t.req('GET', '/api/movies')).json;
+    assert.deepEqual(r.jellyfin.libraries, ['Movies']);
+    assert.deepEqual(r.items.map((e) => e.title), ['Alien']);
+  } finally { await t.close(); }
+  const bad = await boot({ jellyfin: client({ libraries: [] }) });
+  try {
+    await bad.req('POST', '/api/books', { media: 'dvd', title: 'Heat' });
+    const r = (await bad.req('GET', '/api/movies')).json;
+    assert.equal(r.jellyfin.ok, false);
+    assert.match(r.jellyfin.error, /no library of type Movies/);
+    assert.equal(r.items.length, 1);
+  } finally { await bad.close(); }
 });

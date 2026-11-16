@@ -350,6 +350,7 @@ async function viewMovies(page, params) {
       data = await api(`/api/movies${refresh ? '?refresh=1' : ''}`);
       const j = data.jellyfin;
       status.replaceChildren(...[
+        j.ok && j.libraries?.length ? h('p', { class: 'muted' }, `From your Jellyfin “${j.libraries.join('”, “')}” ${j.libraries.length === 1 ? 'library' : 'libraries'}.`) : null,
         !j.enabled ? h('div', { class: 'notice' }, 'Jellyfin isn’t connected, so this shows only the discs you own. To add your media server, set JELLYFIN_API_KEY on the server (see .env.example).') : null,
         j.enabled && !j.ok ? h('div', { class: 'notice err', role: 'alert' }, `Couldn’t read Jellyfin: ${j.error} Showing your discs only.`) : null].filter(Boolean));
       refreshBtn.classList.toggle('hidden', !j.enabled);

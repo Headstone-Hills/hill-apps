@@ -126,6 +126,8 @@ list, each marked *Disc*, *Server* or both, with filters for disc-only / server-
 shows where you have it, lets you edit the disc, open it in Jellyfin, or (for a server-only film) add
 the disc you own with the details pre-filled.
 
+- Only your Jellyfin **Movies** library is read (every library of type "Movies", or the one named in
+  `JELLYFIN_MOVIE_LIBRARY`), so home-video, concert, extras and music-video folders never appear as films.
 - Configure with `JELLYFIN_API_KEY` (create one in Jellyfin: Dashboard > Advanced > API Keys),
   `JELLYFIN_URL` (default `http://127.0.0.1:8096`) and optionally `JELLYFIN_PUBLIC_URL` for
   "Open in Jellyfin" links. Read-only: the app never changes anything on Jellyfin.
@@ -178,7 +180,7 @@ Reference: <https://www.sqlite.org/fts5.html>
 ## Configuration
 
 See `.env.example`. `LIBRARY_PASSWORD`, `PORT`, `HOST`, `DATA_DIR`, `GOOGLE_BOOKS_API_KEY`,
-`TLS_CERT`/`TLS_KEY`, `ALLOWED_ORIGINS`, `TRUST_PROXY`, `TMDB_API_KEY`, `JELLYFIN_API_KEY`, `JELLYFIN_URL`, `JELLYFIN_PUBLIC_URL`, `ANTHROPIC_API_KEY`, `COVER_VISION_MODEL`, `COVER_SCAN`, `TESSERACT_PATH`.
+`TLS_CERT`/`TLS_KEY`, `ALLOWED_ORIGINS`, `TRUST_PROXY`, `TMDB_API_KEY`, `JELLYFIN_API_KEY`, `JELLYFIN_URL`, `JELLYFIN_PUBLIC_URL`, `JELLYFIN_MOVIE_LIBRARY`, `ANTHROPIC_API_KEY`, `COVER_VISION_MODEL`, `COVER_SCAN`, `TESSERACT_PATH`.
 
 ## Security notes
 

@@ -18,9 +18,11 @@ export class JellyfinError extends Error {
 }
 
 /**
- * @param {{url?:string, apiKey?:string, publicUrl?:string, fetchImpl?:typeof fetch, ttlMs?:number}} o
+ * @param {{url?:string, apiKey?:string, publicUrl?:string, library?:string, fetchImpl?:typeof fetch, ttlMs?:number}} o
+ *   `library`: name of the Jellyfin library to read. Default: every library of type "Movies", so home videos,
+ *   concert/extras folders and the like never show up as films.
  */
-export function createJellyfin({ url = '', apiKey = '', publicUrl = '', fetchImpl = fetch, ttlMs = 5 * 60 * 1000 } = {}) {
+export function createJellyfin({ url = '', apiKey = '', publicUrl = '', library = '', fetchImpl = fetch, ttlMs = 5 * 60 * 1000 } = {}) {
   const base = url.replace(/\/+$/, '');
   const enabled = !!(base && apiKey);
   let cache = null; // {at, items}
@@ -41,11 +43,34 @@ export function createJellyfin({ url = '', apiKey = '', publicUrl = '', fetchImp
     return res;
   }
 
+  /** The libraries to read: the one named `library`, else every library whose type is "movies". */
+  async function movieLibraries() {
+    const body = await (await call('/Library/VirtualFolders')).json().catch(() => null);
+    const all = Array.isArray(body) ? body : [];
+    const want = library.trim().toLowerCase();
+    const picked = all.filter((l) => (want ? str(l?.Name).toLowerCase() === want : str(l?.CollectionType).toLowerCase() === 'movies'))
+      .filter((l) => /^[0-9a-f]{32}$/i.test(str(l?.ItemId)));
+    if (!picked.length) {
+      const names = all.map((l) => str(l?.Name)).filter(Boolean).join(', ') || 'none';
+      throw new JellyfinError(want
+        ? `Jellyfin has no library named "${library}" (libraries: ${names}).`
+        : `Jellyfin has no library of type Movies (libraries: ${names}). Set JELLYFIN_MOVIE_LIBRARY to the library's name.`, 0);
+    }
+    return picked.map((l) => ({ id: str(l.ItemId), name: str(l.Name) }));
+  }
+
   async function loadMovies() {
+    const libs = await movieLibraries();
     const items = [];
+    const seen = new Set();
+    for (const lib of libs) await loadLibrary(lib.id, items, seen);
+    return { items, libraries: libs.map((l) => l.name) };
+  }
+
+  async function loadLibrary(parentId, items, seen) {
     for (let start = 0; ; start += PAGE) {
       const q = new URLSearchParams({
-        IncludeItemTypes: 'Movie', Recursive: 'true', SortBy: 'SortName', SortOrder: 'Ascending',
+        ParentId: parentId, IncludeItemTypes: 'Movie', Recursive: 'true', SortBy: 'SortName', SortOrder: 'Ascending',
         Fields: 'ProviderIds,Genres,Overview,Studios,People,RunTimeTicks,ProductionYear',
         StartIndex: String(start), Limit: String(PAGE),
       });
@@ -53,21 +78,20 @@ export function createJellyfin({ url = '', apiKey = '', publicUrl = '', fetchImp
       const page = Array.isArray(body?.Items) ? body.Items : [];
       for (const x of page) {
         const m = normalizeItem(x);
-        if (m) items.push(m);
+        if (m && !seen.has(m.id)) { seen.add(m.id); items.push(m); }
       }
       if (page.length < PAGE || start + page.length >= (body?.TotalRecordCount ?? 0)) break;
     }
-    return items;
   }
 
   return {
     enabled, publicUrl: publicUrl.replace(/\/+$/, ''),
 
-    /** `{at, items}` for the movies on the server (cached a few minutes; {force:true} refetches). Throws JellyfinError. */
+    /** `{at, items, libraries}` for the movies on the server (cached a few minutes; {force:true} refetches). Throws JellyfinError. */
     async movies({ force = false } = {}) {
-      if (!enabled) return { at: 0, items: [] };
+      if (!enabled) return { at: 0, items: [], libraries: [] };
       if (!force && cache && Date.now() - cache.at < ttlMs) return cache;
-      inflight ??= loadMovies().then((items) => (cache = { at: Date.now(), items })).finally(() => { inflight = null; });
+      inflight ??= loadMovies().then((r) => (cache = { at: Date.now(), ...r })).finally(() => { inflight = null; });
       return inflight;
     },
 

@@ -282,12 +282,12 @@ export function createApp({ db, lookup, lookupDisc = async () => null, tmdb = { 
   // Movies tab: every disc you own plus every movie on Jellyfin, lined up as one list.
   route('GET', '/api/movies', async (req, res) => {
     const discs = db.list({ media: 'movie', limit: 2000 }).books;
-    const info = { enabled: !!jellyfin.enabled, ok: false, error: '', count: 0, fetchedAt: null, publicUrl: jellyfin.publicUrl ?? '' };
+    const info = { enabled: !!jellyfin.enabled, ok: false, error: '', count: 0, libraries: [], fetchedAt: null, publicUrl: jellyfin.publicUrl ?? '' };
     let server = [];
     if (jellyfin.enabled) {
       try {
         const r = await jellyfin.movies({ force: req.url.searchParams.get('refresh') === '1' });
-        server = r.items; info.ok = true; info.count = server.length; info.fetchedAt = new Date(r.at).toISOString();
+        server = r.items; info.ok = true; info.count = server.length; info.libraries = r.libraries ?? []; info.fetchedAt = new Date(r.at).toISOString();
       } catch (e) {
         if (!(e instanceof JellyfinError)) throw e;
         info.error = e.message;   // still show the discs, with the reason the server side is missing
