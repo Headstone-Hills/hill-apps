@@ -16,7 +16,7 @@ any phone, tablet or computer with a browser. Personal use, one library, no acco
 cd hilllibrary
 cp .env.example .env        # set LIBRARY_PASSWORD (8+ characters)
 npm start                   # http://localhost:3000
-npm test                    # 78 unit/API tests
+npm test                    # 88 unit/API tests
 ```
 
 Your data lives in `./data/` (`library.db` plus `covers/`). **Back that folder up.**
@@ -77,7 +77,12 @@ If the databases can't find a title, you aren't stuck:
 The title still has to be typed: the app does not read text from the photo.
 
 ### Metadata
-Given an ISBN the server asks two free sources in parallel and merges them field by field:
+Given an ISBN the server asks two free sources in parallel and merges them field by field. To keep rapid
+scanning fast it **answers as soon as one source has a complete record**, waiting at most 0.8 s for the other to
+add detail (a source that arrives late upgrades the cached record, so the add that follows still gets it). A source
+that is **throttling you (HTTP 429, honouring `Retry-After`) or failing twice in a row is paused** for a while, instead
+of every scan waiting on it again. Covers download **in the background** after the book is saved (two at a time), so an add
+never waits on an image host; a cover can appear a second or two after the book does.
 
 | Source | Used for | Docs |
 |---|---|---|

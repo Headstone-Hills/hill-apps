@@ -12,7 +12,7 @@ Read this first, then `hilllibrary/README.md`.
   automatic metadata (Open Library + Google Books), a weighted genre/tag classifier,
   FTS5 search, installable PWA. Zero npm dependencies, Node >= 22.13 (`node:sqlite`).
   It is a new sibling of the repo's unrelated Python music apps (it only adds a mention to the root README).
-- **Tests:** `cd hilllibrary && npm test` gives 78 passing. A Chromium end-to-end run exists at
+- **Tests:** `cd hilllibrary && npm test` gives 88 passing. A Chromium end-to-end run exists at
   `tests/e2e/ui.e2e.mjs` (needs Playwright; not part of `npm test`) and passed, including decoding an
   independently generated EAN-13 barcode from a fake camera feed.
 - **Not deployed anywhere yet.** Nothing is running; the user has not tried it on a phone.
@@ -45,6 +45,22 @@ Read this first, then `hilllibrary/README.md`.
   hard cases faster. e2e fails on any console warning/error, which is how this was found.
 - Synthetic photo fixtures (not committed; need PIL + bwip-js): 12 MP, tilt, blur, noise, dim, sideways. Single-factor
   sweep all decoded. Never tested: real phone photos.
+
+### Scan-speed work (2026-11-17, third pass)
+
+Reported: lookups slow down after several scans in a row. **Measured first; the app's own code was not the cause.** Server
+(240 consecutive scans, also with 3,000 books) and browser (14 distinct barcodes from a fake camera feed) were flat: lookup
+~ provider latency + 2 ms, add ~ cover time + 7 ms, no growth, no long tasks. What was left is time spent *waiting on
+external services in series*, and a throttling provider makes that grow. Reproduced by simulation (providers degrade after
+6 requests): scans 1-6 ~230 ms, scan 7 onward ~4.6 s each. **The real Open Library / Google Books could not be reached from
+the sandbox, so real-world throttling is a likely explanation, not a confirmed one.**
+Fixes (`server/metadata.js`, `server/app.js`): answer on the first complete provider (0.8 s grace; late data upgrades the cache);
+per-provider circuit breaker (429 pauses at once, honours Retry-After; 2 consecutive failures pause with backoff; one probe after);
+in-flight de-duplication; cache capped at 500 entries; **cover download moved off the add** into a 2-at-a-time background queue
+that re-checks the book is still the same one (SQLite reuses ids) and has no cover before saving; graceful shutdown waits
+<= 5 s for pending covers. Simulated result: steady ~127 ms/scan (4-scan transient ~0.93 s), add 107 -> ~4 ms. 88 tests.
+Behaviour change: `POST /api/books` returns `has_cover:false`; the cover attaches moments later (tests use `handler.idle()`).
+Benchmarks lived in the session scratchpad (not committed); they need only Node (+ Playwright and ffmpeg for the browser one).
 
 ## What the user wants
 

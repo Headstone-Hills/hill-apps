@@ -150,6 +150,29 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
     return file;
   }
 
+  // Cover downloads run after the response, two at a time, so scanning a shelf never waits on (or hammers) the image host.
+  const pendingCovers = new Set();
+  const coverQueue = createLimiter(2, 200);
+  function fetchCoverInBackground(book, url) {
+    if (!url) return;
+    const { id, added_at } = book;
+    // Ids can be reused after a delete, so a job must still be talking about the *same* book when it finishes.
+    const stillSameBookWithoutCover = () => { const cur = db.get(id); return !!cur && cur.added_at === added_at && !cur.cover_file; };
+    const job = coverQueue(async () => {
+      const cover = await downloadCover(url, fetchImpl);
+      if (!cover || !stillSameBookWithoutCover()) return;
+      await mkdir(coversDir, { recursive: true });
+      const file = `${id}.${cover.ext}`;
+      await writeFile(join(coversDir, file), cover.buffer);
+      if (stillSameBookWithoutCover()) db.update(id, { cover_file: file });
+      else await unlink(join(coversDir, file)).catch(() => {}); // deleted, or the user uploaded their own photo meanwhile
+    }).catch((e) => console.error('Background cover download failed:', e?.message ?? e))
+      .finally(() => pendingCovers.delete(job));
+    pendingCovers.add(job);
+  }
+  /** Resolves when no background cover work is pending (used by tests and graceful shutdown). */
+  async function idle() { while (pendingCovers.size) await Promise.allSettled([...pendingCovers]); }
+
   /** Apply classifier output to a book unless the user locked it. */
   function reclassifyRow(book) {
     const c = classify({ title: book.title, subtitle: book.subtitle, description: book.description, ...book.meta_raw });
@@ -268,9 +291,8 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
       confidence: c.confidence,
       meta_raw: { subjects: base.subjects, categories: base.categories, dewey: base.dewey, sources: base.sources ?? [] },
     };
-    let book = db.insert(row);
-    const file = await saveCover(book.id, base.cover_url);
-    if (file) book = db.update(book.id, { cover_file: file });
+    const book = db.insert(row);
+    fetchCoverInBackground(book, base.cover_url); // the add must not wait on a slow image host
     send(res, 201, book);
   });
 
@@ -383,7 +405,7 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
     send(res, 200, await readFile(file), { 'Content-Type': type, 'Cache-Control': cache });
   }
 
-  return async function handler(req, res) {
+  async function handler(req, res) {
     try {
       const url = new URL(req.url, 'http://localhost');
       req.url = url; // handlers read query params from req.url.searchParams
@@ -407,7 +429,9 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
       console.error('Unhandled error:', e);
       return send(res, 500, { error: 'Something went wrong on the server.' });
     }
-  };
+  }
+  handler.idle = idle;
+  return handler;
 }
 
 // ---------------------------------------------------------------- utilities
@@ -440,6 +464,24 @@ async function loadSecret(path) {
     await writeFile(path, s, { mode: 0o600 });
     return s;
   }
+}
+
+/** Run at most `max` async jobs at once; extra jobs wait in a queue (dropped, rejecting, beyond `maxQueue`). */
+function createLimiter(max, maxQueue = Infinity) {
+  let active = 0;
+  const queue = [];
+  const pump = () => {
+    while (active < max && queue.length) {
+      const { fn, resolve, reject } = queue.shift();
+      active++;
+      Promise.resolve().then(fn).then(resolve, reject).finally(() => { active--; pump(); });
+    }
+  };
+  return (fn) => new Promise((resolve, reject) => {
+    if (queue.length >= maxQueue) return reject(new Error('cover queue is full'));
+    queue.push({ fn, resolve, reject });
+    pump();
+  });
 }
 
 /** Identify an image by its magic bytes. Only formats browsers render safely; SVG/GIF are deliberately excluded. */

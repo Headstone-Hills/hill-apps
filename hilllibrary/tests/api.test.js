@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LibraryDb } from '../server/db.js';
 import { createApp } from '../server/app.js';
-import { createLookup, mergeProviders, fetchOpenLibrary, fetchGoogleBooks, downloadCover, LookupError } from '../server/metadata.js';
+import { createLookup, createBreaker, mergeProviders, fetchOpenLibrary, fetchGoogleBooks, downloadCover, LookupError } from '../server/metadata.js';
 
 // ---- fake providers (shapes follow the documented Open Library / Google Books responses) ----
 const DUNE = '9780441013593';
@@ -47,7 +47,7 @@ async function boot({ password = '', fetchImpl = fakeFetch(), lookup } = {}) {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const ctx = {
-    db, base, dataDir, fetchImpl,
+    db, base, dataDir, fetchImpl, idle: () => handler.idle(),
     async req(method, path, body, headers = {}) {
       const res = await fetch(base + path, {
         method, redirect: 'manual',
@@ -147,11 +147,14 @@ test('add by ISBN: stores metadata, genre, tags, cover; then duplicate -> 409', 
     assert.equal(b.genre, 'Science Fiction');
     assert.equal(b.genre_locked, false);
     assert.equal(b.location, 'Study');
-    assert.equal(b.has_cover, true);
-    assert.ok(existsSync(join(t.dataDir, 'covers', b.cover_file)));
+    assert.equal(b.has_cover, false);                       // the response does not wait for the cover download
+    await t.idle();
+    const stored = t.db.get(b.id);
+    assert.equal(stored.has_cover, true);
+    assert.ok(existsSync(join(t.dataDir, 'covers', stored.cover_file)));
     assert.ok(b.tags.includes('ecology'));
 
-    const cover = await fetch(`${t.base}/covers/${b.cover_file}`);
+    const cover = await fetch(`${t.base}/covers/${stored.cover_file}`);
     assert.equal(cover.status, 200);
     assert.equal(cover.headers.get('content-type'), 'image/jpeg');
 
@@ -275,7 +278,8 @@ test('delete removes book, search entry and cover file', async () => {
   const t = await boot();
   try {
     const { json: b } = await t.req('POST', '/api/books', { isbn: DUNE });
-    const file = join(t.dataDir, 'covers', b.cover_file);
+    await t.idle();
+    const file = join(t.dataDir, 'covers', t.db.get(b.id).cover_file);
     assert.ok(existsSync(file));
     assert.equal((await t.req('DELETE', `/api/books/${b.id}`)).status, 200);
     assert.equal(existsSync(file), false);
@@ -457,7 +461,8 @@ test('cover photo: replaces a provider cover too, and survives book deletion cle
   const t = await boot();
   try {
     const { json: b } = await t.req('POST', '/api/books', { isbn: DUNE });
-    assert.equal(b.cover_file, `${b.id}.jpg`);                    // provider-supplied cover
+    await t.idle();
+    assert.equal(t.db.get(b.id).cover_file, `${b.id}.jpg`);       // provider-supplied cover, fetched in the background
     const up = await putCover(t, b.id, JPG);
     assert.equal(existsSync(join(t.dataDir, 'covers', `${b.id}.jpg`)), false);
     await t.req('DELETE', `/api/books/${b.id}`);
@@ -489,4 +494,162 @@ test('cover photo: requires login and rejects cross-origin writes', async () => 
     assert.equal((await putCover(t, b.id, JPG, { Cookie: cookie, Origin: 'https://evil.example' })).status, 403);
     assert.equal((await putCover(t, b.id, JPG, { Cookie: cookie })).status, 200);
   } finally { await t.close(); }
+});
+
+
+// ------------------------------------------------ scan-speed behaviour
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Fetch fake with per-host delays and a call log, for timing/ordering tests. */
+function timedFetch({ olDelay = 0, gbDelay = 0, coverDelay = 0, gbStatus = 200, gbHeaders = null } = {}) {
+  const calls = { ol: 0, gb: 0, cover: 0 };
+  const f = async (url) => {
+    const u = String(url);
+    if (u.includes('openlibrary.org/api/books')) {                     // answers for whichever ISBN was asked, with Dune's record
+      calls.ol++; await sleep(olDelay);
+      const key = decodeURIComponent(u.match(/bibkeys=([^&]+)/)[1]);
+      return { ok: true, status: 200, json: async () => ({ [key]: OL[`ISBN:${DUNE}`] }) };
+    }
+    if (u.includes('googleapis.com/books')) {
+      calls.gb++; await sleep(gbDelay);
+      return { ok: gbStatus < 400, status: gbStatus, headers: gbHeaders ? new Map(Object.entries(gbHeaders)) : undefined, json: async () => GB };
+    }
+    calls.cover++; await sleep(coverDelay);
+    return { ok: true, status: 200, headers: new Map([['content-type', 'image/jpeg']]), arrayBuffer: async () => JPEG };
+  };
+  f.calls = calls;
+  return f;
+}
+
+test('speed: a slow cover host does not delay the add; the cover arrives afterwards', async () => {
+  const f = timedFetch({ coverDelay: 400 });
+  const t = await boot({ fetchImpl: f });
+  try {
+    const t0 = Date.now();
+    const add = await t.req('POST', '/api/books', { isbn: DUNE });
+    const took = Date.now() - t0;
+    assert.equal(add.status, 201);
+    assert.ok(took < 300, `add took ${took} ms; it should not wait for a 400 ms cover download`);
+    assert.equal(add.json.has_cover, false);
+    await t.idle();
+    assert.equal(t.db.get(add.json.id).has_cover, true);
+  } finally { await t.close(); }
+});
+
+test('speed: a cover that arrives after the book was deleted leaves no file or error behind', async () => {
+  const t = await boot({ fetchImpl: timedFetch({ coverDelay: 150 }) });
+  try {
+    const { json: b } = await t.req('POST', '/api/books', { isbn: DUNE });
+    await t.req('DELETE', `/api/books/${b.id}`);
+    await t.idle();
+    assert.equal(existsSync(join(t.dataDir, 'covers', `${b.id}.jpg`)), false);
+  } finally { await t.close(); }
+});
+
+test('speed: a late provider cover never replaces a photo the user uploaded meanwhile', async () => {
+  const t = await boot({ fetchImpl: timedFetch({ coverDelay: 200 }) });
+  try {
+    const { json: b } = await t.req('POST', '/api/books', { isbn: DUNE });
+    const up = await putCover(t, b.id, JPG);                       // user photo lands first
+    assert.equal(up.status, 200);
+    await t.idle();
+    const cur = t.db.get(b.id);
+    assert.equal(cur.cover_file, up.json.cover_file);
+    assert.equal(existsSync(join(t.dataDir, 'covers', `${b.id}.jpg`)), false); // the provider's copy was discarded
+  } finally { await t.close(); }
+});
+
+test('speed: a reused book id never inherits the previous book\'s late cover', async () => {
+  const t = await boot({ fetchImpl: timedFetch({ coverDelay: 250 }) });
+  try {
+    const { json: first } = await t.req('POST', '/api/books', { isbn: DUNE });          // cover still downloading...
+    await t.req('DELETE', `/api/books/${first.id}`);                                      // ...book deleted; SQLite may reuse the id
+    const { json: second } = await t.req('POST', '/api/books', { title: 'Different book, no ISBN' });
+    assert.equal(second.id, first.id, 'precondition: the id was reused');
+    await t.idle();
+    assert.equal(t.db.get(second.id).has_cover, false);
+  } finally { await t.close(); }
+});
+
+test('speed: lookup answers on the first complete record instead of waiting for the slow provider', async () => {
+  const f = timedFetch({ olDelay: 20, gbDelay: 600 });
+  const lookup = createLookup({ fetchImpl: f, graceMs: 80 });
+  const t0 = Date.now();
+  const m = await lookup(DUNE);
+  const took = Date.now() - t0;
+  assert.ok(took < 350, `lookup took ${took} ms; it should not wait 600 ms for Google`);
+  assert.equal(m.title, 'Dune');
+  assert.deepEqual(m.sources, ['openlibrary']);
+  assert.equal(m.description, '');                                // Google's description hasn't landed yet
+  await sleep(700);                                               // ...but when it does, the cached record is upgraded
+  const later = await lookup(DUNE);
+  assert.deepEqual(later.sources, ['openlibrary', 'googlebooks']);
+  assert.match(later.description, /Arrakis/);
+  assert.equal(f.calls.gb, 1);                                    // still just one request to each provider
+});
+
+test('speed: concurrent lookups of the same ISBN share one provider request', async () => {
+  const f = timedFetch({ olDelay: 50, gbDelay: 50 });
+  const lookup = createLookup({ fetchImpl: f });
+  const [a, b] = await Promise.all([lookup(DUNE), lookup(DUNE)]);
+  assert.equal(a, b);
+  assert.deepEqual(f.calls, { ol: 1, gb: 1, cover: 0 });
+});
+
+test('breaker: a throttling provider (429) is skipped on later scans, then probed again after Retry-After', async () => {
+  let clock = 1_000_000;
+  const f = timedFetch({ gbStatus: 429, gbHeaders: { 'retry-after': '30' } });
+  const lookup = createLookup({ fetchImpl: f, now: () => clock, graceMs: 50 });
+  const isbns = ['9780441013593', '9780547928227', '9780140449136', '9780375704024'];
+  const first = await lookup(isbns[0]);
+  assert.equal(first.title, 'Dune');                              // Open Library still answers
+  await sleep(10);
+  assert.equal(f.calls.gb, 1);
+  assert.equal(lookup.breaker.isOpen('googlebooks'), true);
+  assert.equal(lookup.breaker.remainingMs('googlebooks'), 30_000); // Retry-After honoured
+
+  const second = await lookup(isbns[1]);                          // different ISBN, so not a cache hit
+  assert.equal(f.calls.gb, 1, 'Google must not be called while it is paused');
+  assert.match(second.provider_errors.find((e) => e.provider === 'googlebooks').error, /paused/);
+
+  clock += 31_000;                                                // Retry-After elapsed
+  await lookup(isbns[2]);
+  await sleep(10);
+  assert.equal(f.calls.gb, 2, 'after the pause, Google is probed again');
+});
+
+test('breaker: ordinary failures only pause a provider after two in a row; a success resets the count', () => {
+  let clock = 0;
+  const b = createBreaker({ now: () => clock });
+  b.failure('x', new Error('timeout'));
+  assert.equal(b.isOpen('x'), false);                             // one blip is tolerated
+  b.success('x');
+  b.failure('x', new Error('timeout'));
+  assert.equal(b.isOpen('x'), false);                             // the success reset the streak
+  b.failure('x', new Error('timeout'));
+  assert.equal(b.isOpen('x'), true);                              // two in a row
+  assert.equal(b.remainingMs('x'), 15_000);
+  clock += 15_001;
+  assert.equal(b.isOpen('x'), false);
+  b.failure('x', new Error('timeout'));                           // the probe fails too: back off for longer
+  assert.equal(b.remainingMs('x'), 30_000);
+});
+
+test('breaker: when every provider is paused the lookup reports an outage, not "not found"', async () => {
+  const throttled = async () => ({ ok: false, status: 429, json: async () => ({}) });
+  const lookup = createLookup({ fetchImpl: throttled });
+  await assert.rejects(lookup(DUNE), LookupError);                // both answer 429, so both get paused
+  await assert.rejects(lookup('9780547928227'), (e) => e instanceof LookupError && e.providers.every((p) => /paused/.test(p.error)));
+});
+
+test('cache: bounded, oldest entries evicted first', async () => {
+  const isbnOf = (i) => { const core = '978' + String(i).padStart(9, '0'); let s = 0; for (let k = 0; k < 12; k++) s += +core[k] * (k % 2 ? 3 : 1); return core + ((10 - (s % 10)) % 10); };
+  const fetchImpl = async (url) => {
+    const m = String(url).match(/ISBN:(\d+)/);
+    const body = m ? { [`ISBN:${m[1]}`]: { title: `T ${m[1]}`, authors: [{ name: 'A' }] } } : { totalItems: 0 };
+    return { ok: true, status: 200, json: async () => body };
+  };
+  const lookup = createLookup({ fetchImpl, maxCache: 2, graceMs: 10 });
+  for (const i of [1, 2, 3]) await lookup(isbnOf(i));
+  assert.equal(lookup.cacheSize(), 2);                            // 3 looked up, only the newest 2 kept
 });

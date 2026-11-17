@@ -45,6 +45,16 @@ server.listen(port, host, () => {
   if (!tls) console.log('  note: phone/tablet cameras only work over HTTPS (or localhost). See README "Using it from your phone".');
 });
 
+// On shutdown, stop taking requests but give in-flight cover downloads a few seconds to finish first,
+// instead of closing the database underneath them.
+let stopping = false;
 for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => { server.close(); db.close(); process.exit(0); });
+  process.on(sig, async () => {
+    if (stopping) return;
+    stopping = true;
+    server.close();
+    await Promise.race([app.idle(), new Promise((r) => setTimeout(r, 5000))]);
+    db.close();
+    process.exit(0);
+  });
 }
