@@ -12,10 +12,24 @@ Read this first, then `hilllibrary/README.md`.
   automatic metadata (Open Library + Google Books), a weighted genre/tag classifier,
   FTS5 search, installable PWA. Zero npm dependencies, Node >= 22.13 (`node:sqlite`).
   It is a new sibling of the repo's unrelated Python music apps (it only adds a mention to the root README).
-- **Tests:** `cd hilllibrary && npm test` gives 72 passing. A Chromium end-to-end run exists at
+- **Tests:** `cd hilllibrary && npm test` gives 78 passing. A Chromium end-to-end run exists at
   `tests/e2e/ui.e2e.mjs` (needs Playwright; not part of `npm test`) and passed, including decoding an
   independently generated EAN-13 barcode from a fake camera feed.
 - **Not deployed anywhere yet.** Nothing is running; the user has not tried it on a phone.
+
+## Added after the first handoff (2026-11-17)
+
+- **No-match flow with cover photo.** Lookup now keeps *partial* provider data (no title but publisher/subjects/etc.):
+  `/api/lookup/:isbn` returns `{found:false, partial:{...}}`; `mergeProviders` sets `incomplete:true`; `POST /api/books`
+  still requires a user-supplied title for such records but uses the partial data + subjects for classification.
+  New `PUT /api/books/:id/cover` takes raw image bytes (sniffed, JPEG/PNG/WebP, <= 5 MB), writes
+  `data/covers/<id>-<stamp>.<ext>` (unique name defeats the service-worker cache-first covers) and deletes the old file.
+  Client: `pickPhoto()` / `shrinkImage()` / `uploadCover()` in `public/app.js`; the book dialog (add and edit) has
+  Take cover photo / Choose image; the scan no-match card offers "Take cover photo & add".
+- **Bug fixed:** `Element.append(null)` inserted the literal text "null" on the Scan page (and More without a password).
+  Pages are now assembled with a null-safe `put()`; the e2e fails if "null"/"undefined"/"NaN" text shows on any main screen.
+- Tests: 78 unit/API passing; e2e extended (partial data + photo, cover replacement, stray-text guard).
+- **Still unverified:** capture on real phones (the test uses a generated JPEG via Playwright's file chooser).
 
 ## What the user wants
 

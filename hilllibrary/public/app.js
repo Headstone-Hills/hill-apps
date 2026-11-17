@@ -84,9 +84,58 @@ const pref = {
   set(k, v) { try { localStorage.setItem(`hl.${k}`, JSON.stringify(v)); } catch { /* private mode */ } },
 };
 
+/** append() that skips null/false (Element.append(null) would insert the literal text "null"). */
+function put(parent, ...kids) {
+  parent.append(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+  return parent;
+}
+
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const authorsText = (b) => (b.authors?.length ? b.authors.join(', ') : 'Unknown author');
 const changed = () => window.dispatchEvent(new CustomEvent('library-changed'));
+
+// ------------------------------------------------------------------ photos
+/**
+ * Ask for a photo. With capture=true phones open their camera app directly (full-resolution,
+ * proper autofocus, flash: far better than a video frame); without it the user picks a file.
+ * Must be called from a click handler. Resolves to a File, or null if cancelled.
+ */
+function pickPhoto({ capture = false } = {}) {
+  return new Promise((resolve) => {
+    const input = h('input', { type: 'file', accept: 'image/*', capture: capture ? 'environment' : null, class: 'hidden' });
+    input.addEventListener('change', () => { resolve(input.files?.[0] ?? null); input.remove(); }, { once: true });
+    input.addEventListener('cancel', () => { resolve(null); input.remove(); }, { once: true });
+    document.body.append(input);
+    input.click();
+  });
+}
+
+/** Downscale to a JPEG of at most maxSide px (phone photos are 4-12 MB; a cover needs ~100 KB). */
+async function shrinkImage(file, maxSide = 1400) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode(); // browsers apply the photo's EXIF rotation when drawing it
+    const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.85));
+    if (blob) return blob;
+  } catch { /* fall through to the original file */ } finally { URL.revokeObjectURL(url); }
+  if (file.size <= 4.5 * 1024 * 1024 && /^image\/(jpeg|png|webp)$/.test(file.type)) return file;
+  throw new Error('Could not read that image. Try a JPEG or PNG.');
+}
+
+async function uploadCover(id, blob) {
+  const res = await fetch(`/api/books/${id}/cover`, { method: 'PUT', headers: { 'Content-Type': blob.type || 'image/jpeg' }, body: blob });
+  const data = await res.json().catch(() => null);
+  if (res.status === 401 && data?.authRequired) { state.session = { authRequired: true, authed: false }; route(); }
+  if (!res.ok) throw Object.assign(new Error(data?.error || `Upload failed (${res.status})`), { status: res.status });
+  return data;
+}
 
 async function loadFacets(force = false) {
   if (force || !state.facets) state.facets = await api('/api/facets');
@@ -253,7 +302,7 @@ async function viewLibrary(page, params) {
     ['location', filters.location && `📍 ${filters.location}`], ['review', filters.review && 'Needs review']].filter(([, v]) => v);
   chips.replaceChildren(...active.map(([k, v]) => h('a', { class: 'chip active', href: urlFor({ [k]: '' }), 'aria-label': `Remove filter ${v}` }, v, ' ✕')));
 
-  page.append(
+  put(page, 
     h('div', { class: 'topbar' }, h('h1', {}, 'Library'), h('button', { class: 'btn small', type: 'button', onclick: () => openBook(null) }, '+ Add manually')),
     h('div', { class: 'searchbar' }, search),
     h('div', { class: 'filters' }, sortSel, statusSel, viewBtn, count),
@@ -267,20 +316,20 @@ async function viewLibrary(page, params) {
 // ------------------------------------------------------------------- browse
 async function viewBrowse(page) {
   const f = state.facets;
-  page.append(h('div', { class: 'topbar' }, h('h1', {}, 'Browse')));
-  if (!f.total) { page.append(h('div', { class: 'empty' }, 'Nothing to browse yet.', h('br'), h('a', { class: 'btn primary', href: '#/scan' }, 'Scan a book'))); return; }
+  put(page, h('div', { class: 'topbar' }, h('h1', {}, 'Browse')));
+  if (!f.total) { put(page, h('div', { class: 'empty' }, 'Nothing to browse yet.', h('br'), h('a', { class: 'btn primary', href: '#/scan' }, 'Scan a book'))); return; }
   const link = (params, text, cls = 'chip') => h('a', { class: cls, href: `#/library?${new URLSearchParams(params)}` }, text);
 
   if (f.needsReview) {
-    page.append(h('div', { class: 'notice warn' }, `${f.needsReview} ${f.needsReview === 1 ? 'book was' : 'books were'} hard to classify. `, link({ review: 1 }, 'Review them', 'chip')));
+    put(page, h('div', { class: 'notice warn' }, `${f.needsReview} ${f.needsReview === 1 ? 'book was' : 'books were'} hard to classify. `, link({ review: 1 }, 'Review them', 'chip')));
   }
-  page.append(h('section', { class: 'block' }, h('h2', {}, 'Genres'),
+  put(page, h('section', { class: 'block' }, h('h2', {}, 'Genres'),
     h('div', { class: 'genre-list' }, f.genres.map((g) => withHue(h('article', { class: 'genre-card' },
       h('header', {}, link({ genre: g.genre }, g.genre, ''), h('span', { class: 'n' }, g.count)),
       g.subgenres.length ? h('div', { class: 'chips' }, g.subgenres.map((s) => link({ genre: g.genre, subgenre: s.name }, `${s.name} · ${s.count}`))) : null), g.genre)))));
-  if (f.tags.length) page.append(h('section', { class: 'block' }, h('h2', {}, 'Tags'),
+  if (f.tags.length) put(page, h('section', { class: 'block' }, h('h2', {}, 'Tags'),
     h('div', { class: 'chips' }, f.tags.slice(0, 60).map((t) => link({ tag: t.name }, `${t.name} · ${t.count}`)))));
-  if (f.locations.length) page.append(h('section', { class: 'block' }, h('h2', {}, 'Locations'),
+  if (f.locations.length) put(page, h('section', { class: 'block' }, h('h2', {}, 'Locations'),
     h('div', { class: 'chips' }, f.locations.map((l) => link({ location: l.name }, `${l.name} · ${l.count}`)))));
 }
 
@@ -289,7 +338,7 @@ async function viewMore(page) {
   const f = state.facets;
   const by = Object.fromEntries(f.statuses.map((s) => [s.name, s.count]));
   const stat = (n, label) => h('div', { class: 'stat' }, h('b', {}, n ?? 0), label);
-  page.append(
+  put(page, 
     h('div', { class: 'topbar' }, h('h1', {}, 'More')),
     h('div', { class: 'stats' }, stat(f.total, 'books'), stat(f.genres.length, 'genres'), stat(by.read, 'read'), stat(by.unread, 'unread')),
     h('section', { class: 'block' }, h('h2', {}, 'Genre detection'),
@@ -379,12 +428,38 @@ async function viewScan(page) {
         nextBtn('Skip'))));
   }
 
+  /** No title found. Offer to keep whatever the databases did know, plus a photo of the cover as the picture. */
+  function showNoMatch(isbn, partial) {
+    const known = partial ? [
+      partial.authors?.length && `by ${partial.authors.join(', ')}`, partial.publisher && `publisher ${partial.publisher}`,
+      partial.published && `published ${partial.published}`, partial.pages && `${partial.pages} pages`,
+      partial.subjects?.length && `${partial.subjects.length} subject tags`,
+    ].filter(Boolean) : [];
+    const openForm = (photo) => openBook(null, { isbn, prefill: partial ?? undefined, photo, location: locInput.value, onSaved: next });
+    result.replaceChildren(h('div', { class: 'notice' },
+      h('b', {}, `No match for ISBN ${isbn}.`),
+      h('p', { class: 'muted' }, known.length
+        ? `The databases only knew: ${known.join(' · ')}. That will be saved with the book.`
+        : 'The databases have nothing for this ISBN.'),
+      h('p', { class: 'muted' }, 'Photograph the cover to use as its picture, then type the title.'),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn primary', type: 'button', onclick: async () => {
+          const file = await pickPhoto({ capture: true });
+          if (!file) return;
+          try { openForm(await shrinkImage(file)); } catch (ex) { toast(ex.message, { error: true }); }
+        } }, 'Take cover photo & add'),
+        h('button', { class: 'btn', type: 'button', onclick: () => openForm(null) }, 'Add without photo'),
+        nextBtn('Skip'))));
+  }
+
   async function handle(isbn) {
     if (busy) return;
     busy = true;
     activeScanner?.pause();
     setStatus(`Looking up ${isbn}…`);
     result.replaceChildren(h('p', { class: 'muted' }, 'Looking up…'));
+    const reveal = () => { if (result.firstChild) result.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); };
+    reveal();
     try {
       const r = await api(`/api/lookup/${isbn}`);
       setStatus('');
@@ -393,8 +468,7 @@ async function viewScan(page) {
           h('button', { class: 'btn small', type: 'button', onclick: () => openBook(r.existing) }, 'View'), nextBtn())));
         if (autoAdd) setTimeout(() => { if (busy && activeScanner) next(); }, 1800);
       } else if (!r.found) {
-        result.replaceChildren(h('div', { class: 'notice' }, `No match found for ISBN ${isbn}.`, h('div', { class: 'row' },
-          h('button', { class: 'btn primary', type: 'button', onclick: () => openBook(null, { isbn, location: locInput.value, onSaved: next }) }, 'Add it manually'), nextBtn('Skip'))));
+        showNoMatch(isbn, r.partial);
       } else if (autoAdd) {
         const book = await addBook(isbn);
         setStatus(book ? `Added “${book.title}”. Next…` : '');
@@ -405,6 +479,7 @@ async function viewScan(page) {
       result.replaceChildren(h('div', { class: 'notice err', role: 'alert' }, e.message, h('div', { class: 'row' },
         h('button', { class: 'btn small', type: 'button', onclick: () => { busy = false; handle(isbn); } }, 'Try again'), nextBtn('Cancel'))));
     }
+    reveal();
   }
 
   startBtn.addEventListener('click', async () => {
@@ -429,7 +504,7 @@ async function viewScan(page) {
     unsupported: 'This browser can’t access a camera. You can still type an ISBN below.',
   }[problem];
 
-  page.append(
+  put(page, 
     h('div', { class: 'topbar' }, h('h1', {}, 'Scan')),
     problem ? h('div', { class: 'notice warn' }, problemText) : h('div', { class: 'viewport' }, video, h('div', { class: 'guide' }), overlay),
     problem ? null : h('div', { class: 'row' }, startBtn, torchBtn),
@@ -511,6 +586,30 @@ function openBook(book, opts = {}) {
   const showErr = (m) => { err.textContent = m; err.classList.remove('hidden'); err.scrollIntoView({ block: 'nearest' }); };
   const field = (label, input, id) => h('div', { class: 'field' }, h('label', { for: id }, label), input);
 
+  // Cover photo: held until Save, then uploaded after the book exists.
+  let photoBlob = opts.photo ?? null;
+  let photoUrl = photoBlob ? URL.createObjectURL(photoBlob) : '';
+  sheet.addEventListener('close', () => { if (photoUrl) URL.revokeObjectURL(photoUrl); }, { once: true });
+  const coverBox = h('div', { class: 'detail-cover' });
+  const photoBtns = h('div', { class: 'row' });
+  const drawCover = () => coverBox.replaceChildren(photoUrl
+    ? h('img', { src: photoUrl, alt: 'New cover photo' })
+    : creating ? withHue(h('div', { class: 'fake-cover' }, 'No cover yet'), b.genre) : coverEl(book));
+  const drawPhotoBtns = () => photoBtns.replaceChildren(
+    h('button', { class: 'btn small', type: 'button', onclick: async () => setPhoto(await pickPhoto({ capture: true })) }, 'Take cover photo'),
+    h('button', { class: 'btn small', type: 'button', onclick: async () => setPhoto(await pickPhoto()) }, 'Choose image'),
+    photoBlob ? h('button', { class: 'btn small', type: 'button', onclick: () => { URL.revokeObjectURL(photoUrl); photoBlob = null; photoUrl = ''; drawCover(); drawPhotoBtns(); } }, 'Remove photo') : null);
+  async function setPhoto(file) {
+    if (!file) return;
+    try {
+      const blob = await shrinkImage(file);
+      if (photoUrl) URL.revokeObjectURL(photoUrl);
+      photoBlob = blob; photoUrl = URL.createObjectURL(blob);
+      drawCover(); drawPhotoBtns();
+    } catch (ex) { showErr(ex.message); }
+  }
+  drawCover(); drawPhotoBtns();
+
   async function save(e) {
     e.preventDefault();
     const val = (el) => el.value.trim();
@@ -534,6 +633,10 @@ function openBook(book, opts = {}) {
       } else {
         saved = await api(`/api/books/${book.id}`, { method: 'PATCH', body: patch });
         toast('Saved');
+      }
+      if (photoBlob) {
+        try { saved = await uploadCover(saved.id, photoBlob); }
+        catch (ex) { toast(`Saved, but the cover photo didn’t upload: ${ex.message}`, { error: true, ms: 6000 }); }
       }
       sheet.close(); changed(); opts.onSaved?.(saved);
     } catch (ex) {
@@ -559,9 +662,11 @@ function openBook(book, opts = {}) {
   const form = h('form', { class: 'sheet', onsubmit: save },
     h('header', {}, h('h2', {}, creating ? 'Add a book' : 'Book details'), h('button', { class: 'btn small', type: 'button', onclick: () => sheet.close(), 'aria-label': 'Close' }, '✕')),
     h('div', { class: 'body' },
-      !creating ? h('div', { class: 'row' }, h('div', { class: 'detail-cover' }, coverEl(book)),
-        h('div', { class: 'grow' }, withHue(h('span', { class: 'pill genre' }, b.subgenre ? `${b.genre} · ${b.subgenre}` : b.genre), b.genre), ' ',
-          b.needs_review ? h('span', { class: 'pill warn' }, 'genre unsure') : null, b.genre_locked ? h('span', { class: 'pill ok' }, 'genre set by you') : null)) : null,
+      h('div', { class: 'row' }, coverBox,
+        h('div', { class: 'grow' },
+          !creating ? [withHue(h('span', { class: 'pill genre' }, b.subgenre ? `${b.genre} · ${b.subgenre}` : b.genre), b.genre), ' ',
+            b.needs_review ? h('span', { class: 'pill warn' }, 'genre unsure') : null, b.genre_locked ? h('span', { class: 'pill ok' }, 'genre set by you') : null] : null,
+          photoBtns)),
       err,
       field('Title', f.title, 'f-title'), field('Subtitle', f.subtitle, 'f-sub'), field('Author(s)', f.authors, 'f-auth'),
       h('div', { class: 'grid2' }, field('Genre', genreSel, 'f-genre'), field('Subgenre', f.subgenre, 'f-subg')), subList,

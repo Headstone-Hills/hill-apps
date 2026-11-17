@@ -15,6 +15,7 @@ const MIME = {
 };
 const SESSION_DAYS = 90;
 const MAX_BODY = 1024 * 1024;
+const MAX_COVER_UPLOAD = 5 * 1024 * 1024;
 
 class HttpError extends Error {
   constructor(status, message, extra = {}) { super(message); this.status = status; this.extra = extra; }
@@ -83,6 +84,17 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
     }
     try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
     catch { throw new HttpError(400, 'Invalid JSON'); }
+  }
+
+  async function readBuffer(req, max) {
+    const chunks = [];
+    let size = 0;
+    for await (const c of req) {
+      size += c.length;
+      if (size > max) throw new HttpError(413, `Image is too large (limit ${Math.round(max / 1048576)} MB).`);
+      chunks.push(c);
+    }
+    return Buffer.concat(chunks);
   }
 
   /** Validate and normalise user-editable fields. Throws HttpError(400). */
@@ -196,7 +208,8 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
     const existing = db.findByIsbn(isbn13);
     const { meta, error } = await lookupSafe(isbn13);
     if (error) throw new HttpError(502, 'Could not reach the book databases. Check the server\'s internet connection.', { providers: error.providers, existing });
-    send(res, 200, { isbn13, found: !!meta, book: meta, existing });
+    const complete = !!meta && !meta.incomplete;
+    send(res, 200, { isbn13, found: complete, book: complete ? meta : null, partial: meta && meta.incomplete ? meta : null, existing });
   });
 
   route('GET', '/api/books', async (req, res) => {
@@ -227,7 +240,7 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
     if (isbn13) {
       const r = await lookupSafe(isbn13);
       meta = r.meta;
-      if (!meta && !fields.title) {
+      if ((!meta || meta.incomplete) && !fields.title) {
         if (r.error) throw new HttpError(502, 'Could not reach the book databases and no title was given.', { providers: r.error.providers });
         throw new HttpError(404, 'No metadata found for that ISBN. Add the title manually.', { notFound: true });
       }
@@ -335,7 +348,24 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
     });
   });
 
-  route('GET', '/covers/(\\d+\\.(?:jpg|png|webp|gif))', async (req, res, m) => {
+  // Attach/replace a cover with the user's own photo. Raw image bytes in the body (no base64, no multipart).
+  route('PUT', '/api/books/(\\d+)/cover', async (req, res, m) => {
+    const id = Number(m[1]);
+    const book = db.get(id);
+    if (!book) throw new HttpError(404, 'Book not found');
+    const buf = await readBuffer(req, MAX_COVER_UPLOAD);
+    const ext = sniffImage(buf); // trust the bytes, not the Content-Type header
+    if (!ext) throw new HttpError(415, 'That file is not a JPEG, PNG or WebP image.');
+    await mkdir(coversDir, { recursive: true });
+    // A fresh filename per upload so browsers and the service worker never show a stale cached cover.
+    const file = `${id}-${Date.now().toString(36)}.${ext}`;
+    await writeFile(join(coversDir, file), buf);
+    const updated = db.update(id, { cover_file: file });
+    if (book.cover_file) await unlink(join(coversDir, book.cover_file)).catch(() => {});
+    send(res, 200, updated);
+  });
+
+  route('GET', '/covers/(\\d+(?:-[a-z0-9]+)?\\.(?:jpg|png|webp|gif))', async (req, res, m) => {
     const data = await readFile(join(coversDir, m[1])).catch(() => null);
     if (!data) throw new HttpError(404, 'No cover');
     send(res, 200, data, { 'Content-Type': MIME[extname(m[1])], 'Cache-Control': 'private, max-age=86400' });
@@ -410,6 +440,15 @@ async function loadSecret(path) {
     await writeFile(path, s, { mode: 0o600 });
     return s;
   }
+}
+
+/** Identify an image by its magic bytes. Only formats browsers render safely; SVG/GIF are deliberately excluded. */
+function sniffImage(b) {
+  if (b.length < 12) return null;
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpg';
+  if (b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+  if (b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return 'webp';
+  return null;
 }
 
 /** CSV cell with quoting, plus a leading-quote guard against spreadsheet formula injection. */

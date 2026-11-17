@@ -82,8 +82,7 @@ export function mergeProviders(isbn13, ol, gb) {
   const pick = (...vals) => vals.find((v) => v) ?? '';
   const authors = (ol?.authors?.length ?? 0) >= (gb?.authors?.length ?? 0) ? ol?.authors ?? [] : gb?.authors ?? [];
   const title = pick(ol?.title, gb?.title);
-  if (!title) return null;
-  return {
+  const merged = {
     isbn13,
     isbn10: toIsbn10(isbn13),
     title,
@@ -98,7 +97,15 @@ export function mergeProviders(isbn13, ol, gb) {
     categories: gb?.categories ?? [],
     dewey: ol?.dewey ?? [],
     sources: [ol && 'openlibrary', gb && 'googlebooks'].filter(Boolean),
+    incomplete: !title, // a record with no title is "partial": useful to pre-fill a manual add, not a match
   };
+  if (!title) {
+    // Keep whatever else the providers knew (publisher, subjects, ...). If there is truly nothing, it's not found.
+    const hasAnything = merged.authors.length || merged.publisher || merged.published || merged.pages || merged.description
+      || merged.cover_url || merged.subjects.length || merged.categories.length || merged.dewey.length || merged.subtitle;
+    if (!hasAnything) return null;
+  }
+  return merged;
 }
 
 /** Attach classifier output (genre, subgenre, tags, ...) to a merged metadata record. */
@@ -109,7 +116,8 @@ export function enrich(meta) {
 
 /**
  * Look an ISBN up. Resolves to enriched metadata, or null when no provider knows
- * the book. Throws LookupError only when providers *failed* (network/HTTP), so the
+ * anything about the book. A record with `incomplete: true` has no title but carries
+ * whatever else was found (publisher, subjects, ...). Throws LookupError only when providers *failed* (network/HTTP), so the
  * UI can tell "not found" from "couldn't reach the internet".
  */
 export function createLookup({ fetchImpl = fetch, googleApiKey = '', ttlMs = 10 * 60 * 1000 } = {}) {

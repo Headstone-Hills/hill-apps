@@ -100,7 +100,10 @@ test('providers tolerate malformed payloads', async () => {
   const ol = await fetchOpenLibrary(DUNE, weird);
   assert.equal(ol.title, ''); assert.deepEqual(ol.authors, []); assert.deepEqual(ol.subjects, ['ok']); assert.equal(ol.pages, null);
   assert.equal(await fetchGoogleBooks(DUNE, weird), null);
-  assert.equal(mergeProviders(DUNE, ol, null), null); // no usable title -> treated as not found
+  const partial = mergeProviders(DUNE, ol, null);       // no title, but subjects survived -> partial, not "found"
+  assert.equal(partial.incomplete, true);
+  assert.deepEqual(partial.subjects, ['ok']);
+  assert.equal(mergeProviders(DUNE, { title: '', authors: [], subjects: [], dewey: [], pages: null }, null), null); // truly nothing -> not found
 });
 
 test('lookup results are cached', async () => {
@@ -368,5 +371,122 @@ test('session cookie is Secure behind an https proxy', async () => {
   try {
     const r = await t.req('POST', '/api/login', { password: 'correct horse battery' }, { 'X-Forwarded-Proto': 'https' });
     assert.match(r.headers.get('set-cookie'), /; Secure/);
+  } finally { await t.close(); }
+});
+
+
+// ------------------------------------------------ partial lookups + cover photos
+const PARTIAL_ISBN = '9780743273565';
+const partialFetch = () => async (url) => {
+  const u = String(url);
+  const json = (body) => ({ ok: true, status: 200, json: async () => body });
+  if (u.includes('openlibrary.org/api/books')) {
+    return json({ [`ISBN:${PARTIAL_ISBN}`]: { publishers: [{ name: 'Scribner' }], number_of_pages: 180, subjects: [{ name: 'Rich people' }, { name: 'Long Island (N.Y.)' }, { name: 'Fiction' }] } });
+  }
+  if (u.includes('googleapis.com/books')) return json({ totalItems: 0 });
+  return { ok: false, status: 404 };
+};
+const JPG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(3000, 1)]);
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(3000, 2)]);
+
+async function putCover(t, id, body, headers = {}) {
+  const res = await fetch(`${t.base}/api/books/${id}/cover`, { method: 'PUT', headers: { 'Content-Type': 'image/jpeg', ...headers }, body });
+  const text = await res.text();
+  let json; try { json = JSON.parse(text); } catch { json = null; }
+  return { status: res.status, json, headers: res.headers };
+}
+
+test('partial lookup: no title is "not found" but the other fields are returned for pre-filling', async () => {
+  const t = await boot({ fetchImpl: partialFetch() });
+  try {
+    const r = await t.req('GET', `/api/lookup/${PARTIAL_ISBN}`);
+    assert.equal(r.status, 200);
+    assert.equal(r.json.found, false);
+    assert.equal(r.json.book, null);
+    assert.equal(r.json.partial.publisher, 'Scribner');
+    assert.equal(r.json.partial.pages, 180);
+    assert.ok(r.json.partial.subjects.includes('Rich people'));
+    // Without a title the server still refuses to invent one...
+    assert.equal((await t.req('POST', '/api/books', { isbn: PARTIAL_ISBN })).status, 404);
+    // ...but with the user's title it keeps the partial data and classifies from it.
+    const add = await t.req('POST', '/api/books', { isbn: PARTIAL_ISBN, title: 'The Great Gatsby' });
+    assert.equal(add.status, 201, add.text);
+    assert.equal(add.json.publisher, 'Scribner');
+    assert.equal(add.json.pages, 180);
+    assert.ok(add.json.tags.includes('rich people'));
+    assert.deepEqual(add.json.meta_raw.subjects.slice(0, 1), ['Rich people']);
+  } finally { await t.close(); }
+});
+
+test('nothing known at all: lookup says not found with no partial', async () => {
+  const t = await boot({ fetchImpl: fakeFetch({ ol: {}, gb: { totalItems: 0 } }) });
+  try {
+    const r = await t.req('GET', `/api/lookup/${DUNE}`);
+    assert.equal(r.json.found, false); assert.equal(r.json.partial, null);
+  } finally { await t.close(); }
+});
+
+test('cover photo: upload attaches and serves it; re-upload replaces and deletes the old file', async () => {
+  const t = await boot({ fetchImpl: fakeFetch({ ol: {}, gb: { totalItems: 0 } }) });
+  try {
+    const { json: b } = await t.req('POST', '/api/books', { title: 'Home Made Zine' });
+    assert.equal(b.has_cover, false);
+
+    const up = await putCover(t, b.id, JPG);
+    assert.equal(up.status, 200);
+    assert.equal(up.json.has_cover, true);
+    assert.match(up.json.cover_file, new RegExp(`^${b.id}-[a-z0-9]+\\.jpg$`));
+    const f1 = join(t.dataDir, 'covers', up.json.cover_file);
+    assert.ok(existsSync(f1));
+    const served = await fetch(`${t.base}/covers/${up.json.cover_file}`);
+    assert.equal(served.status, 200);
+    assert.equal(served.headers.get('content-type'), 'image/jpeg');
+    assert.equal(Buffer.from(await served.arrayBuffer()).length, JPG.length);
+
+    await new Promise((r) => setTimeout(r, 5));          // ensure a different timestamp in the filename
+    const up2 = await putCover(t, b.id, PNG, { 'Content-Type': 'application/octet-stream' }); // type comes from the bytes
+    assert.equal(up2.status, 200);
+    assert.match(up2.json.cover_file, /\.png$/);
+    assert.notEqual(up2.json.cover_file, up.json.cover_file);   // new URL => no stale browser/service-worker cache
+    assert.equal(existsSync(f1), false);                          // old file cleaned up
+    assert.ok(existsSync(join(t.dataDir, 'covers', up2.json.cover_file)));
+  } finally { await t.close(); }
+});
+
+test('cover photo: replaces a provider cover too, and survives book deletion cleanup', async () => {
+  const t = await boot();
+  try {
+    const { json: b } = await t.req('POST', '/api/books', { isbn: DUNE });
+    assert.equal(b.cover_file, `${b.id}.jpg`);                    // provider-supplied cover
+    const up = await putCover(t, b.id, JPG);
+    assert.equal(existsSync(join(t.dataDir, 'covers', `${b.id}.jpg`)), false);
+    await t.req('DELETE', `/api/books/${b.id}`);
+    assert.equal(existsSync(join(t.dataDir, 'covers', up.json.cover_file)), false);
+  } finally { await t.close(); }
+});
+
+test('cover photo: rejects non-images (even if labelled image/jpeg), SVG, tiny and oversized bodies, unknown books', async () => {
+  const t = await boot();
+  try {
+    const { json: b } = await t.req('POST', '/api/books', { title: 'X' });
+    assert.equal((await putCover(t, b.id, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'))).status, 415);
+    assert.equal((await putCover(t, b.id, Buffer.from('GIF89a' + 'x'.repeat(100)))).status, 415);
+    assert.equal((await putCover(t, b.id, Buffer.from('not an image at all, just text'))).status, 415);
+    assert.equal((await putCover(t, b.id, Buffer.alloc(3))).status, 415);
+    assert.equal((await putCover(t, b.id, Buffer.concat([JPG.subarray(0, 4), Buffer.alloc(6 * 1024 * 1024)]))).status, 413);
+    assert.equal((await putCover(t, 9999, JPG)).status, 404);
+    assert.equal(t.db.get(b.id).has_cover, false);                 // nothing got attached by the failures
+  } finally { await t.close(); }
+});
+
+test('cover photo: requires login and rejects cross-origin writes', async () => {
+  const t = await boot({ password: 'correct horse battery' });
+  try {
+    const login = await t.req('POST', '/api/login', { password: 'correct horse battery' });
+    const cookie = login.headers.get('set-cookie').split(';')[0];
+    const { json: b } = await t.req('POST', '/api/books', { title: 'X' }, { Cookie: cookie });
+    assert.equal((await putCover(t, b.id, JPG)).status, 401);                                   // no cookie
+    assert.equal((await putCover(t, b.id, JPG, { Cookie: cookie, Origin: 'https://evil.example' })).status, 403);
+    assert.equal((await putCover(t, b.id, JPG, { Cookie: cookie })).status, 200);
   } finally { await t.close(); }
 });

@@ -16,7 +16,7 @@ any phone, tablet or computer with a browser. Personal use, one library, no acco
 cd hilllibrary
 cp .env.example .env        # set LIBRARY_PASSWORD (8+ characters)
 npm start                   # http://localhost:3000
-npm test                    # 72 unit/API tests
+npm test                    # 78 unit/API tests
 ```
 
 Your data lives in `./data/` (`library.db` plus `covers/`). **Back that folder up.**
@@ -57,6 +57,19 @@ checksum and a 978/979 prefix are accepted, so price add-ons and other products 
 Scan tips: good light (there is a torch button where the device allows it), hold steady
 about 15–25 cm away, keep the whole barcode inside the box. Tick **Add automatically** and
 set a **location** to zip through a whole shelf; each add has an Undo.
+
+### When a barcode has no match (cover photo)
+If the databases can't find a title, you aren't stuck:
+
+- Whatever they *did* know (author, publisher, date, page count, subjects, Dewey number) is kept and
+  pre-fills the add form, and the subjects still feed genre/tag detection.
+- **Take cover photo & add** opens your phone's camera app (a normal full-resolution photo, not a video
+  frame). The photo is shrunk to a ~1400 px JPEG, shown in the form, and saved as the book's cover once you
+  type the title and tap *Add book*. **Add without photo** skips it.
+- Any book's details also have **Take cover photo / Choose image** to add or replace a cover later (e.g.
+  when a provider's cover is missing or wrong). Photos are stored in `data/covers/` like any other cover.
+
+The title still has to be typed: the app does not read text from the photo.
 
 ### Metadata
 Given an ISBN the server asks two free sources in parallel and merges them field by field:
@@ -121,6 +134,8 @@ See `.env.example`. `LIBRARY_PASSWORD`, `PORT`, `HOST`, `DATA_DIR`, `GOOGLE_BOOK
 - Changes must be JSON and same-origin (CSRF); strict Content-Security-Policy; no inline scripts.
 - Book metadata comes from third parties and is only ever rendered as text, never as HTML.
 - CSV export neutralises spreadsheet formula injection.
+- Cover uploads are checked by their actual bytes (JPEG/PNG/WebP only; SVG and GIF are refused), limited to 5 MB,
+  need a login, and are stored under a fresh filename each time so old covers never linger in caches.
 
 ## Verification status: what has and hasn't been tested
 
@@ -146,6 +161,9 @@ barcode from a fake camera feed**, including a rotated/noisy/dim variant, via th
    book's details and use *needs review*. Mismatches are cheap to correct and the
    rules in `genres.js` are plain data.
 5. Installing to the home screen, and the HTTPS setups above.
+6. **The cover-photo capture on real phones.** The test drove the file picker with a generated JPEG; it did not
+   use an actual phone camera. The `capture` hint that opens the camera app is standard but behaves a little
+   differently across Android/iOS browsers (some offer a choice, some go straight to the camera).
 
 ## Layout
 
