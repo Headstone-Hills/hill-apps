@@ -1,7 +1,8 @@
 // Browser smoke test (not part of `npm test`; needs Playwright + Chromium).
-//   node tests/e2e/ui.e2e.mjs [path/to/fake-camera.y4m] [screenshot-dir]
+//   node tests/e2e/ui.e2e.mjs [path/to/fake-camera.y4m] [screenshot-dir] [path/to/barcode-photo.jpg]
 // The optional .y4m is played as the fake camera feed and should show the barcode
-// for ISBN 9780547928227 (The Hobbit) so the scanner pipeline is exercised end to end.
+// for ISBN 9780547928227 (The Hobbit) so the scanner pipeline is exercised end to end. The optional photo
+// should be a still image of the same barcode, for the "Scan from photo" path.
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync } from 'node:fs';
@@ -16,7 +17,7 @@ import { createLookup } from '../../server/metadata.js';
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 const here = dirname(fileURLToPath(import.meta.url));
-const [video, shotDir] = [process.argv[2], process.argv[3]];
+const [video, shotDir, barcodePhoto] = [process.argv[2], process.argv[3], process.argv[4]];
 
 const OL = {
   'ISBN:9780441013593': { title: 'Dune', authors: [{ name: 'Frank Herbert' }], publishers: [{ name: 'Ace' }], publish_date: '2005', number_of_pages: 535,
@@ -46,6 +47,11 @@ const args = ['--use-fake-ui-for-media-stream'];
 if (video) args.push('--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${video}`);
 const browser = await chromium.launch({ args });
 const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, permissions: ['camera'] });
+await ctx.addInitScript(() => {
+  window.__gum = 0;
+  const md = navigator.mediaDevices;
+  if (md?.getUserMedia) { const orig = md.getUserMedia.bind(md); md.getUserMedia = (...a) => { window.__gum++; return orig(...a); }; }
+});
 const page = await ctx.newPage();
 const problems = [];
 page.on('console', (m) => { if (['error', 'warning'].includes(m.type())) problems.push(`console.${m.type()}: ${m.text()}`); });
@@ -161,6 +167,22 @@ try {
   const matildaImg = page.locator('.book', { hasText: 'Matilda' }).locator('img');
   await matildaImg.waitFor();
   assert.ok(await coverRenders(matildaImg), 'replaced cover should actually render');
+
+  if (barcodePhoto) {
+    step('scan from photo: reads the barcode from a still, with no live camera stream');
+    await page.goto(`${base}/#/scan`);
+    const [fc] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: 'Scan from photo' }).click()]);
+    await fc.setFiles(barcodePhoto);
+    await page.getByRole('heading', { name: 'The Hobbit' }).waitFor({ timeout: 20000 });
+    await page.locator('.preview .pill.genre', { hasText: 'Fantasy' }).waitFor();
+    assert.equal(await page.evaluate(() => window.__gum), 0, 'photo scanning must not call getUserMedia');
+    await page.getByRole('button', { name: 'Skip' }).click();
+    // a photo with no barcode in it is reported clearly instead of hanging or guessing
+    const [fc2] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: 'Scan from photo' }).click()]);
+    await fc2.setFiles({ name: 'nothing.jpg', mimeType: 'image/jpeg', buffer: jpeg });
+    await page.getByText('No barcode found in that photo.').waitFor({ timeout: 20000 });
+    assert.equal(await page.evaluate(() => window.__gum), 0);
+  }
 
   if (video) {
     step('camera scan decodes the barcode in the video feed');

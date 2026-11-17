@@ -2,7 +2,7 @@
 // Security note: book metadata is third-party content, so it is only ever inserted
 // with textContent / DOM APIs (never innerHTML).
 
-import { createScanner, cameraProblem } from './scanner.js';
+import { createScanner, cameraProblem, decodeIsbnFromImage } from './scanner.js';
 
 const $app = document.getElementById('app');
 const sheet = document.getElementById('sheet');
@@ -377,6 +377,17 @@ async function viewScan(page) {
   const recentList = h('ul', { class: 'recent' });
   const startBtn = h('button', { class: 'btn primary', type: 'button' }, 'Start camera');
   const torchBtn = h('button', { class: 'btn hidden', type: 'button' }, 'Light');
+  // One photo from the phone's own camera app instead of a live video feed. Works on plain HTTP too.
+  const photoScanBtn = h('button', { class: 'btn', type: 'button', onclick: async () => {
+    const file = await pickPhoto({ capture: true });
+    if (!file) return;
+    setStatus('Reading the barcode from your photo…');
+    try {
+      const isbn = await decodeIsbnFromImage(file);
+      if (!isbn) { setStatus('No barcode found in that photo. Get the whole barcode in frame, flat and in good light, or type the ISBN below.'); return; }
+      busy = false; handle(isbn);
+    } catch (e) { setStatus(`Couldn’t read that photo (${e.message}). Try again, or type the ISBN below.`); }
+  } }, 'Scan from photo');
   const locInput = h('input', { type: 'text', list: 'loc-list', placeholder: 'e.g. Living room, shelf 2', value: pref.get('scanLocation', ''), maxlength: '100', id: 'scan-loc' });
   locInput.addEventListener('input', () => pref.set('scanLocation', locInput.value));
   const isbnInput = h('input', { type: 'text', inputmode: 'numeric', autocomplete: 'off', placeholder: 'ISBN (10 or 13 digits)', id: 'isbn-in', 'aria-label': 'ISBN' });
@@ -500,14 +511,14 @@ async function viewScan(page) {
   });
 
   const problemText = {
-    insecure: 'Phone and tablet browsers only allow the camera on secure (HTTPS) pages. See the README section “Using it from your phone”. You can still type an ISBN below.',
-    unsupported: 'This browser can’t access a camera. You can still type an ISBN below.',
+    insecure: 'Phone and tablet browsers only allow the camera on secure (HTTPS) pages. See the README section “Using it from your phone”. You can still use Scan from photo, or type an ISBN below.',
+    unsupported: 'This browser can’t access a live camera. You can still use Scan from photo, or type an ISBN below.',
   }[problem];
 
   put(page, 
     h('div', { class: 'topbar' }, h('h1', {}, 'Scan')),
     problem ? h('div', { class: 'notice warn' }, problemText) : h('div', { class: 'viewport' }, video, h('div', { class: 'guide' }), overlay),
-    problem ? null : h('div', { class: 'row' }, startBtn, torchBtn),
+    h('div', { class: 'row' }, problem ? null : [startBtn, torchBtn], photoScanBtn),
     status,
     h('div', { class: 'row' },
       h('div', { class: 'field grow' }, h('label', { for: 'scan-loc' }, 'Put these books in (optional)'), locInput),

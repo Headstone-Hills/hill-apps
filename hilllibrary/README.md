@@ -54,6 +54,11 @@ EAN-13 (Chrome/Edge on Android). Otherwise it falls back to a vendored copy of
 Book barcodes are EAN-13 encodings of the ISBN-13; only codes with a valid ISBN-13
 checksum and a 978/979 prefix are accepted, so price add-ons and other products are ignored.
 
+**Scan from photo** is an alternative that takes one photo with your phone's own camera app and reads the barcode
+from it. It never opens a live video stream (no `getUserMedia`), so it also works over plain HTTP, where the live
+camera is blocked. It tries the photo upright, sideways and slightly tilted. Tested on synthetic 12-megapixel
+photos (tilt up to 15°, blur, noise, dimming, a small barcode, sideways); not yet on real phone photos.
+
 Scan tips: good light (there is a torch button where the device allows it), hold steady
 about 15–25 cm away, keep the whole barcode inside the box. Tick **Add automatically** and
 set a **location** to zip through a whole shelf; each add has an Undo.
@@ -161,6 +166,12 @@ barcode from a fake camera feed**, including a rotated/noisy/dim variant, via th
    book's details and use *needs review*. Mismatches are cheap to correct and the
    rules in `genres.js` are plain data.
 5. Installing to the home screen, and the HTTPS setups above.
+7. **Live scanning interrupting other apps.** Reported: video/audio playing in the background stops while the
+   live camera scanner runs. The app never requests the microphone, audio focus or a media session (the only media
+   call is `getUserMedia({ audio: false, video })`), and a web search found no documented cause, so this looks like
+   the phone/browser's handling of an active camera rather than something the page does. That is unconfirmed.
+   **Scan from photo** avoids the live stream entirely, so it doubles as the test: if playback survives it, the live
+   stream is the trigger; if playback still stops, it's the phone's camera itself and no web page can prevent it.
 6. **The cover-photo capture on real phones.** The test drove the file picker with a generated JPEG; it did not
    use an actual phone camera. The `capture` hint that opens the camera app is standard but behaves a little
    differently across Android/iOS browsers (some offer a choice, some go straight to the camera).

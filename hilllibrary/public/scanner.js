@@ -31,25 +31,53 @@ function loadScript(src) {
   });
 }
 
+const PHOTO_ANGLES = [0, 90, 270, -6, 6, -12, 12];
+
+/** Draw `bitmap` scaled and rotated by `angleDeg` onto the canvas, resizing it to fit (white fill, no cropping). */
+function drawRotated(canvas, ctx, bitmap, scale, angleDeg) {
+  const w = bitmap.width * scale, h = bitmap.height * scale, r = (angleDeg * Math.PI) / 180;
+  canvas.width = Math.max(1, Math.round(Math.abs(w * Math.cos(r)) + Math.abs(h * Math.sin(r)))); // resizing resets the transform
+  canvas.height = Math.max(1, Math.round(Math.abs(w * Math.sin(r)) + Math.abs(h * Math.cos(r))));
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate(r);
+  ctx.drawImage(bitmap, -w / 2, -h / 2, w, h);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
 async function makeDetector() {
   if ('BarcodeDetector' in window) {
     try {
       const formats = await window.BarcodeDetector.getSupportedFormats();
       if (formats.includes('ean_13')) {
         const d = new window.BarcodeDetector({ formats: ['ean_13'] });
-        return { name: 'native', interval: 120, detect: async (video) => (await d.detect(video))[0]?.rawValue ?? null };
+        return {
+          name: 'native',
+          interval: 120,
+          detect: async (video) => (await d.detect(video))[0]?.rawValue ?? null,
+          // A still photo may contain several codes; take the first that is a real ISBN.
+          detectImage: async (bitmap) => (await d.detect(bitmap)).map((r) => r.rawValue).find(isIsbn13) ?? null,
+        };
       }
     } catch { /* fall through to ZXing */ }
   }
   if (!window.ZXing) await loadScript('/vendor/zxing.min.js');
   const Z = window.ZXing;
-  const reader = new Z.MultiFormatReader();
+  // Use the EAN-13 reader directly. (MultiFormatReader.decode() throws away our hints and runs every 2D reader
+  // too; decodeWithState() keeps them but logs a console warning for every frame that has no barcode in it.)
+  const reader = new Z.EAN13Reader();
   const hints = new Map();
-  hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13]);
-  hints.set(Z.DecodeHintType.TRY_HARDER, true);
-  reader.setHints(hints);
+  hints.set(Z.DecodeHintType.TRY_HARDER, true); // scan more rows, more thoroughly
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const decodeCanvas = () => {
+    try {
+      const bitmap = new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)));
+      return reader.decode(bitmap, hints).getText();
+    } catch { return null; } // NotFound / Checksum / Format: just no barcode in this image
+    finally { reader.reset?.(); }
+  };
   return {
     name: 'zxing',
     interval: 220,
@@ -63,13 +91,43 @@ async function makeDetector() {
       canvas.width = Math.round(sw * scale);
       canvas.height = Math.round(sh * scale);
       ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-      try {
-        const bitmap = new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)));
-        return reader.decode(bitmap).getText();
-      } catch { return null; } // NotFound / Checksum / Format: just no barcode in this frame
-      finally { reader.reset?.(); }
+      return decodeCanvas();
+    },
+    // A photo is much bigger than a video frame, and the barcode can be anywhere in it, at any angle. Try the whole
+    // image at a few sizes (downscaling often helps with blur and sensor noise), upright first, then sideways and
+    // slightly tilted (1D readers only scan along straight lines, so a tilted code needs a straightened copy).
+    detectImage: async (bitmap) => {
+      const attempts = [
+        ...PHOTO_ANGLES.map((a) => [1800, a]),
+        ...PHOTO_ANGLES.map((a) => [1100, a]),
+        [2600, 0],
+      ];
+      for (const [maxSide, angle] of attempts) {
+        drawRotated(canvas, ctx, bitmap, Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height)), angle);
+        const text = decodeCanvas();
+        if (text && isIsbn13(text)) return text;
+        await new Promise((r) => setTimeout(r)); // let the page breathe between attempts
+      }
+      return null;
     },
   };
+}
+
+let detectorPromise = null;
+const getDetector = () => (detectorPromise ??= makeDetector().catch((e) => { detectorPromise = null; throw e; }));
+
+/**
+ * Read an ISBN-13 barcode from a single photo (e.g. one taken with the phone's own camera app).
+ * Needs no live camera stream, no getUserMedia, and works on plain HTTP too.
+ * Resolves to the ISBN-13 string, or null if no valid ISBN barcode was found.
+ */
+export async function decodeIsbnFromImage(file) {
+  const bitmap = await createImageBitmap(file);
+  try {
+    return await (await getDetector()).detectImage(bitmap);
+  } finally {
+    bitmap.close?.();
+  }
 }
 
 /**
@@ -118,7 +176,7 @@ export function createScanner({ video, onCode, onStatus = () => {} }) {
         const track = stream.getVideoTracks()[0];
         if (track.getCapabilities?.().focusMode?.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
       } catch { /* optional */ }
-      detector = await makeDetector();
+      detector = await getDetector();
       running = true; paused = false;
       onStatus('Point the camera at the barcode on the back cover.');
       tick();

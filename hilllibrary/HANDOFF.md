@@ -31,6 +31,21 @@ Read this first, then `hilllibrary/README.md`.
 - Tests: 78 unit/API passing; e2e extended (partial data + photo, cover replacement, stray-text guard).
 - **Still unverified:** capture on real phones (the test uses a generated JPEG via Playwright's file chooser).
 
+### Scanner changes (2026-11-17, second pass)
+
+- **Scan from photo** (`decodeIsbnFromImage` in `public/scanner.js`, button on the Scan page): one still from the
+  phone's camera app, decoded with the shared detector, retried upright/90/270/±6/±12 degrees at a few sizes. Added
+  because live scanning was reported to stop background video/audio; it avoids `getUserMedia` entirely. e2e asserts it
+  never calls `getUserMedia`. **The background-playback problem is NOT confirmed fixed**: the cause is unknown and
+  nothing in the page's code touches audio. Ask the user what stops (other app vs. other tab), which phone/browser,
+  and whether it still stops with Scan from photo. That one answer says whether it's the live stream or the OS camera.
+- **Scanner bug fixed:** `MultiFormatReader.decode()` silently resets hints, so the "EAN-13 only / try harder" hints were
+  ignored and every frame also ran the QR/Aztec/DataMatrix/PDF417 readers. Now uses `Z.EAN13Reader` directly
+  (also avoids a per-frame `console.warn` the library emits on every "no barcode" frame). Accuracy equal or better,
+  hard cases faster. e2e fails on any console warning/error, which is how this was found.
+- Synthetic photo fixtures (not committed; need PIL + bwip-js): 12 MP, tilt, blur, noise, dim, sideways. Single-factor
+  sweep all decoded. Never tested: real phone photos.
+
 ## What the user wants
 
 Personal-use home library app, reachable from all their devices as a web app: barcode scanning, automatic
