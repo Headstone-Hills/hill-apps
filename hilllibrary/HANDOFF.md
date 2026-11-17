@@ -12,7 +12,7 @@ Read this first, then `hilllibrary/README.md`.
   automatic metadata (Open Library + Google Books), a weighted genre/tag classifier,
   FTS5 search, installable PWA. Zero npm dependencies, Node >= 22.13 (`node:sqlite`).
   It is a new sibling of the repo's unrelated Python music apps (it only adds a mention to the root README).
-- **Tests:** `cd hilllibrary && npm test` gives 100 passing. A Chromium end-to-end run exists at
+- **Tests:** `cd hilllibrary && npm test` gives 103 passing. A Chromium end-to-end run exists at
   `tests/e2e/ui.e2e.mjs` (needs Playwright; not part of `npm test`) and passed, including decoding an
   independently generated EAN-13 barcode from a fake camera feed.
 - **Not deployed anywhere yet.** Nothing is running; the user has not tried it on a phone.
@@ -76,6 +76,18 @@ native `replaceChildren()` inserts the text "null"/"[object ...]" for null/array
 removed a stray "null" beside the cover-photo buttons in the book dialog); "Added this session" heading never appeared.
 e2e now also checks the book dialog for stray text and stubs external cover hosts (this also proves the CSP allows them).
 100 unit/API tests. **Unverified:** real provider search responses (fixtures only); real-catalogue ranking quality.
+
+### Lookup regression fix (2026-11-17, fifth pass)
+
+Reported: all barcode lookups failing after the previous round. Cause found by running the real server: the circuit
+breaker could pause **both** providers (e.g. Google 429 + two Open Library failures), after which every lookup failed
+instantly with "paused" without asking anyone, for 15 s up to 5 min, even after the network recovered. Fix: a provider is
+only skipped while another can answer; if nothing usable came back, skipped providers are asked anyway (lookup and
+search), and a success clears the pause. Also: provider timeout back to 8 s (I had cut it to 6 s without evidence), the
+UI now shows which provider failed and why, and the server logs it (throttled to one line per distinct problem per 10 s).
+Tests: 103 passing; e2e simulates an outage + retries + recovery and was confirmed to fail against the old behaviour.
+**Unconfirmed:** I could not see the user's actual failure. If lookups still fail, the on-screen provider reasons
+(or the server terminal) are the first thing to ask for.
 
 ## What the user wants
 

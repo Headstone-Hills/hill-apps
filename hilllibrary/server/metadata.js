@@ -19,7 +19,7 @@ import { classify } from './genres.js';
 import { stripHtml } from './text.js';
 
 const UA = 'HillLibrary/1.0 (personal home library app)';
-const TIMEOUT_MS = 6000;
+const TIMEOUT_MS = 8000;
 
 export class LookupError extends Error {
   constructor(message, providers) { super(message); this.name = 'LookupError'; this.providers = providers; }
@@ -156,11 +156,15 @@ export function createBreaker({ now = Date.now, failuresToOpen = 2, baseMs = 15_
 }
 
 /**
- * Run one provider call under the circuit breaker. Never rejects: resolves {name, value} or {name, error}.
- * (Lookup and search share one breaker, so a provider that is throttling us is skipped by both.)
+ * Run one provider call under the circuit breaker. Never rejects: resolves {name, value} or {name, error}
+ * (plus `skipped: true` when the breaker kept us from asking). Lookup and search share one breaker, so a provider
+ * that is throttling us is skipped by both. `force` asks anyway.
+ *
+ * The breaker exists to avoid waiting on a bad provider *while another one can answer*. It must never turn into
+ * "ask nobody": callers re-ask skipped providers when nothing usable came back (see askSkipped).
  */
-async function guarded(breaker, name, fn) {
-  if (breaker.isOpen(name)) return { name, error: `paused for ${Math.ceil(breaker.remainingMs(name) / 1000)}s after repeated failures` };
+async function guarded(breaker, name, fn, force = false) {
+  if (!force && breaker.isOpen(name)) return { name, skipped: true, error: `paused for ${Math.ceil(breaker.remainingMs(name) / 1000)}s after repeated failures` };
   try {
     const value = await fn();
     breaker.success(name); // "no results" is still a healthy answer
@@ -196,6 +200,8 @@ export function createLookup({
   };
 
   const ask = (name, isbn13) => guarded(breaker, name, () => PROVIDERS[name](isbn13, fetchImpl, googleApiKey));
+  const askSkipped = (results, call) => Promise.all(Object.keys(results).filter((n) => results[n]?.skipped)
+    .map((n) => guarded(breaker, n, () => call(n), true).then((r) => { results[n] = r; })));
 
   const build = (isbn13, results) => ({
     merged: mergeProviders(isbn13, results.openlibrary?.value ?? null, results.googlebooks?.value ?? null),
@@ -214,6 +220,9 @@ export function createLookup({
       clearTimeout(timer);
     } else {
       await everyone; // nothing usable yet: we have to hear from the rest
+      // A provider skipped because it was paused counts as "not heard from". Pausing is only for avoiding a slow answer
+      // while another provider can give one; if nobody did, ask the skipped ones now instead of failing outright.
+      if (!Object.values(results).some((r) => r.value?.title)) await askSkipped(results, (n) => PROVIDERS[n](isbn13, fetchImpl, googleApiKey));
     }
 
     const { merged, errors } = build(isbn13, results);
@@ -394,6 +403,10 @@ export function createSearch({
       clearTimeout(timer);
     } else {
       await everyone;
+      if (!Object.values(results).some((r) => r.value?.length)) {                      // see lookup: never end up asking nobody
+        await Promise.all(names.filter((n) => results[n]?.skipped)
+          .map((n) => guarded(breaker, n, () => SEARCHERS[n](q, fetchImpl, googleApiKey), true).then((r) => { results[n] = r; })));
+      }
     }
     const value = build(q, results);
     if (!value.results.length && value.provider_errors.length === names.length) throw new LookupError('Could not reach any book search provider', value.provider_errors);

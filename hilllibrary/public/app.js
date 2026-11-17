@@ -84,6 +84,13 @@ const pref = {
   set(k, v) { try { localStorage.setItem(`hl.${k}`, JSON.stringify(v)); } catch { /* private mode */ } },
 };
 
+const PROVIDER_NAMES = { openlibrary: 'Open Library', googlebooks: 'Google Books' };
+/** "Open Library: HTTP 429 · Google Books: …" from a failed lookup/search response, or '' if it carries no detail. */
+function whyFailed(e) {
+  const list = e?.data?.providers;
+  return Array.isArray(list) && list.length ? list.map((x) => `${PROVIDER_NAMES[x.provider] ?? x.provider}: ${x.error}`).join(' · ') : '';
+}
+
 /** append() that skips null/false (Element.append(null) would insert the literal text "null"). */
 function put(parent, ...kids) {
   parent.append(...kids.flat(Infinity).filter((k) => k != null && k !== false));
@@ -499,7 +506,8 @@ async function viewScan(page, params = new URLSearchParams()) {
       } else preview(r.book);
     } catch (e) {
       setStatus('');
-      result.replaceChildren(h('div', { class: 'notice err', role: 'alert' }, e.message, h('div', { class: 'row' },
+      result.replaceChildren(h('div', { class: 'notice err', role: 'alert' }, e.message,
+        whyFailed(e) ? h('p', { class: 'muted' }, whyFailed(e)) : null, h('div', { class: 'row' },
         h('button', { class: 'btn small', type: 'button', onclick: () => { busy = false; handle(isbn); } }, 'Try again'), nextBtn('Cancel'))));
     }
     reveal();
@@ -557,7 +565,7 @@ async function viewScan(page, params = new URLSearchParams()) {
         titleInput.scrollIntoView({ block: 'start', behavior: 'smooth' });
       }
     } catch (e) {
-      if (mine === findSeq) findResults.replaceChildren(h('div', { class: 'notice err', role: 'alert' }, e.message));
+      if (mine === findSeq) findResults.replaceChildren(h('div', { class: 'notice err', role: 'alert' }, e.message, whyFailed(e) ? h('p', { class: 'muted' }, whyFailed(e)) : null));
     } finally {
       if (mine === findSeq) findBtn.disabled = false;
     }

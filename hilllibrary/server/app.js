@@ -17,6 +17,17 @@ const SESSION_DAYS = 90;
 const MAX_BODY = 1024 * 1024;
 const MAX_COVER_UPLOAD = 5 * 1024 * 1024;
 
+const lastLogged = new Map();
+/** console.warn, but each distinct message at most once per 10 s, so a retry loop can't flood the terminal. */
+function logProblem(msg) {
+  const now = Date.now();
+  if (now - (lastLogged.get(msg) ?? 0) < 10_000) return;
+  lastLogged.set(msg, now);
+  if (lastLogged.size > 200) lastLogged.clear();
+  console.warn(`[${new Date().toISOString()}] ${msg}`);
+}
+const describeProviders = (providers = []) => providers.map((p) => `${p.provider}: ${p.error}`).join(' | ');
+
 class HttpError extends Error {
   constructor(status, message, extra = {}) { super(message); this.status = status; this.extra = extra; }
 }
@@ -232,7 +243,10 @@ export function createApp({ db, lookup, search, dataDir, publicDir, password = '
     if (!isbn13) throw new HttpError(400, 'That is not a valid ISBN (checksum failed).');
     const existing = db.findByIsbn(isbn13);
     const { meta, error } = await lookupSafe(isbn13);
-    if (error) throw new HttpError(502, 'Could not reach the book databases. Check the server\'s internet connection.', { providers: error.providers, existing });
+    if (error) {
+      logProblem(`Lookup of ${isbn13} failed: ${describeProviders(error.providers)}`);
+      throw new HttpError(502, 'Could not reach the book databases. Check the server\'s internet connection.', { providers: error.providers, existing });
+    }
     const complete = !!meta && !meta.incomplete;
     send(res, 200, { isbn13, found: complete, book: complete ? meta : null, partial: meta && meta.incomplete ? meta : null, existing });
   });
@@ -244,7 +258,10 @@ export function createApp({ db, lookup, search, dataDir, publicDir, password = '
     let found;
     try { found = await search(q); }
     catch (e) {
-      if (e instanceof LookupError) throw new HttpError(502, 'Could not reach the book databases. Check the server\'s internet connection.', { providers: e.providers });
+      if (e instanceof LookupError) {
+        logProblem(`Search for "${q}" failed: ${describeProviders(e.providers)}`);
+        throw new HttpError(502, 'Could not reach the book databases. Check the server\'s internet connection.', { providers: e.providers });
+      }
       throw e;
     }
     // Tell the client which candidates are already on the shelf.

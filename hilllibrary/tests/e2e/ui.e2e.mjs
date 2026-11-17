@@ -37,9 +37,11 @@ const OL_SEARCH = { docs: [
 ] };
 const GB_SEARCH = { items: [{ volumeInfo: { title: 'Searchable Wonder', authors: ['Ada Writer'], publishedDate: '2001',
   industryIdentifiers: [{ type: 'ISBN_13', identifier: '9780000001009' }] } }] };
+const FLAKY_ISBN = '9780000001016'; // every provider answers HTTP 500 for this one: a simulated outage
 const fakeFetch = async (url) => {
   const u = String(url);
   const json = (body) => ({ ok: true, status: 200, json: async () => body });
+  if (u.includes(FLAKY_ISBN)) return { ok: false, status: 500, json: async () => ({}) };
   if (u.includes('openlibrary.org/search.json')) return json(/searchable/i.test(decodeURIComponent(u)) ? OL_SEARCH : { docs: [] });
   if (u.includes('googleapis.com/books/v1/volumes') && !u.includes('q=isbn:')) return json(/searchable/i.test(decodeURIComponent(u)) ? GB_SEARCH : { totalItems: 0 });
   if (u.includes('openlibrary.org/api/books')) return json(OL);
@@ -140,6 +142,20 @@ try {
   await page.locator('#f-title').fill('Matilda');
   await page.locator('#sheet').getByRole('button', { name: 'Add book' }).click();
   await page.getByText('Added “Matilda”').first().waitFor();
+
+  step('provider outage: the reason is on screen, retries really retry, and later lookups still work');
+  await page.goto(`${base}/#/scan`);
+  await page.locator('#isbn-in').fill(FLAKY_ISBN);
+  await page.getByRole('button', { name: 'Look up' }).click();
+  await page.getByText('Could not reach the book databases').waitFor();
+  await page.getByText('Open Library: HTTP 500').waitFor();
+  await page.getByText('Google Books: HTTP 500').waitFor();
+  await page.getByRole('button', { name: 'Try again' }).click();                  // 2nd failure: both providers get paused
+  await page.getByText('Open Library: HTTP 500').waitFor();
+  await page.getByRole('button', { name: 'Try again' }).click();                  // 3rd: both are paused, but must still be ASKED, not skipped
+  await page.getByText('Open Library: HTTP 500').waitFor();
+  assert.ok(!/paused/.test(await page.locator('#app').innerText()), 'a paused provider must be re-asked when nothing else answered');
+  await page.getByRole('button', { name: 'Cancel' }).click();
 
   step('no match + partial info: photo becomes the cover, partial data pre-fills the form');
   const jpeg = await page.screenshot({ type: 'jpeg', quality: 80 }); // a real JPEG to act as the "photo"
@@ -298,7 +314,7 @@ try {
   await page.locator('.shelf-head').first().waitFor();
   await shot('7-desktop');
 
-  const real = problems.filter((p) => !/favicon/.test(p));
+  const real = problems.filter((p) => !/favicon/.test(p) && !/status of 502/.test(p)); // the 502s are the simulated outage
   assert.deepEqual(real, [], `browser reported problems:\n${real.join('\n')}`);
   console.log('E2E PASSED');
 } catch (e) {

@@ -636,11 +636,67 @@ test('breaker: ordinary failures only pause a provider after two in a row; a suc
   assert.equal(b.remainingMs('x'), 30_000);
 });
 
-test('breaker: when every provider is paused the lookup reports an outage, not "not found"', async () => {
-  const throttled = async () => ({ ok: false, status: 429, json: async () => ({}) });
-  const lookup = createLookup({ fetchImpl: throttled });
-  await assert.rejects(lookup(DUNE), LookupError);                // both answer 429, so both get paused
-  await assert.rejects(lookup('9780547928227'), (e) => e instanceof LookupError && e.providers.every((p) => /paused/.test(p.error)));
+test('breaker never blacks out lookups: when every provider is paused, they are still asked, and recovery is immediate', async () => {
+  let healthy = false;
+  const calls = { ol: 0, gb: 0 };
+  const flaky = async (url) => {
+    const u = String(url);
+    const isOl = u.includes('openlibrary.org/api/books');
+    calls[isOl ? 'ol' : 'gb']++;
+    if (!healthy) return { ok: false, status: 503, json: async () => ({}) };
+    const key = isOl ? decodeURIComponent(u.match(/bibkeys=([^&]+)/)[1]) : null;
+    return { ok: true, status: 200, json: async () => (isOl ? { [key]: OL[`ISBN:${DUNE}`] } : GB) };
+  };
+  const lookup = createLookup({ fetchImpl: flaky, graceMs: 20 });
+  await assert.rejects(lookup(DUNE), LookupError);
+  await assert.rejects(lookup('9780547928227'), LookupError);       // two failures each: both providers are now "paused"
+  assert.equal(lookup.breaker.isOpen('openlibrary') && lookup.breaker.isOpen('googlebooks'), true, 'precondition: both paused');
+
+  healthy = true;                                                    // the network comes back, well inside the pause window
+  const before = { ...calls };
+  const m = await lookup('9780140449136');
+  assert.equal(m.title, 'Dune');                                     // answered at once: not "paused for 15s"
+  assert.ok(calls.ol > before.ol, 'a paused provider must still be asked when nothing else could answer');
+  assert.equal(lookup.breaker.isOpen('openlibrary'), false);         // and a success clears the pause
+});
+
+test('breaker: a paused provider is NOT asked while another provider gave a complete answer', async () => {
+  let clock = 0;
+  const f = timedFetch({ gbStatus: 429 });
+  const lookup = createLookup({ fetchImpl: f, now: () => clock, graceMs: 20 });
+  await lookup(DUNE); await sleep(10);                                // Google 429 -> paused
+  const gbBefore = f.calls.gb;
+  await lookup('9780547928227'); await sleep(10);
+  assert.equal(f.calls.gb, gbBefore);
+});
+
+test('breaker: a healthy provider that does not know the book triggers a re-ask of the paused one', async () => {
+  const urls = [];
+  const f = async (url) => {
+    const u = String(url); urls.push(u);
+    if (u.includes('openlibrary.org/api/books')) { const key = decodeURIComponent(u.match(/bibkeys=([^&]+)/)[1]); return { ok: true, status: 200, json: async () => ({ [key]: OL[`ISBN:${DUNE}`] }) }; }
+    return { ok: true, status: 200, json: async () => ({ totalItems: 0 }) };       // Google: doesn't know it
+  };
+  const breaker = createBreaker();
+  breaker.failure('openlibrary', Object.assign(new Error('HTTP 429'), { status: 429 }));   // Open Library paused
+  const lookup = createLookup({ fetchImpl: f, breaker, graceMs: 20 });
+  const m = await lookup(DUNE);
+  assert.equal(m?.title, 'Dune', 'Open Library knows the book, so a pause must not turn this into "not found"');
+  assert.ok(urls.some((u) => u.includes('openlibrary.org')));
+});
+
+test('search: same rule, never asks nobody', async () => {
+  let healthy = false;
+  const f = async (url) => {
+    if (!healthy) return { ok: false, status: 503, json: async () => ({}) };
+    return String(url).includes('openlibrary.org') ? { ok: true, status: 200, json: async () => OL_SEARCH } : { ok: true, status: 200, json: async () => GB_SEARCH };
+  };
+  const search = createSearch({ fetchImpl: f, graceMs: 20 });
+  await assert.rejects(search('gatsby one'), LookupError);
+  await assert.rejects(search('gatsby two'), LookupError);
+  healthy = true;
+  const r = await search('gatsby three');
+  assert.ok(r.results.length > 0);
 });
 
 test('cache: bounded, oldest entries evicted first', async () => {
