@@ -214,3 +214,13 @@ details summary { cursor: pointer; font-weight: 600; margin: 6px 0; }
 .find-result img, .find-result .noposter { flex: none; width: 46px; height: 69px; object-fit: cover; border-radius: 4px; background: var(--surface-2); }
 .find-result .block { display: block; font-size: .82rem; margin-top: 2px; }
 .find-result .pill { margin-left: 6px; }
+
+/* title search results */
+.section-title { margin: 22px 0 8px; font-size: 1.05rem; }
+.results { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; }
+.result { display: flex; gap: 12px; align-items: center; padding: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.result .cover { width: 44px; flex: none; aspect-ratio: 2 / 3; border-radius: 4px; overflow: hidden; background: var(--surface-2); box-shadow: var(--shadow); }
+.result .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.result .meta { flex: 1; min-width: 0; }
+.result .t { font-weight: 600; font-size: .95rem; line-height: 1.25; }
+.result .a { color: var(--ink-2); font-size: .82rem; margin-bottom: 2px; }

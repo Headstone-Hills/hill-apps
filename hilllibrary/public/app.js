@@ -2,7 +2,7 @@
 // Security note: book metadata is third-party content, so it is only ever inserted
 // with textContent / DOM APIs (never innerHTML).
 
-import { createScanner, cameraProblem } from './scanner.js';
+import { createScanner, cameraProblem, decodeIsbnFromImage } from './scanner.js';
 
 const $app = document.getElementById('app');
 const sheet = document.getElementById('sheet');
@@ -89,6 +89,25 @@ const pref = {
 /** Like el.append, but skips null/false (DOM append would print them as the text "null"). */
 function add(el, ...kids) { el.append(...kids.flat().filter((k) => k != null && k !== false)); }
 
+const PROVIDER_NAMES = { openlibrary: 'Open Library', googlebooks: 'Google Books' };
+/** "Open Library: HTTP 429 · Google Books: …" from a failed lookup/search response, or '' if it carries no detail. */
+function whyFailed(e) {
+  const list = e?.data?.providers;
+  return Array.isArray(list) && list.length ? list.map((x) => `${PROVIDER_NAMES[x.provider] ?? x.provider}: ${x.error}`).join(' · ') : '';
+}
+
+/** append() that skips null/false (Element.append(null) would insert the literal text "null"). */
+function put(parent, ...kids) {
+  parent.append(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+  return parent;
+}
+
+/** replaceChildren() that flattens arrays and skips null/false (the native method would insert the text "null"). */
+function swap(parent, ...kids) {
+  parent.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+  return parent;
+}
+
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const isMovie = (b) => !!b.media && b.media !== 'book';
 const FORMAT_LABEL = { dvd: 'DVD', bluray: 'Blu-ray' };
@@ -100,6 +119,49 @@ const STATUS_LABELS = {
 const authorsText = (b) => (b.authors?.length ? b.authors.join(', ') : isMovie(b) ? 'Unknown director' : 'Unknown author');
 const itemNoun = (n, movie) => (movie ? (n === 1 ? 'movie' : 'movies') : (n === 1 ? 'book' : 'books'));
 const changed = () => window.dispatchEvent(new CustomEvent('library-changed'));
+
+// ------------------------------------------------------------------ photos
+/**
+ * Ask for a photo. With capture=true phones open their camera app directly (full-resolution,
+ * proper autofocus, flash: far better than a video frame); without it the user picks a file.
+ * Must be called from a click handler. Resolves to a File, or null if cancelled.
+ */
+function pickPhoto({ capture = false } = {}) {
+  return new Promise((resolve) => {
+    const input = h('input', { type: 'file', accept: 'image/*', capture: capture ? 'environment' : null, class: 'hidden' });
+    input.addEventListener('change', () => { resolve(input.files?.[0] ?? null); input.remove(); }, { once: true });
+    input.addEventListener('cancel', () => { resolve(null); input.remove(); }, { once: true });
+    document.body.append(input);
+    input.click();
+  });
+}
+
+/** Downscale to a JPEG of at most maxSide px (phone photos are 4-12 MB; a cover needs ~100 KB). */
+async function shrinkImage(file, maxSide = 1400) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode(); // browsers apply the photo's EXIF rotation when drawing it
+    const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.85));
+    if (blob) return blob;
+  } catch { /* fall through to the original file */ } finally { URL.revokeObjectURL(url); }
+  if (file.size <= 4.5 * 1024 * 1024 && /^image\/(jpeg|png|webp)$/.test(file.type)) return file;
+  throw new Error('Could not read that image. Try a JPEG or PNG.');
+}
+
+async function uploadCover(id, blob) {
+  const res = await fetch(`/api/books/${id}/cover`, { method: 'PUT', headers: { 'Content-Type': blob.type || 'image/jpeg' }, body: blob });
+  const data = await res.json().catch(() => null);
+  if (res.status === 401 && data?.authRequired) { state.session = { authRequired: true, authed: false }; route(); }
+  if (!res.ok) throw Object.assign(new Error(data?.error || `Upload failed (${res.status})`), { status: res.status });
+  return data;
+}
 
 async function loadFacets(force = false) {
   if (force || !state.facets) state.facets = await api('/api/facets');
@@ -249,7 +311,9 @@ async function viewLibrary(page, params) {
       const nothing = state.facets.total === 0 && !q && !Object.values(filters).some(Boolean);
       list.replaceChildren(h('div', { class: 'empty' },
         h('p', {}, nothing ? 'Your library is empty.' : 'Nothing matches.'),
-        nothing ? h('a', { class: 'btn primary', href: '#/scan' }, 'Scan your first book or movie') : h('a', { class: 'btn', href: '#/library' }, 'Clear search and filters')));
+        nothing ? h('a', { class: 'btn primary', href: '#/scan' }, 'Scan your first book or movie') : null,
+        q ? h('a', { class: 'btn primary', href: `#/scan?title=${encodeURIComponent(q)}` }, `Search online for “${q}”`) : null,
+        !nothing ? h('a', { class: 'btn', href: '#/library' }, 'Clear search and filters') : null));
       return;
     }
     const grid = () => h('div', { class: `books${view === 'list' ? ' list' : ''}` });
@@ -299,6 +363,7 @@ async function viewLibrary(page, params) {
 
   add(page, 
     h('div', { class: 'topbar' }, h('h1', {}, 'Library'), h('span', { class: 'row' },
+      h('a', { class: 'btn small primary', href: '#/scan?find=1' }, 'Find a book'),
       h('button', { class: 'btn small', type: 'button', onclick: () => openBook(null) }, '+ Book'),
       h('button', { class: 'btn small', type: 'button', onclick: () => openBook(null, { media: 'dvd' }) }, '+ Movie'))),
     h('div', { class: 'searchbar' }, search),
@@ -517,7 +582,7 @@ async function prepareCoverImage(file) {
   return blob;
 }
 
-async function viewScan(page) {
+async function viewScan(page, params = new URLSearchParams()) {
   const problem = cameraProblem();
   const recent = [];
   let autoAdd = pref.get('autoAdd', false);
@@ -528,8 +593,20 @@ async function viewScan(page) {
   const status = h('p', { class: 'statusline', role: 'status', 'aria-live': 'polite' });
   const result = h('div', { 'aria-live': 'polite' });
   const recentList = h('ul', { class: 'recent' });
+  const recentHeading = h('h2', { class: 'hidden' }, 'Added this session');
   const startBtn = h('button', { class: 'btn primary', type: 'button' }, 'Start camera');
   const torchBtn = h('button', { class: 'btn hidden', type: 'button' }, 'Light');
+  // One photo from the phone's own camera app instead of a live video feed. Works on plain HTTP too.
+  const photoScanBtn = h('button', { class: 'btn', type: 'button', onclick: async () => {
+    const file = await pickPhoto({ capture: true });
+    if (!file) return;
+    setStatus('Reading the barcode from your photo…');
+    try {
+      const isbn = await decodeIsbnFromImage(file);
+      if (!isbn) { setStatus('No barcode found in that photo. Get the whole barcode in frame, flat and in good light, or type the ISBN below.'); return; }
+      busy = false; handle(isbn);
+    } catch (e) { setStatus(`Couldn’t read that photo (${e.message}). Try again, or type the ISBN below.`); }
+  } }, 'Scan from photo');
   const locInput = h('input', { type: 'text', list: 'loc-list', placeholder: 'e.g. Living room, shelf 2', value: pref.get('scanLocation', ''), maxlength: '100', id: 'scan-loc' });
   locInput.addEventListener('input', () => pref.set('scanLocation', locInput.value));
   const isbnInput = h('input', { type: 'text', inputmode: 'numeric', autocomplete: 'off', placeholder: 'ISBN or barcode digits', id: 'isbn-in', 'aria-label': 'ISBN or barcode' });
@@ -540,6 +617,7 @@ async function viewScan(page) {
   const nextBtn = (label = 'Scan next') => h('button', { class: 'btn', type: 'button', onclick: next }, label);
 
   function drawRecent() {
+    recentHeading.classList.toggle('hidden', !recent.length);
     recentList.replaceChildren(...recent.map((r) => h('li', {},
       h('span', { class: 'grow' }, h('b', {}, r.book.title), ` — ${authorsText(r.book)}`, isMovie(r.book) ? ` (${FORMAT_LABEL[r.book.media]})` : ''),
       withHue(h('span', { class: 'pill genre' }, r.book.genre), r.book.genre),
@@ -587,12 +665,38 @@ async function viewScan(page) {
         nextBtn('Skip'))));
   }
 
-  async function handle(isbn) {
+  /** No title found. Offer to keep whatever the databases did know, plus a photo of the cover as the picture. */
+  function showNoMatch(isbn, partial) {
+    const known = partial ? [
+      partial.authors?.length && `by ${partial.authors.join(', ')}`, partial.publisher && `publisher ${partial.publisher}`,
+      partial.published && `published ${partial.published}`, partial.pages && `${partial.pages} pages`,
+      partial.subjects?.length && `${partial.subjects.length} subject tags`,
+    ].filter(Boolean) : [];
+    const openForm = (photo) => openBook(null, { isbn, prefill: partial ?? undefined, photo, location: locInput.value, onSaved: next });
+    result.replaceChildren(h('div', { class: 'notice' },
+      h('b', {}, `No match for ISBN ${isbn}.`),
+      h('p', { class: 'muted' }, known.length
+        ? `The databases only knew: ${known.join(' · ')}. That will be saved with the book.`
+        : 'The databases have nothing for this ISBN.'),
+      h('p', { class: 'muted' }, 'Photograph the cover to use as its picture, then type the title.'),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn primary', type: 'button', onclick: async () => {
+          const file = await pickPhoto({ capture: true });
+          if (!file) return;
+          try { openForm(await shrinkImage(file)); } catch (ex) { toast(ex.message, { error: true }); }
+        } }, 'Take cover photo & add'),
+        h('button', { class: 'btn', type: 'button', onclick: () => openForm(null) }, 'Add without photo'),
+        nextBtn('Skip'))));
+  }
+
+  async function handle(isbn, { forcePreview = false } = {}) {
     if (busy) return;
     busy = true;
     activeScanner?.pause();
     setStatus(`Looking up ${isbn}…`);
     result.replaceChildren(h('p', { class: 'muted' }, 'Looking up…'));
+    const reveal = () => { if (result.firstChild) result.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); };
+    reveal();
     try {
       const r = await api(`/api/lookup/${isbn}`);
       const kind = r.media === 'book' ? 'book' : 'movie';
@@ -602,17 +706,78 @@ async function viewScan(page) {
           h('button', { class: 'btn small', type: 'button', onclick: () => openBook(r.existing) }, 'View'), nextBtn())));
         if (autoAdd) setTimeout(() => { if (busy && activeScanner) next(); }, 1800);
       } else if (!r.found) {
-        result.replaceChildren(h('div', { class: 'notice' }, `No match found for ${kind === 'book' ? 'ISBN' : 'barcode'} ${r.code}.`, h('div', { class: 'row' },
-          h('button', { class: 'btn primary', type: 'button', onclick: () => openBook(null, { ...(kind === 'book' ? { isbn: r.code } : { barcode: r.code, media: 'dvd' }), location: locInput.value, onSaved: next }) }, 'Add it manually'), nextBtn('Skip'))));
-      } else if (autoAdd) {
+        if (kind === 'book') showNoMatch(r.code, r.partial);
+        else result.replaceChildren(h('div', { class: 'notice' }, `No match found for barcode ${r.code}.`, h('div', { class: 'row' },
+          h('button', { class: 'btn primary', type: 'button', onclick: () => openBook(null, { barcode: r.code, media: 'dvd', location: locInput.value, onSaved: next }) }, 'Add it manually'), nextBtn('Skip'))));
+      } else if (autoAdd && !forcePreview) {
         const book = await addBook(r.code, r.media);
         setStatus(book ? `Added “${book.title}”. Next…` : '');
         setTimeout(() => { if (busy) next(); }, 1000);
       } else preview(r.book, r.code);
     } catch (e) {
       setStatus('');
-      result.replaceChildren(h('div', { class: 'notice err', role: 'alert' }, e.message, h('div', { class: 'row' },
+      result.replaceChildren(h('div', { class: 'notice err', role: 'alert' }, e.message,
+        whyFailed(e) ? h('p', { class: 'muted' }, whyFailed(e)) : null, h('div', { class: 'row' },
         h('button', { class: 'btn small', type: 'button', onclick: () => { busy = false; handle(isbn); } }, 'Try again'), nextBtn('Cancel'))));
+    }
+    reveal();
+  }
+
+  // ---- find by title / author
+  const titleInput = h('input', { type: 'search', id: 'title-in', autocomplete: 'off', enterkeyhint: 'search', maxlength: '200',
+    placeholder: 'Title or author, e.g. “dune herbert”', 'aria-label': 'Search for a book by title or author', value: params.get('title') ?? '' });
+  const findBtn = h('button', { class: 'btn', type: 'submit' }, 'Search');
+  const findResults = h('div', { 'aria-live': 'polite' });
+  let findSeq = 0;
+
+  /** Pick a search result: already owned -> open it; has an ISBN -> the normal preview; otherwise a pre-filled form. */
+  async function choose(r) {
+    if (r.in_library) {
+      try { openBook(await api(`/api/books/${r.in_library}`)); } catch (e) { toast(e.message, { error: true }); }
+    } else if (r.isbn13) {
+      busy = false; handle(r.isbn13, { forcePreview: true });
+    } else {
+      openBook(null, { prefill: { title: r.title, subtitle: r.subtitle, authors: r.authors, publisher: r.publisher, published: r.published },
+        coverUrl: r.cover_url, location: locInput.value });
+    }
+  }
+
+  const resultItem = (r) => h('li', { class: 'result' },
+    h('div', { class: 'cover' }, r.cover_url
+      ? h('img', { src: r.cover_url, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' })
+      : withHue(h('div', { class: 'fake-cover' }, r.title), r.title)),
+    h('div', { class: 'meta' },
+      h('div', { class: 't' }, r.title, r.subtitle ? `: ${r.subtitle}` : ''),
+      h('div', { class: 'a' }, [r.authors.join(', '), r.published.slice(0, 4), r.publisher].filter(Boolean).join(' · ') || 'Unknown author'),
+      r.in_library ? h('span', { class: 'pill ok' }, 'In your library') : (!r.isbn13 ? h('span', { class: 'pill warn' }, 'no ISBN') : null)),
+    h('button', { class: 'btn small', type: 'button', onclick: () => choose(r) }, r.in_library ? 'View' : r.isbn13 ? 'Preview' : 'Add details'));
+
+  function drawFind(q, r) {
+    const manual = h('button', { class: 'btn', type: 'button', onclick: () => openBook(null, { prefill: { title: q }, location: locInput.value }) }, 'Add it manually');
+    swap(findResults,
+      r.provider_errors?.length ? h('div', { class: 'notice warn' }, 'One book database didn’t answer, so this list may be incomplete.') : null,
+      r.results.length
+        ? [h('ul', { class: 'results' }, r.results.map(resultItem)), h('p', { class: 'muted' }, 'Not the right one? Try the author’s name too, or ', manual)]
+        : h('div', { class: 'notice' }, `No books found for “${q}”. Try fewer or different words.`, h('div', { class: 'row' }, manual)));
+  }
+
+  async function runFind(raw) {
+    const q = raw.replace(/\s+/g, ' ').trim();
+    if (q.length < 2) { findResults.replaceChildren(h('p', { class: 'muted' }, 'Type at least 2 characters.')); return; }
+    const mine = ++findSeq;
+    findBtn.disabled = true;
+    findResults.replaceChildren(h('p', { class: 'muted' }, `Searching for “${q}”…`));
+    try {
+      const r = await api(`/api/search?q=${encodeURIComponent(q)}`);
+      if (mine === findSeq) {
+        drawFind(q, r);
+        // On a phone the camera view fills the screen above this: bring the search box to the top so the results are visible.
+        titleInput.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      }
+    } catch (e) {
+      if (mine === findSeq) findResults.replaceChildren(h('div', { class: 'notice err', role: 'alert' }, e.message, whyFailed(e) ? h('p', { class: 'muted' }, whyFailed(e)) : null));
+    } finally {
+      if (mine === findSeq) findBtn.disabled = false;
     }
   }
 
@@ -674,14 +839,14 @@ async function viewScan(page) {
   });
 
   const problemText = {
-    insecure: 'Phone and tablet browsers only allow the camera on secure (HTTPS) pages. See the README section “Using it from your phone”. You can still type an ISBN or barcode below.',
-    unsupported: 'This browser can’t access a camera. You can still type an ISBN or barcode below.',
+    insecure: 'Phone and tablet browsers only allow the camera on secure (HTTPS) pages. See the README section “Using it from your phone”. You can still use Scan from photo, or type an ISBN or barcode below.',
+    unsupported: 'This browser can’t access a live camera. You can still use Scan from photo, or type an ISBN or barcode below.',
   }[problem];
 
   add(page, 
     h('div', { class: 'topbar' }, h('h1', {}, 'Scan')),
     problem ? h('div', { class: 'notice warn' }, problemText) : h('div', { class: 'viewport' }, video, h('div', { class: 'guide' }), overlay),
-    problem ? null : h('div', { class: 'row' }, startBtn, torchBtn),
+    h('div', { class: 'row' }, problem ? null : [startBtn, torchBtn], photoScanBtn),
     status,
     h('div', { class: 'row' },
       h('div', { class: 'field grow' }, h('label', { for: 'scan-loc' }, 'Put these items in (optional)'), locInput),
@@ -693,11 +858,17 @@ async function viewScan(page) {
       isbnInput.value = ''; busy = false; handle(digits);
     } }, h('div', { class: 'grow' }, h('label', { class: 'sr-only', for: 'isbn-in' }, 'ISBN or barcode'), isbnInput), h('button', { class: 'btn', type: 'submit' }, 'Look up')),
     state.taxonomy.coverScan ? h('div', { class: 'row' }, coverBtn, coverIn) : null,
+    h('h2', { class: 'section-title' }, 'Or find it by title or author'),
+    h('form', { class: 'row', onsubmit: (e) => { e.preventDefault(); runFind(titleInput.value); } },
+      h('div', { class: 'grow' }, h('label', { class: 'sr-only', for: 'title-in' }, 'Title or author'), titleInput), findBtn),
+    findResults,
     result,
     h('datalist', { id: 'loc-list' }, state.facets.locations.map((l) => h('option', { value: l.name }))),
-    recent.length ? h('h2', {}, 'Added this session') : null,
+    recentHeading,
     recentList,
   );
+  if (params.get('title')) runFind(params.get('title'));
+  else if (params.get('find')) titleInput.focus();
 }
 
 // ------------------------------------------------------------- book dialog
@@ -739,7 +910,7 @@ function openBook(book, opts = {}) {
   };
   f.notes.value = b.notes; f.description.value = b.description;
 
-  const autoLabel = creating && !opts.prefill ? 'Auto (decide from the title)' : `Auto (detected: ${b.genre})`;
+  const autoLabel = creating && !p.genre ? 'Auto (decide from the title)' : `Auto (detected: ${b.genre})`;
   let detected = b.genre;   // what "Auto" will pick; the title finder updates it
   const genreSel = h('select', { id: 'f-genre' },
     h('option', { value: 'auto', selected: !b.genre_locked }, autoLabel),
@@ -819,6 +990,31 @@ function openBook(book, opts = {}) {
   const showErr = (m) => { err.textContent = m; err.classList.remove('hidden'); err.scrollIntoView({ block: 'nearest' }); };
   const field = (label, input, id) => h('div', { class: 'field' }, h('label', { for: id }, label), input);
 
+  // Cover photo: held until Save, then uploaded after the book exists.
+  let photoBlob = opts.photo ?? null;
+  let photoUrl = photoBlob ? URL.createObjectURL(photoBlob) : '';
+  sheet.addEventListener('close', () => { if (photoUrl) URL.revokeObjectURL(photoUrl); }, { once: true });
+  const coverBox = h('div', { class: 'detail-cover' });
+  const photoBtns = h('div', { class: 'row' });
+  const drawCover = () => coverBox.replaceChildren(photoUrl
+    ? h('img', { src: photoUrl, alt: 'New cover photo' })
+    : creating && opts.coverUrl ? h('img', { src: opts.coverUrl, alt: 'Cover from the search result', referrerpolicy: 'no-referrer' })
+    : creating ? withHue(h('div', { class: 'fake-cover' }, 'No cover yet'), b.genre) : coverEl(book));
+  const drawPhotoBtns = () => swap(photoBtns,
+    h('button', { class: 'btn small', type: 'button', onclick: async () => setPhoto(await pickPhoto({ capture: true })) }, 'Take cover photo'),
+    h('button', { class: 'btn small', type: 'button', onclick: async () => setPhoto(await pickPhoto()) }, 'Choose image'),
+    photoBlob ? h('button', { class: 'btn small', type: 'button', onclick: () => { URL.revokeObjectURL(photoUrl); photoBlob = null; photoUrl = ''; drawCover(); drawPhotoBtns(); } }, 'Remove photo') : null);
+  async function setPhoto(file) {
+    if (!file) return;
+    try {
+      const blob = await shrinkImage(file);
+      if (photoUrl) URL.revokeObjectURL(photoUrl);
+      photoBlob = blob; photoUrl = URL.createObjectURL(blob);
+      drawCover(); drawPhotoBtns();
+    } catch (ex) { showErr(ex.message); }
+  }
+  drawCover(); drawPhotoBtns();
+
   async function save(e) {
     e.preventDefault();
     const val = (el) => el.value.trim();
@@ -841,11 +1037,15 @@ function openBook(book, opts = {}) {
       let saved;
       if (creating) {
         const code = val(f.isbn);
-        saved = await api('/api/books', { method: 'POST', body: { ...(code ? (movie ? { barcode: code } : { isbn: code }) : {}), ...patch } });
+        saved = await api('/api/books', { method: 'POST', body: { ...(code ? (movie ? { barcode: code } : { isbn: code }) : {}), ...(opts.coverUrl ? { cover_url: opts.coverUrl } : {}), ...patch } });
         toast(`Added “${saved.title}”`);
       } else {
         saved = await api(`/api/books/${book.id}`, { method: 'PATCH', body: patch });
         toast('Saved');
+      }
+      if (photoBlob) {
+        try { saved = await uploadCover(saved.id, photoBlob); }
+        catch (ex) { toast(`Saved, but the cover photo didn’t upload: ${ex.message}`, { error: true, ms: 6000 }); }
       }
       sheet.close(); changed(); opts.onSaved?.(saved);
     } catch (ex) {
@@ -871,9 +1071,11 @@ function openBook(book, opts = {}) {
   const form = h('form', { class: 'sheet', onsubmit: save },
     h('header', {}, h('h2', {}, creating ? (movie ? 'Add a movie' : 'Add a book') : (movie ? 'Movie details' : 'Book details')), h('button', { class: 'btn small', type: 'button', onclick: () => sheet.close(), 'aria-label': 'Close' }, '✕')),
     h('div', { class: 'body' },
-      !creating ? h('div', { class: 'row' }, h('div', { class: 'detail-cover' }, coverEl(book)),
-        h('div', { class: 'grow' }, withHue(h('span', { class: 'pill genre' }, b.subgenre ? `${b.genre} · ${b.subgenre}` : b.genre), b.genre), ' ',
-          movie ? h('span', { class: 'pill' }, FORMAT_LABEL[b.media] ?? b.media) : null, b.needs_review ? h('span', { class: 'pill warn' }, 'genre unsure') : null, b.genre_locked ? h('span', { class: 'pill ok' }, 'genre set by you') : null)) : null,
+      h('div', { class: 'row' }, coverBox,
+        h('div', { class: 'grow' },
+          !creating ? [withHue(h('span', { class: 'pill genre' }, b.subgenre ? `${b.genre} · ${b.subgenre}` : b.genre), b.genre), ' ',
+            movie ? h('span', { class: 'pill' }, FORMAT_LABEL[b.media] ?? b.media) : null, b.needs_review ? h('span', { class: 'pill warn' }, 'genre unsure') : null, b.genre_locked ? h('span', { class: 'pill ok' }, 'genre set by you') : null] : null,
+          photoBtns)),
       err, finder,
       field('Title', f.title, 'f-title'), movie ? null : field('Subtitle', f.subtitle, 'f-sub'), field(movie ? 'Director(s)' : 'Author(s)', f.authors, 'f-auth'),
       movie ? field('Format', f.format, 'f-format') : null,

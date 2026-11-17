@@ -9,7 +9,7 @@ import { LibraryDb } from './db.js';
 import { createDiscLookup, createTmdbClient } from './discs.js';
 import { createJellyfin } from './jellyfin.js';
 import { createVisionReader, createTesseractReader, createClaudeReader } from './cover.js';
-import { createLookup } from './metadata.js';
+import { createLookup, createSearch } from './metadata.js';
 import { createApp } from './app.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -32,7 +32,9 @@ if (password && password.length < 8) {
 
 mkdirSync(dataDir, { recursive: true });
 const db = new LibraryDb(join(dataDir, 'library.db'));
-const lookup = createLookup({ googleApiKey: env.GOOGLE_BOOKS_API_KEY ?? '' });
+const googleApiKey = env.GOOGLE_BOOKS_API_KEY ?? '';
+const lookup = createLookup({ googleApiKey });
+const search = createSearch({ googleApiKey, breaker: lookup.breaker }); // one breaker: a provider that throttles lookups is skipped by search too
 const tmdbKey = (env.TMDB_API_KEY ?? '').trim();
 const lookupDisc = createDiscLookup({ tmdbKey });
 const tmdb = createTmdbClient({ key: tmdbKey });
@@ -50,7 +52,7 @@ const coverReaders = env.COVER_SCAN === 'off' ? [] : [
 ];
 coverReaders[0]?.warm?.();
 const app = createApp({
-  db, lookup, lookupDisc, tmdb, jellyfin, coverReaders, googleApiKey: env.GOOGLE_BOOKS_API_KEY ?? '', dataDir, publicDir: join(here, '..', 'public'), password,
+  db, lookup, search, lookupDisc, tmdb, jellyfin, coverReaders, googleApiKey: env.GOOGLE_BOOKS_API_KEY ?? '', dataDir, publicDir: join(here, '..', 'public'), password,
   trustProxy: /^(1|true|yes)$/i.test(env.TRUST_PROXY ?? ''),
   allowedOrigins: (env.ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
 });
@@ -65,6 +67,16 @@ server.listen(port, host, () => {
   if (!tls) console.log('  note: phone/tablet cameras only work over HTTPS (or localhost). See README "Using it from your phone".');
 });
 
+// On shutdown, stop taking requests but give in-flight cover downloads a few seconds to finish first,
+// instead of closing the database underneath them.
+let stopping = false;
 for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => { server.close(); db.close(); process.exit(0); });
+  process.on(sig, async () => {
+    if (stopping) return;
+    stopping = true;
+    server.close();
+    await Promise.race([app.idle(), new Promise((r) => setTimeout(r, 5000))]);
+    db.close();
+    process.exit(0);
+  });
 }

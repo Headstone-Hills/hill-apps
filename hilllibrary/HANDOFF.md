@@ -12,10 +12,82 @@ Read this first, then `hilllibrary/README.md`.
   automatic metadata (Open Library + Google Books), a weighted genre/tag classifier,
   FTS5 search, installable PWA. Zero npm dependencies, Node >= 22.13 (`node:sqlite`).
   It is a new sibling of the repo's unrelated Python music apps (it only adds a mention to the root README).
-- **Tests:** `cd hilllibrary && npm test` gives 72 passing. A Chromium end-to-end run exists at
+- **Tests:** `cd hilllibrary && npm test` gives 103 passing. A Chromium end-to-end run exists at
   `tests/e2e/ui.e2e.mjs` (needs Playwright; not part of `npm test`) and passed, including decoding an
   independently generated EAN-13 barcode from a fake camera feed.
 - **Not deployed anywhere yet.** Nothing is running; the user has not tried it on a phone.
+
+## Added after the first handoff (2026-11-17)
+
+- **No-match flow with cover photo.** Lookup now keeps *partial* provider data (no title but publisher/subjects/etc.):
+  `/api/lookup/:isbn` returns `{found:false, partial:{...}}`; `mergeProviders` sets `incomplete:true`; `POST /api/books`
+  still requires a user-supplied title for such records but uses the partial data + subjects for classification.
+  New `PUT /api/books/:id/cover` takes raw image bytes (sniffed, JPEG/PNG/WebP, <= 5 MB), writes
+  `data/covers/<id>-<stamp>.<ext>` (unique name defeats the service-worker cache-first covers) and deletes the old file.
+  Client: `pickPhoto()` / `shrinkImage()` / `uploadCover()` in `public/app.js`; the book dialog (add and edit) has
+  Take cover photo / Choose image; the scan no-match card offers "Take cover photo & add".
+- **Bug fixed:** `Element.append(null)` inserted the literal text "null" on the Scan page (and More without a password).
+  Pages are now assembled with a null-safe `put()`; the e2e fails if "null"/"undefined"/"NaN" text shows on any main screen.
+- Tests: 78 unit/API passing; e2e extended (partial data + photo, cover replacement, stray-text guard).
+- **Still unverified:** capture on real phones (the test uses a generated JPEG via Playwright's file chooser).
+
+### Scanner changes (2026-11-17, second pass)
+
+- **Scan from photo** (`decodeIsbnFromImage` in `public/scanner.js`, button on the Scan page): one still from the
+  phone's camera app, decoded with the shared detector, retried upright/90/270/±6/±12 degrees at a few sizes. Added
+  because live scanning was reported to stop background video/audio; it avoids `getUserMedia` entirely. e2e asserts it
+  never calls `getUserMedia`. **The background-playback problem is NOT confirmed fixed**: the cause is unknown and
+  nothing in the page's code touches audio. Ask the user what stops (other app vs. other tab), which phone/browser,
+  and whether it still stops with Scan from photo. That one answer says whether it's the live stream or the OS camera.
+- **Scanner bug fixed:** `MultiFormatReader.decode()` silently resets hints, so the "EAN-13 only / try harder" hints were
+  ignored and every frame also ran the QR/Aztec/DataMatrix/PDF417 readers. Now uses `Z.EAN13Reader` directly
+  (also avoids a per-frame `console.warn` the library emits on every "no barcode" frame). Accuracy equal or better,
+  hard cases faster. e2e fails on any console warning/error, which is how this was found.
+- Synthetic photo fixtures (not committed; need PIL + bwip-js): 12 MP, tilt, blur, noise, dim, sideways. Single-factor
+  sweep all decoded. Never tested: real phone photos.
+
+### Scan-speed work (2026-11-17, third pass)
+
+Reported: lookups slow down after several scans in a row. **Measured first; the app's own code was not the cause.** Server
+(240 consecutive scans, also with 3,000 books) and browser (14 distinct barcodes from a fake camera feed) were flat: lookup
+~ provider latency + 2 ms, add ~ cover time + 7 ms, no growth, no long tasks. What was left is time spent *waiting on
+external services in series*, and a throttling provider makes that grow. Reproduced by simulation (providers degrade after
+6 requests): scans 1-6 ~230 ms, scan 7 onward ~4.6 s each. **The real Open Library / Google Books could not be reached from
+the sandbox, so real-world throttling is a likely explanation, not a confirmed one.**
+Fixes (`server/metadata.js`, `server/app.js`): answer on the first complete provider (0.8 s grace; late data upgrades the cache);
+per-provider circuit breaker (429 pauses at once, honours Retry-After; 2 consecutive failures pause with backoff; one probe after);
+in-flight de-duplication; cache capped at 500 entries; **cover download moved off the add** into a 2-at-a-time background queue
+that re-checks the book is still the same one (SQLite reuses ids) and has no cover before saving; graceful shutdown waits
+<= 5 s for pending covers. Simulated result: steady ~127 ms/scan (4-scan transient ~0.93 s), add 107 -> ~4 ms. 88 tests.
+Behaviour change: `POST /api/books` returns `has_cover:false`; the cover attaches moments later (tests use `handler.idle()`).
+Benchmarks lived in the session scratchpad (not committed); they need only Node (+ Playwright and ffmpeg for the browser one).
+
+### Title search (2026-11-17, fourth pass)
+
+New: find a book by title/author and add it. `GET /api/search?q=` (`createSearch` / `mergeSearchResults` in
+`server/metadata.js`): queries Open Library `search.json` + Google Books `volumes?q=` in parallel under the **same
+circuit breaker as ISBN lookup** (shared instance, wired in `server/index.js`), answers on the first provider with results
+(0.8 s grace), caches 2 min, merges/dedupes (ISBN or title+first author), ranks by title match ignoring leading articles,
+marks `in_library`. UI: "Or find it by title or author" on the Scan page; "Find a book" and "Search online for ..." on the
+Library page. A result with an ISBN goes through the existing preview/add flow; one without opens the add form pre-filled
+and POSTs its `cover_url` (server only fetches https URLs on the cover allow-list, in the background).
+Bugs found and fixed on the way: ranking put "Great Gatsby Study Guide" above "The Great Gatsby" (leading article);
+native `replaceChildren()` inserts the text "null"/"[object ...]" for null/array args (new null-safe `swap()`; this also
+removed a stray "null" beside the cover-photo buttons in the book dialog); "Added this session" heading never appeared.
+e2e now also checks the book dialog for stray text and stubs external cover hosts (this also proves the CSP allows them).
+100 unit/API tests. **Unverified:** real provider search responses (fixtures only); real-catalogue ranking quality.
+
+### Lookup regression fix (2026-11-17, fifth pass)
+
+Reported: all barcode lookups failing after the previous round. Cause found by running the real server: the circuit
+breaker could pause **both** providers (e.g. Google 429 + two Open Library failures), after which every lookup failed
+instantly with "paused" without asking anyone, for 15 s up to 5 min, even after the network recovered. Fix: a provider is
+only skipped while another can answer; if nothing usable came back, skipped providers are asked anyway (lookup and
+search), and a success clears the pause. Also: provider timeout back to 8 s (I had cut it to 6 s without evidence), the
+UI now shows which provider failed and why, and the server logs it (throttled to one line per distinct problem per 10 s).
+Tests: 103 passing; e2e simulates an outage + retries + recovery and was confirmed to fail against the old behaviour.
+**Unconfirmed:** I could not see the user's actual failure. If lookups still fail, the on-screen provider reasons
+(or the server terminal) are the first thing to ask for.
 
 ## What the user wants
 

@@ -73,6 +73,7 @@ async function boot({ tmdbKey = 'k', fetchImpl = fakeFetch(), db = new LibraryDb
   const base = `http://127.0.0.1:${server.address().port}`;
   return {
     db,
+    idle: () => handler.idle(),
     async req(method, path, body) {
       const res = await fetch(base + path, { method, headers: body !== undefined ? { 'Content-Type': 'application/json' } : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
       const text = await res.text();
@@ -222,7 +223,9 @@ test('API: add a disc, cover saved, duplicate refused, filtering and facets keep
     assert.equal(add.json.barcode, ALIEN);
     assert.equal(add.json.runtime, 117);
     assert.deepEqual(add.json.authors, ['Ridley Scott']);
-    assert.equal(add.json.has_cover, true);
+    assert.equal(add.json.has_cover, false);          // the response does not wait for the cover download
+    await t.idle();
+    assert.equal(t.db.get(add.json.id).has_cover, true);
     assert.equal(add.json.genre, 'Horror');
     assert.equal(add.json.isbn13, null);
 
@@ -405,6 +408,7 @@ test('creating a disc with a TMDB match keeps the barcode lookup\'s format but t
     assert.deepEqual(r.json.meta_raw.sources.sort(), ['tmdb', 'upcitemdb']);
     const manual = await t.req('POST', '/api/books', { media: 'dvd', title: 'Manual Alien', tmdb: { id: 348, kind: 'movie' } });
     assert.equal(manual.json.genre, 'Horror');
-    assert.equal(manual.json.has_cover, true);
+    await t.idle();
+    assert.equal(t.db.get(manual.json.id).has_cover, true);
   } finally { await t.close(); }
 });

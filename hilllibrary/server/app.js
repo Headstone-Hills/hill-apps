@@ -6,7 +6,7 @@ import { join, resolve, extname, sep } from 'node:path';
 import { toIsbn13 } from './isbn.js';
 import { isStatus, cleanTag } from './db.js';
 import { classify, GENRE_NAMES, TAXONOMY, UNCATEGORIZED } from './genres.js';
-import { downloadCover, enrich, LookupError } from './metadata.js';
+import { downloadCover, enrich, LookupError, createSearch } from './metadata.js';
 import { toGtin13, isDisc } from './barcode.js';
 import { classifyMovie, MOVIE_GENRES } from './moviegenres.js';
 import { enrichDisc } from './discs.js';
@@ -21,6 +21,18 @@ const MIME = {
 const SESSION_DAYS = 90;
 const MAX_BODY = 1024 * 1024;
 const MAX_IMAGE = 8 * 1024 * 1024;
+const MAX_COVER_UPLOAD = 5 * 1024 * 1024;
+
+const lastLogged = new Map();
+/** console.warn, but each distinct message at most once per 10 s, so a retry loop can't flood the terminal. */
+function logProblem(msg) {
+  const now = Date.now();
+  if (now - (lastLogged.get(msg) ?? 0) < 10_000) return;
+  lastLogged.set(msg, now);
+  if (lastLogged.size > 200) lastLogged.clear();
+  console.warn(`[${new Date().toISOString()}] ${msg}`);
+}
+const describeProviders = (providers = []) => providers.map((p) => `${p.provider}: ${p.error}`).join(' | ');
 
 class HttpError extends Error {
   constructor(status, message, extra = {}) { super(message); this.status = status; this.extra = extra; }
@@ -34,6 +46,7 @@ class HttpError extends Error {
  * @param {{enabled:boolean, search?:Function, details?:Function}} [o.tmdb]  title search + details for the movie editor
  * @param {{enabled:boolean, publicUrl?:string, movies?:Function, image?:Function}} [o.jellyfin]  media-server connection
  * @param {object[]} [o.coverReaders]  cover text readers tried in order (see cover.js); empty disables cover scanning
+ * @param {(q:string)=>Promise<{results:object[], provider_errors:object[]}>} [o.search]  title/author search; defaults to the real providers
  * @param {string} o.dataDir       where covers/ and .secret live
  * @param {string} o.publicDir
  * @param {string} [o.password]    empty/undefined = no auth (only safe on localhost)
@@ -41,7 +54,8 @@ class HttpError extends Error {
  * @param {string[]} [o.allowedOrigins]
  * @param {boolean} [o.trustProxy] take the client IP for login rate limiting from CF-Connecting-IP / X-Forwarded-For
  */
-export function createApp({ db, lookup, lookupDisc = async () => null, tmdb = { enabled: false }, jellyfin = { enabled: false }, coverReaders = [], googleApiKey = '', dataDir, publicDir, password = '', fetchImpl = fetch, allowedOrigins = [], trustProxy = false }) {
+export function createApp({ db, lookup, search, lookupDisc = async () => null, tmdb = { enabled: false }, jellyfin = { enabled: false }, coverReaders = [], googleApiKey = '', dataDir, publicDir, password = '', fetchImpl = fetch, allowedOrigins = [], trustProxy = false }) {
+  search ??= createSearch({ fetchImpl });
   const coversDir = join(dataDir, 'covers');
   const root = resolve(publicDir);
   let secretPromise;
@@ -118,6 +132,17 @@ export function createApp({ db, lookup, lookupDisc = async () => null, tmdb = { 
     return { buffer: Buffer.concat(chunks), mime };
   }
 
+  async function readBuffer(req, max) {
+    const chunks = [];
+    let size = 0;
+    for await (const c of req) {
+      size += c.length;
+      if (size > max) throw new HttpError(413, `Image is too large (limit ${Math.round(max / 1048576)} MB).`);
+      chunks.push(c);
+    }
+    return Buffer.concat(chunks);
+  }
+
   /** Validate and normalise user-editable fields. Throws HttpError(400). */
   function cleanFields(body, { requireTitle = false } = {}) {
     const out = {};
@@ -182,6 +207,29 @@ export function createApp({ db, lookup, lookupDisc = async () => null, tmdb = { 
     await writeFile(join(coversDir, file), cover.buffer);
     return file;
   }
+
+  // Cover downloads run after the response, two at a time, so scanning a shelf never waits on (or hammers) the image host.
+  const pendingCovers = new Set();
+  const coverQueue = createLimiter(2, 200);
+  function fetchCoverInBackground(book, url) {
+    if (!url) return;
+    const { id, added_at } = book;
+    // Ids can be reused after a delete, so a job must still be talking about the *same* book when it finishes.
+    const stillSameBookWithoutCover = () => { const cur = db.get(id); return !!cur && cur.added_at === added_at && !cur.cover_file; };
+    const job = coverQueue(async () => {
+      const cover = await downloadCover(url, fetchImpl);
+      if (!cover || !stillSameBookWithoutCover()) return;
+      await mkdir(coversDir, { recursive: true });
+      const file = `${id}.${cover.ext}`;
+      await writeFile(join(coversDir, file), cover.buffer);
+      if (stillSameBookWithoutCover()) db.update(id, { cover_file: file });
+      else await unlink(join(coversDir, file)).catch(() => {}); // deleted, or the user uploaded their own photo meanwhile
+    }).catch((e) => console.error('Background cover download failed:', e?.message ?? e))
+      .finally(() => pendingCovers.delete(job));
+    pendingCovers.add(job);
+  }
+  /** Resolves when no background cover work is pending (used by tests and graceful shutdown). */
+  async function idle() { while (pendingCovers.size) await Promise.allSettled([...pendingCovers]); }
 
   /** Apply classifier output to a book unless the user locked it. */
   function reclassifyRow(book) {
@@ -331,13 +379,35 @@ export function createApp({ db, lookup, lookupDisc = async () => null, tmdb = { 
     if (r.kind === 'book') {
       const existing = db.findByIsbn(r.code);
       const { meta, error } = await lookupSafe(r.code);
-      if (error) throw new HttpError(502, 'Could not reach the book databases. Check the server\'s internet connection.', { providers: error.providers, existing });
-      return send(res, 200, { isbn13: r.code, code: r.code, media: 'book', found: !!meta, book: meta, existing });
+      if (error) {
+        logProblem(`Lookup of ${r.code} failed: ${describeProviders(error.providers)}`);
+        throw new HttpError(502, 'Could not reach the book databases. Check the server\'s internet connection.', { providers: error.providers, existing });
+      }
+      const complete = !!meta && !meta.incomplete;
+      return send(res, 200, { isbn13: r.code, code: r.code, media: 'book', found: complete, book: complete ? meta : null, partial: meta && meta.incomplete ? meta : null, existing });
     }
     const existing = db.findByBarcode(r.code);
     const { meta, error } = await lookupDiscSafe(r.code);
     if (error) throw new HttpError(502, 'Could not look up that barcode. Check the server\'s internet connection (the free barcode service also allows only about 100 lookups a day).', { providers: error.providers, existing });
     send(res, 200, { barcode: r.code, code: r.code, media: meta?.media ?? 'dvd', found: !!meta, book: meta, existing });
+  });
+
+  route('GET', '/api/search', async (req, res) => {
+    const q = (req.url.searchParams.get('q') ?? '').replace(/\s+/g, ' ').trim();
+    if (q.length < 2) throw new HttpError(400, 'Type at least 2 characters.');
+    if (q.length > 200) throw new HttpError(400, 'That search is too long.');
+    let found;
+    try { found = await search(q); }
+    catch (e) {
+      if (e instanceof LookupError) {
+        logProblem(`Search for "${q}" failed: ${describeProviders(e.providers)}`);
+        throw new HttpError(502, 'Could not reach the book databases. Check the server\'s internet connection.', { providers: e.providers });
+      }
+      throw e;
+    }
+    // Tell the client which candidates are already on the shelf.
+    const results = found.results.map((r) => ({ ...r, in_library: (r.isbn13 && db.findByIsbn(r.isbn13)?.id) || null }));
+    send(res, 200, { query: q, results, provider_errors: found.provider_errors });
   });
 
   route('GET', '/api/books', async (req, res) => {
@@ -377,7 +447,7 @@ export function createApp({ db, lookup, lookupDisc = async () => null, tmdb = { 
     if (isbn13) {
       const r = await lookupSafe(isbn13);
       meta = r.meta;
-      if (!meta && !fields.title) {
+      if ((!meta || meta.incomplete) && !fields.title) {
         if (r.error) throw new HttpError(502, 'Could not reach the book databases and no title was given.', { providers: r.error.providers });
         throw new HttpError(404, 'No metadata found for that ISBN. Add the title manually.', { notFound: true });
       }
@@ -425,9 +495,11 @@ export function createApp({ db, lookup, lookupDisc = async () => null, tmdb = { 
         ? { genres: base.genres ?? [], tv: !!base.tv, fourK: !!base.fourK, sources: base.sources ?? [], ...(base.tmdb ? { tmdb: base.tmdb } : {}) }
         : { subjects: base.subjects, categories: base.categories, dewey: base.dewey, sources: base.sources ?? [] },
     };
-    let book = db.insert(row);
-    const file = await saveCover(book.id, base.cover_url);
-    if (file) book = db.update(book.id, { cover_file: file });
+    const book = db.insert(row);
+    // A cover URL from a search result (books with no ISBN to look up). downloadCover only fetches https URLs on
+    // the allow-listed cover hosts, so a hand-made request can't point the server at anything else.
+    const pickedCover = typeof body.cover_url === 'string' ? body.cover_url.slice(0, 500) : '';
+    fetchCoverInBackground(book, base.cover_url || pickedCover); // the add must not wait on a slow image host
     send(res, 201, book);
   });
 
@@ -527,7 +599,24 @@ export function createApp({ db, lookup, lookupDisc = async () => null, tmdb = { 
     });
   });
 
-  route('GET', '/covers/(\\d+\\.(?:jpg|png|webp|gif))', async (req, res, m) => {
+  // Attach/replace a cover with the user's own photo. Raw image bytes in the body (no base64, no multipart).
+  route('PUT', '/api/books/(\\d+)/cover', async (req, res, m) => {
+    const id = Number(m[1]);
+    const book = db.get(id);
+    if (!book) throw new HttpError(404, 'Book not found');
+    const buf = await readBuffer(req, MAX_COVER_UPLOAD);
+    const ext = sniffImage(buf); // trust the bytes, not the Content-Type header
+    if (!ext) throw new HttpError(415, 'That file is not a JPEG, PNG or WebP image.');
+    await mkdir(coversDir, { recursive: true });
+    // A fresh filename per upload so browsers and the service worker never show a stale cached cover.
+    const file = `${id}-${Date.now().toString(36)}.${ext}`;
+    await writeFile(join(coversDir, file), buf);
+    const updated = db.update(id, { cover_file: file });
+    if (book.cover_file) await unlink(join(coversDir, book.cover_file)).catch(() => {});
+    send(res, 200, updated);
+  });
+
+  route('GET', '/covers/(\\d+(?:-[a-z0-9]+)?\\.(?:jpg|png|webp|gif))', async (req, res, m) => {
     const data = await readFile(join(coversDir, m[1])).catch(() => null);
     if (!data) throw new HttpError(404, 'No cover');
     send(res, 200, data, { 'Content-Type': MIME[extname(m[1])], 'Cache-Control': 'private, max-age=86400' });
@@ -545,7 +634,7 @@ export function createApp({ db, lookup, lookupDisc = async () => null, tmdb = { 
     send(res, 200, await readFile(file), { 'Content-Type': type, 'Cache-Control': cache });
   }
 
-  return async function handler(req, res) {
+  async function handler(req, res) {
     try {
       const url = new URL(req.url, 'http://localhost');
       req.url = url; // handlers read query params from req.url.searchParams
@@ -569,7 +658,9 @@ export function createApp({ db, lookup, lookupDisc = async () => null, tmdb = { 
       console.error('Unhandled error:', e);
       return send(res, 500, { error: 'Something went wrong on the server.' });
     }
-  };
+  }
+  handler.idle = idle;
+  return handler;
 }
 
 // ---------------------------------------------------------------- utilities
@@ -602,6 +693,33 @@ async function loadSecret(path) {
     await writeFile(path, s, { mode: 0o600 });
     return s;
   }
+}
+
+/** Run at most `max` async jobs at once; extra jobs wait in a queue (dropped, rejecting, beyond `maxQueue`). */
+function createLimiter(max, maxQueue = Infinity) {
+  let active = 0;
+  const queue = [];
+  const pump = () => {
+    while (active < max && queue.length) {
+      const { fn, resolve, reject } = queue.shift();
+      active++;
+      Promise.resolve().then(fn).then(resolve, reject).finally(() => { active--; pump(); });
+    }
+  };
+  return (fn) => new Promise((resolve, reject) => {
+    if (queue.length >= maxQueue) return reject(new Error('cover queue is full'));
+    queue.push({ fn, resolve, reject });
+    pump();
+  });
+}
+
+/** Identify an image by its magic bytes. Only formats browsers render safely; SVG/GIF are deliberately excluded. */
+function sniffImage(b) {
+  if (b.length < 12) return null;
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpg';
+  if (b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'png';
+  if (b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return 'webp';
+  return null;
 }
 
 /** CSV cell with quoting, plus a leading-quote guard against spreadsheet formula injection. */
