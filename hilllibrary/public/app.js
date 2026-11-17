@@ -90,6 +90,12 @@ function put(parent, ...kids) {
   return parent;
 }
 
+/** replaceChildren() that flattens arrays and skips null/false (the native method would insert the text "null"). */
+function swap(parent, ...kids) {
+  parent.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+  return parent;
+}
+
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 const authorsText = (b) => (b.authors?.length ? b.authors.join(', ') : 'Unknown author');
 const changed = () => window.dispatchEvent(new CustomEvent('library-changed'));
@@ -256,7 +262,9 @@ async function viewLibrary(page, params) {
       const nothing = state.facets.total === 0 && !q && !Object.values(filters).some(Boolean);
       list.replaceChildren(h('div', { class: 'empty' },
         h('p', {}, nothing ? 'Your library is empty.' : 'No books match.'),
-        nothing ? h('a', { class: 'btn primary', href: '#/scan' }, 'Scan your first book') : h('a', { class: 'btn', href: '#/library' }, 'Clear search and filters')));
+        nothing ? h('a', { class: 'btn primary', href: '#/scan' }, 'Scan your first book') : null,
+        q ? h('a', { class: 'btn primary', href: `#/scan?title=${encodeURIComponent(q)}` }, `Search online for “${q}”`) : null,
+        !nothing ? h('a', { class: 'btn', href: '#/library' }, 'Clear search and filters') : null));
       return;
     }
     const grid = () => h('div', { class: `books${view === 'list' ? ' list' : ''}` });
@@ -303,7 +311,9 @@ async function viewLibrary(page, params) {
   chips.replaceChildren(...active.map(([k, v]) => h('a', { class: 'chip active', href: urlFor({ [k]: '' }), 'aria-label': `Remove filter ${v}` }, v, ' ✕')));
 
   put(page, 
-    h('div', { class: 'topbar' }, h('h1', {}, 'Library'), h('button', { class: 'btn small', type: 'button', onclick: () => openBook(null) }, '+ Add manually')),
+    h('div', { class: 'topbar' }, h('h1', {}, 'Library'),
+      h('div', { class: 'row' }, h('a', { class: 'btn small primary', href: '#/scan?find=1' }, 'Find a book'),
+        h('button', { class: 'btn small', type: 'button', onclick: () => openBook(null) }, '+ Add manually'))),
     h('div', { class: 'searchbar' }, search),
     h('div', { class: 'filters' }, sortSel, statusSel, viewBtn, count),
     chips, list,
@@ -364,7 +374,7 @@ async function viewMore(page) {
 }
 
 // --------------------------------------------------------------------- scan
-async function viewScan(page) {
+async function viewScan(page, params = new URLSearchParams()) {
   const problem = cameraProblem();
   const recent = [];
   let autoAdd = pref.get('autoAdd', false);
@@ -375,6 +385,7 @@ async function viewScan(page) {
   const status = h('p', { class: 'statusline', role: 'status', 'aria-live': 'polite' });
   const result = h('div', { 'aria-live': 'polite' });
   const recentList = h('ul', { class: 'recent' });
+  const recentHeading = h('h2', { class: 'hidden' }, 'Added this session');
   const startBtn = h('button', { class: 'btn primary', type: 'button' }, 'Start camera');
   const torchBtn = h('button', { class: 'btn hidden', type: 'button' }, 'Light');
   // One photo from the phone's own camera app instead of a live video feed. Works on plain HTTP too.
@@ -398,6 +409,7 @@ async function viewScan(page) {
   const nextBtn = (label = 'Scan next') => h('button', { class: 'btn', type: 'button', onclick: next }, label);
 
   function drawRecent() {
+    recentHeading.classList.toggle('hidden', !recent.length);
     recentList.replaceChildren(...recent.map((r) => h('li', {},
       h('span', { class: 'grow' }, h('b', {}, r.book.title), ` — ${authorsText(r.book)}`),
       withHue(h('span', { class: 'pill genre' }, r.book.genre), r.book.genre),
@@ -463,7 +475,7 @@ async function viewScan(page) {
         nextBtn('Skip'))));
   }
 
-  async function handle(isbn) {
+  async function handle(isbn, { forcePreview = false } = {}) {
     if (busy) return;
     busy = true;
     activeScanner?.pause();
@@ -480,7 +492,7 @@ async function viewScan(page) {
         if (autoAdd) setTimeout(() => { if (busy && activeScanner) next(); }, 1800);
       } else if (!r.found) {
         showNoMatch(isbn, r.partial);
-      } else if (autoAdd) {
+      } else if (autoAdd && !forcePreview) {
         const book = await addBook(isbn);
         setStatus(book ? `Added “${book.title}”. Next…` : '');
         setTimeout(() => { if (busy) next(); }, 1000);
@@ -491,6 +503,64 @@ async function viewScan(page) {
         h('button', { class: 'btn small', type: 'button', onclick: () => { busy = false; handle(isbn); } }, 'Try again'), nextBtn('Cancel'))));
     }
     reveal();
+  }
+
+  // ---- find by title / author
+  const titleInput = h('input', { type: 'search', id: 'title-in', autocomplete: 'off', enterkeyhint: 'search', maxlength: '200',
+    placeholder: 'Title or author, e.g. “dune herbert”', 'aria-label': 'Search for a book by title or author', value: params.get('title') ?? '' });
+  const findBtn = h('button', { class: 'btn', type: 'submit' }, 'Search');
+  const findResults = h('div', { 'aria-live': 'polite' });
+  let findSeq = 0;
+
+  /** Pick a search result: already owned -> open it; has an ISBN -> the normal preview; otherwise a pre-filled form. */
+  async function choose(r) {
+    if (r.in_library) {
+      try { openBook(await api(`/api/books/${r.in_library}`)); } catch (e) { toast(e.message, { error: true }); }
+    } else if (r.isbn13) {
+      busy = false; handle(r.isbn13, { forcePreview: true });
+    } else {
+      openBook(null, { prefill: { title: r.title, subtitle: r.subtitle, authors: r.authors, publisher: r.publisher, published: r.published },
+        coverUrl: r.cover_url, location: locInput.value });
+    }
+  }
+
+  const resultItem = (r) => h('li', { class: 'result' },
+    h('div', { class: 'cover' }, r.cover_url
+      ? h('img', { src: r.cover_url, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' })
+      : withHue(h('div', { class: 'fake-cover' }, r.title), r.title)),
+    h('div', { class: 'meta' },
+      h('div', { class: 't' }, r.title, r.subtitle ? `: ${r.subtitle}` : ''),
+      h('div', { class: 'a' }, [r.authors.join(', '), r.published.slice(0, 4), r.publisher].filter(Boolean).join(' · ') || 'Unknown author'),
+      r.in_library ? h('span', { class: 'pill ok' }, 'In your library') : (!r.isbn13 ? h('span', { class: 'pill warn' }, 'no ISBN') : null)),
+    h('button', { class: 'btn small', type: 'button', onclick: () => choose(r) }, r.in_library ? 'View' : r.isbn13 ? 'Preview' : 'Add details'));
+
+  function drawFind(q, r) {
+    const manual = h('button', { class: 'btn', type: 'button', onclick: () => openBook(null, { prefill: { title: q }, location: locInput.value }) }, 'Add it manually');
+    swap(findResults,
+      r.provider_errors?.length ? h('div', { class: 'notice warn' }, 'One book database didn’t answer, so this list may be incomplete.') : null,
+      r.results.length
+        ? [h('ul', { class: 'results' }, r.results.map(resultItem)), h('p', { class: 'muted' }, 'Not the right one? Try the author’s name too, or ', manual)]
+        : h('div', { class: 'notice' }, `No books found for “${q}”. Try fewer or different words.`, h('div', { class: 'row' }, manual)));
+  }
+
+  async function runFind(raw) {
+    const q = raw.replace(/\s+/g, ' ').trim();
+    if (q.length < 2) { findResults.replaceChildren(h('p', { class: 'muted' }, 'Type at least 2 characters.')); return; }
+    const mine = ++findSeq;
+    findBtn.disabled = true;
+    findResults.replaceChildren(h('p', { class: 'muted' }, `Searching for “${q}”…`));
+    try {
+      const r = await api(`/api/search?q=${encodeURIComponent(q)}`);
+      if (mine === findSeq) {
+        drawFind(q, r);
+        // On a phone the camera view fills the screen above this: bring the search box to the top so the results are visible.
+        titleInput.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      }
+    } catch (e) {
+      if (mine === findSeq) findResults.replaceChildren(h('div', { class: 'notice err', role: 'alert' }, e.message));
+    } finally {
+      if (mine === findSeq) findBtn.disabled = false;
+    }
   }
 
   startBtn.addEventListener('click', async () => {
@@ -529,11 +599,17 @@ async function viewScan(page) {
       if (!/^(\d{9}[\dXx]|\d{13})$/.test(digits)) { setStatus('That doesn’t look like an ISBN: it should be 10 or 13 characters.'); return; }
       isbnInput.value = ''; busy = false; handle(digits);
     } }, h('div', { class: 'grow' }, h('label', { class: 'sr-only', for: 'isbn-in' }, 'ISBN'), isbnInput), h('button', { class: 'btn', type: 'submit' }, 'Look up')),
+    h('h2', { class: 'section-title' }, 'Or find it by title or author'),
+    h('form', { class: 'row', onsubmit: (e) => { e.preventDefault(); runFind(titleInput.value); } },
+      h('div', { class: 'grow' }, h('label', { class: 'sr-only', for: 'title-in' }, 'Title or author'), titleInput), findBtn),
+    findResults,
     result,
     h('datalist', { id: 'loc-list' }, state.facets.locations.map((l) => h('option', { value: l.name }))),
-    recent.length ? h('h2', {}, 'Added this session') : null,
+    recentHeading,
     recentList,
   );
+  if (params.get('title')) runFind(params.get('title'));
+  else if (params.get('find')) titleInput.focus();
 }
 
 // ------------------------------------------------------------- book dialog
@@ -568,7 +644,7 @@ function openBook(book, opts = {}) {
   };
   f.notes.value = b.notes; f.description.value = b.description;
 
-  const autoLabel = creating && !opts.prefill ? 'Auto (decide from the title)' : `Auto (detected: ${b.genre})`;
+  const autoLabel = creating && !p.genre ? 'Auto (decide from the title)' : `Auto (detected: ${b.genre})`;
   const genreSel = h('select', { id: 'f-genre' },
     h('option', { value: 'auto', selected: !b.genre_locked }, autoLabel),
     ...[...new Set([...genreNames, 'Uncategorized', ...(b.genre_locked ? [b.genre] : [])])].map((g) => h('option', { value: g, selected: b.genre_locked && b.genre === g }, g)));
@@ -605,8 +681,9 @@ function openBook(book, opts = {}) {
   const photoBtns = h('div', { class: 'row' });
   const drawCover = () => coverBox.replaceChildren(photoUrl
     ? h('img', { src: photoUrl, alt: 'New cover photo' })
+    : creating && opts.coverUrl ? h('img', { src: opts.coverUrl, alt: 'Cover from the search result', referrerpolicy: 'no-referrer' })
     : creating ? withHue(h('div', { class: 'fake-cover' }, 'No cover yet'), b.genre) : coverEl(book));
-  const drawPhotoBtns = () => photoBtns.replaceChildren(
+  const drawPhotoBtns = () => swap(photoBtns,
     h('button', { class: 'btn small', type: 'button', onclick: async () => setPhoto(await pickPhoto({ capture: true })) }, 'Take cover photo'),
     h('button', { class: 'btn small', type: 'button', onclick: async () => setPhoto(await pickPhoto()) }, 'Choose image'),
     photoBlob ? h('button', { class: 'btn small', type: 'button', onclick: () => { URL.revokeObjectURL(photoUrl); photoBlob = null; photoUrl = ''; drawCover(); drawPhotoBtns(); } }, 'Remove photo') : null);
@@ -639,7 +716,7 @@ function openBook(book, opts = {}) {
       let saved;
       if (creating) {
         const isbn = val(f.isbn);
-        saved = await api('/api/books', { method: 'POST', body: { ...(isbn ? { isbn } : {}), ...patch } });
+        saved = await api('/api/books', { method: 'POST', body: { ...(isbn ? { isbn } : {}), ...(opts.coverUrl ? { cover_url: opts.coverUrl } : {}), ...patch } });
         toast(`Added “${saved.title}”`);
       } else {
         saved = await api(`/api/books/${book.id}`, { method: 'PATCH', body: patch });

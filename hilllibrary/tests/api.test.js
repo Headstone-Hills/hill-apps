@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LibraryDb } from '../server/db.js';
 import { createApp } from '../server/app.js';
-import { createLookup, createBreaker, mergeProviders, fetchOpenLibrary, fetchGoogleBooks, downloadCover, LookupError } from '../server/metadata.js';
+import { toIsbn10 } from '../server/isbn.js';
+import { createLookup, createSearch, createBreaker, mergeSearchResults, searchOpenLibrary, searchGoogleBooks, mergeProviders, fetchOpenLibrary, fetchGoogleBooks, downloadCover, LookupError } from '../server/metadata.js';
 
 // ---- fake providers (shapes follow the documented Open Library / Google Books responses) ----
 const DUNE = '9780441013593';
@@ -36,13 +37,13 @@ function fakeFetch({ ol = OL, gb = GB, olStatus = 200, gbStatus = 200 } = {}) {
   return f;
 }
 
-async function boot({ password = '', fetchImpl = fakeFetch(), lookup } = {}) {
+async function boot({ password = '', fetchImpl = fakeFetch(), lookup, search } = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), 'hl-test-'));
   const db = new LibraryDb(':memory:');
   const publicDir = join(dataDir, 'public');
   mkdirSync(publicDir);
   writeFileSync(join(publicDir, 'index.html'), '<h1>hi</h1>');
-  const handler = createApp({ db, lookup: lookup ?? createLookup({ fetchImpl }), dataDir, publicDir, password, fetchImpl });
+  const handler = createApp({ db, lookup: lookup ?? createLookup({ fetchImpl }), search, dataDir, publicDir, password, fetchImpl });
   const server = createServer(handler);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -652,4 +653,174 @@ test('cache: bounded, oldest entries evicted first', async () => {
   const lookup = createLookup({ fetchImpl, maxCache: 2, graceMs: 10 });
   for (const i of [1, 2, 3]) await lookup(isbnOf(i));
   assert.equal(lookup.cacheSize(), 2);                            // 3 looked up, only the newest 2 kept
+});
+
+
+// ------------------------------------------------ title search
+const GATSBY = '9780743273565';
+const OL_SEARCH = { docs: [
+  { key: '/works/OL468431W', title: 'The Great Gatsby', author_name: ['F. Scott Fitzgerald'], first_publish_year: 1925,
+    isbn: ['1234567890123', 'not-an-isbn', GATSBY, '9780141182636'], cover_i: 8410459, publisher: ['Scribner', 'Penguin'] },
+  { key: '/works/OL1W', title: "Gatsby's Girl", author_name: ['Caroline Preston'], first_publish_year: 2007 },            // no ISBN at all
+  { key: '/works/OL2W', title: 'Something Else Entirely', author_name: ['Nobody'], first_publish_year: 1999, isbn: ['9780000001009'] },
+] };
+const GB_SEARCH = { items: [
+  { volumeInfo: { title: 'The Great Gatsby', authors: ['F. Scott Fitzgerald'], publishedDate: '2004-09-30', publisher: 'Scribner',
+    industryIdentifiers: [{ type: 'ISBN_10', identifier: toIsbn10(GATSBY) }, { type: 'ISBN_13', identifier: GATSBY }], imageLinks: { thumbnail: 'http://books.google.com/g.jpg&edge=curl' } } },
+  { volumeInfo: { title: 'Great Gatsby Study Guide', authors: ['Some Teacher'], publishedDate: '2012',
+    industryIdentifiers: [{ type: 'ISBN_10', identifier: '0140449132' }] } },                                              // ISBN-10 only
+  { volumeInfo: { title: 'The Great Gatsby', authors: ['F. Scott Fitzgerald'], publishedDate: '1999' } },                      // same work, no ISBN
+] };
+
+function searchFetch({ ol = OL_SEARCH, gb = GB_SEARCH, olStatus = 200, gbStatus = 200, olDelay = 0, gbDelay = 0 } = {}) {
+  const calls = { ol: 0, gb: 0, urls: [] };
+  const f = async (url) => {
+    const u = String(url); calls.urls.push(u);
+    if (u.includes('openlibrary.org/search.json')) { calls.ol++; await sleep(olDelay); return { ok: olStatus < 400, status: olStatus, json: async () => ol }; }
+    if (u.includes('googleapis.com/books/v1/volumes')) { calls.gb++; await sleep(gbDelay); return { ok: gbStatus < 400, status: gbStatus, json: async () => gb }; }
+    return { ok: true, status: 200, headers: new Map([['content-type', 'image/jpeg']]), arrayBuffer: async () => JPEG };
+  };
+  f.calls = calls;
+  return f;
+}
+
+test('search: merges both providers, dedupes, fills gaps, converts ISBN-10, ignores junk ISBNs, ranks by title match', async () => {
+  const search = createSearch({ fetchImpl: searchFetch(), graceMs: 50 });
+  const { results } = await search('great gatsby');
+  const titles = results.map((r) => r.title);
+  assert.equal(titles[0], 'The Great Gatsby');                                  // exact-ish title match first
+  assert.equal(titles.filter((t) => t === 'The Great Gatsby').length, 1);       // 3 copies across providers -> 1 row
+  const g = results[0];
+  assert.equal(g.isbn13, GATSBY);                                               // the valid one; the junk entries were skipped
+  assert.deepEqual(g.sources.sort(), ['googlebooks', 'openlibrary']);
+  assert.equal(g.publisher, 'Scribner');
+  assert.equal(g.cover_url, 'https://covers.openlibrary.org/b/id/8410459-M.jpg');  // first provider's cover wins, gaps still filled
+  const guide = results.find((r) => r.title === 'Great Gatsby Study Guide');
+  assert.equal(guide.isbn13, '9780140449136');                                  // ISBN-10 -> ISBN-13
+  assert.equal(results.find((r) => r.title === "Gatsby's Girl").isbn13, null);  // kept, just without an ISBN
+  assert.equal(titles.at(-1), 'Something Else Entirely');                       // unrelated result ranks last
+});
+
+test('search: unknown-ISBN Google https-ifies thumbnails and drops the curl edge param', async () => {
+  const gb = await searchGoogleBooks('x', searchFetch());
+  assert.equal(gb[0].cover_url, 'https://books.google.com/g.jpg');
+});
+
+test('search endpoint: validates input, marks books already in the library, annotates by ISBN', async () => {
+  const f = searchFetch();
+  const t = await boot({ fetchImpl: f });
+  try {
+    assert.equal((await t.req('GET', '/api/search')).status, 400);
+    assert.equal((await t.req('GET', '/api/search?q=a')).status, 400);
+    assert.equal((await t.req('GET', `/api/search?q=${'x'.repeat(201)}`)).status, 400);
+    const before = await t.req('GET', '/api/search?q=great%20gatsby');
+    assert.equal(before.status, 200);
+    assert.equal(before.json.query, 'great gatsby');
+    assert.equal(before.json.results[0].in_library, null);
+
+    await t.req('POST', '/api/books', { isbn: GATSBY, title: 'The Great Gatsby' });   // lookup finds nothing in this fake, so the title is supplied
+    const after = await t.req('GET', '/api/search?q=great%20gatsby%20%20');            // extra spaces are normalised, cache is per normalised query
+    assert.ok(after.json.results[0].in_library > 0);
+  } finally { await t.close(); }
+});
+
+test('search: one provider failing still returns the other\'s results; both failing is a 502', async () => {
+  const half = createSearch({ fetchImpl: searchFetch({ gbStatus: 500 }), graceMs: 20 });
+  const r = await half('great gatsby');
+  assert.ok(r.results.length > 0);
+  assert.equal(r.provider_errors[0].provider, 'googlebooks');
+
+  const t = await boot({ fetchImpl: searchFetch({ olStatus: 503, gbStatus: 500 }) });
+  try {
+    const res = await t.req('GET', '/api/search?q=anything');
+    assert.equal(res.status, 502);
+    assert.equal(res.json.providers.length, 2);
+  } finally { await t.close(); }
+});
+
+test('search: no results is a normal empty answer, not an error', async () => {
+  const t = await boot({ fetchImpl: searchFetch({ ol: { docs: [] }, gb: { totalItems: 0 } }) });
+  try {
+    const res = await t.req('GET', '/api/search?q=zzzzzz');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.json.results, []);
+  } finally { await t.close(); }
+});
+
+test('search: malformed provider payloads are tolerated', async () => {
+  const f = searchFetch({ ol: { docs: [null, 5, { title: 42 }, { title: 'Ok', isbn: 'x', cover_i: 'nope', author_name: 'str' }] }, gb: { items: [null, {}, { volumeInfo: { title: ['no'] } }, { volumeInfo: { title: 'Fine', industryIdentifiers: 'bad' } }] } });
+  const { results } = await createSearch({ fetchImpl: f, graceMs: 10 })('ok fine');
+  assert.deepEqual(results.map((r) => r.title).sort(), ['Fine', 'Ok']);
+  assert.ok(results.every((r) => r.isbn13 === null && r.cover_url === ''));
+  assert.deepEqual(await searchOpenLibrary('x', searchFetch({ ol: { docs: 'nope' } })), []);
+});
+
+test('search: needs login', async () => {
+  const t = await boot({ password: 'correct horse battery', fetchImpl: searchFetch() });
+  try { assert.equal((await t.req('GET', '/api/search?q=gatsby')).status, 401); } finally { await t.close(); }
+});
+
+test('search: same work with different edition ISBNs from the two providers is one row', () => {
+  const merged = mergeSearchResults('dune', [
+    [{ title: 'Dune', authors: ['Frank Herbert'], isbn13: '9780441013593', cover_url: '', published: '1965', publisher: '', source: 'openlibrary' }],
+    [{ title: 'Dune', authors: ['Frank Herbert'], isbn13: '9780340960196', cover_url: 'https://x/y.jpg', published: '', publisher: 'Hodder', source: 'googlebooks' }],
+  ]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].isbn13, '9780441013593');                  // first provider's edition kept
+  assert.equal(merged[0].cover_url, 'https://x/y.jpg');             // gaps filled from the duplicate
+  assert.equal(merged[0].publisher, 'Hodder');
+});
+
+test('search speed: answers on the first provider with results, caches, shares in-flight queries', async () => {
+  const f = searchFetch({ olDelay: 10, gbDelay: 500 });
+  const search = createSearch({ fetchImpl: f, graceMs: 60 });
+  const t0 = Date.now();
+  const [a, b] = await Promise.all([search('great gatsby'), search('Great  Gatsby')]);     // same query after normalising
+  assert.ok(Date.now() - t0 < 300, 'should not wait 500 ms for the slow provider');
+  assert.equal(a, b);
+  assert.deepEqual(a.results[0].sources, ['openlibrary']);
+  assert.equal(f.calls.ol, 1);
+  await sleep(600);                                                 // the slow provider lands and upgrades the cached entry
+  const later = await search('great gatsby');
+  assert.deepEqual(later.results[0].sources.sort(), ['googlebooks', 'openlibrary']);
+  assert.equal(f.calls.gb, 1);
+  assert.equal(search.cacheSize(), 1);
+});
+
+test('search shares the circuit breaker with lookup: a provider throttling lookups is skipped by search', async () => {
+  const f = timedFetch({ gbStatus: 429 });
+  const lookup = createLookup({ fetchImpl: f, graceMs: 20 });
+  await lookup(DUNE);                                               // Google answers 429 -> breaker opens
+  await sleep(10);
+  assert.equal(lookup.breaker.isOpen('googlebooks'), true);
+  const searchF = searchFetch();
+  const search = createSearch({ fetchImpl: searchF, breaker: lookup.breaker, graceMs: 20 });
+  const r = await search('great gatsby');
+  assert.equal(searchF.calls.gb, 0, 'search must not call a paused provider');
+  assert.ok(r.results.length > 0);
+});
+
+test('add from a search result without an ISBN: cover_url is fetched only from allow-listed hosts', async () => {
+  const f = searchFetch();
+  const t = await boot({ fetchImpl: f });
+  try {
+    const ok = await t.req('POST', '/api/books', { title: "Gatsby's Girl", authors: ['Caroline Preston'], cover_url: 'https://covers.openlibrary.org/b/id/1-M.jpg' });
+    assert.equal(ok.status, 201);
+    const evil = await t.req('POST', '/api/books', { title: 'Evil', cover_url: 'https://evil.example.com/steal.jpg' });
+    const internal = await t.req('POST', '/api/books', { title: 'Internal', cover_url: 'https://127.0.0.1:8080/secret' });
+    assert.equal(evil.status, 201); assert.equal(internal.status, 201);
+    await t.idle();
+    assert.equal(t.db.get(ok.json.id).has_cover, true);
+    assert.equal(t.db.get(evil.json.id).has_cover, false);
+    assert.equal(t.db.get(internal.json.id).has_cover, false);
+    assert.ok(!f.calls.urls.some((u) => /evil\.example|127\.0\.0\.1/.test(u)), 'the server must never request a non-allow-listed host');
+  } finally { await t.close(); }
+});
+
+test('search ranking ignores a leading article, and prefers an exact title over a longer one that merely starts with it', () => {
+  const mk = (title) => ({ title, authors: ['A'], isbn13: null, cover_url: '', published: '', publisher: '', source: 'openlibrary' });
+  const r = mergeSearchResults('great gatsby', [[mk('Great Gatsby Study Guide'), mk('The Great Gatsby'), mk('Gatsby')]]);
+  assert.deepEqual(r.map((x) => x.title), ['The Great Gatsby', 'Great Gatsby Study Guide', 'Gatsby']);
+  const r2 = mergeSearchResults('the hobbit', [[mk('The Hobbit: There and Back Again'), mk('Hobbit')]]);
+  assert.equal(r2[0].title, 'Hobbit');                                // exact once articles are ignored
 });

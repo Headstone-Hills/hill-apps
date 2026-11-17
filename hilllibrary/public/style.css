@@ -198,3 +198,13 @@ details summary { cursor: pointer; font-weight: 600; margin: 6px 0; }
 .page > .row, .page > form.row { margin: 12px 0; }
 .page > .viewport { margin-bottom: 4px; }
 .toast { opacity: .96; }
+
+/* title search results */
+.section-title { margin: 22px 0 8px; font-size: 1.05rem; }
+.results { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; }
+.result { display: flex; gap: 12px; align-items: center; padding: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.result .cover { width: 44px; flex: none; aspect-ratio: 2 / 3; border-radius: 4px; overflow: hidden; background: var(--surface-2); box-shadow: var(--shadow); }
+.result .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.result .meta { flex: 1; min-width: 0; }
+.result .t { font-weight: 600; font-size: .95rem; line-height: 1.25; }
+.result .a { color: var(--ink-2); font-size: .82rem; margin-bottom: 2px; }

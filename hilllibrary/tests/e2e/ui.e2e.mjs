@@ -24,13 +24,24 @@ const OL = {
     subjects: [{ name: 'Science fiction' }, { name: 'Fiction' }, { name: 'Ecology' }], classifications: { dewey_decimal_class: ['813/.54'] } },
   'ISBN:9780547928227': { title: 'The Hobbit', authors: [{ name: 'J. R. R. Tolkien' }], publishers: [{ name: 'Mariner' }], publish_date: '2012', number_of_pages: 300,
     subjects: [{ name: 'Fantasy fiction' }, { name: 'Dragons' }, { name: 'Wizards' }, { name: 'Fiction' }] },
+  'ISBN:9780000001009': { title: 'Searchable Wonder', authors: [{ name: 'Ada Writer' }], publishers: [{ name: 'Wonder Press' }], publish_date: '2001',
+    subjects: [{ name: 'Fantasy fiction' }, { name: 'Dragons' }, { name: 'Fiction' }] },
   // A record with no title: the providers know *something*, but it is not a match.
   'ISBN:9780743273565': { publishers: [{ name: 'Scribner' }], number_of_pages: 180, authors: [{ name: 'F. Scott Fitzgerald' }],
     subjects: [{ name: 'Rich people' }, { name: 'Long Island (N.Y.)' }, { name: 'Fiction' }] },
 };
+// Title-search responses (shapes follow the providers' documented search formats).
+const OL_SEARCH = { docs: [
+  { title: 'Searchable Wonder', author_name: ['Ada Writer'], first_publish_year: 2001, isbn: ['9780000001009'], cover_i: 1, publisher: ['Wonder Press'] },
+  { title: 'Searchable Mystery (no isbn)', author_name: ['Bo Writer'], first_publish_year: 1995, cover_i: 2, publisher: ['Old Press'] },
+] };
+const GB_SEARCH = { items: [{ volumeInfo: { title: 'Searchable Wonder', authors: ['Ada Writer'], publishedDate: '2001',
+  industryIdentifiers: [{ type: 'ISBN_13', identifier: '9780000001009' }] } }] };
 const fakeFetch = async (url) => {
   const u = String(url);
   const json = (body) => ({ ok: true, status: 200, json: async () => body });
+  if (u.includes('openlibrary.org/search.json')) return json(/searchable/i.test(decodeURIComponent(u)) ? OL_SEARCH : { docs: [] });
+  if (u.includes('googleapis.com/books/v1/volumes') && !u.includes('q=isbn:')) return json(/searchable/i.test(decodeURIComponent(u)) ? GB_SEARCH : { totalItems: 0 });
   if (u.includes('openlibrary.org/api/books')) return json(OL);
   if (u.includes('googleapis.com')) return json({ totalItems: 0 });
   return { ok: false, status: 404 };
@@ -39,7 +50,8 @@ const fakeFetch = async (url) => {
 const dataDir = mkdtempSync(join(tmpdir(), 'hl-e2e-'));
 const publicDir = join(here, '..', '..', 'public');
 const db = new LibraryDb(':memory:');
-const server = createServer(createApp({ db, lookup: createLookup({ fetchImpl: fakeFetch }), dataDir, publicDir, fetchImpl: fakeFetch }));
+const handler = createApp({ db, lookup: createLookup({ fetchImpl: fakeFetch }), dataDir, publicDir, fetchImpl: fakeFetch });
+const server = createServer(handler);
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 
@@ -52,6 +64,8 @@ await ctx.addInitScript(() => {
   const md = navigator.mediaDevices;
   if (md?.getUserMedia) { const orig = md.getUserMedia.bind(md); md.getUserMedia = (...a) => { window.__gum++; return orig(...a); }; }
 });
+const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+await ctx.route(/^https:\/\/(covers\.openlibrary\.org|books\.google\.com)\//, (route) => route.fulfill({ contentType: 'image/png', body: PNG_1PX }));
 const page = await ctx.newPage();
 const problems = [];
 page.on('console', (m) => { if (['error', 'warning'].includes(m.type())) problems.push(`console.${m.type()}: ${m.text()}`); });
@@ -156,7 +170,67 @@ try {
   const stored = db.findByIsbn('9780743273565');
   assert.equal(stored.publisher, 'Scribner'); assert.equal(stored.pages, 180);       // data really saved, not just shown
 
+  step('title search: results, preview and add');
+  await page.goto(`${base}/#/scan`);
+  await page.locator('#title-in').fill('searchable');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await page.locator('.result', { hasText: 'Searchable Wonder' }).waitFor();
+  await page.locator('.result', { hasText: 'Searchable Mystery (no isbn)' }).waitFor();
+  assert.equal(await page.locator('.result').count(), 2, 'the two providers\' copies of "Searchable Wonder" should be merged into one row');
+  await page.waitForTimeout(900); // let the smooth scroll finish
+  assert.ok(await page.locator('.result').first().isVisible() && (await page.locator('.result').first().boundingBox()).y < 844, 'results should be on screen after searching, not below the fold');
+  await shot('10-title-search');
+  await page.locator('.result', { hasText: 'Searchable Wonder' }).getByRole('button', { name: 'Preview' }).click();
+  await page.locator('.preview h2', { hasText: 'Searchable Wonder' }).waitFor();          // the normal ISBN preview, with full metadata
+  await page.locator('.preview .pill.genre', { hasText: 'Fantasy' }).waitFor();
+  await page.getByRole('button', { name: 'Add to library' }).click();
+  await page.getByText('Added “Searchable Wonder”').first().waitFor();
+
+  step('title search: a book already on the shelf is marked, and opens instead of re-adding');
+  await page.locator('#title-in').fill('searchable');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  const owned = page.locator('.result', { hasText: 'Searchable Wonder' });
+  await owned.locator('.pill.ok', { hasText: 'In your library' }).waitFor();
+  await owned.getByRole('button', { name: 'View' }).click();
+  await page.locator('#sheet').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#f-title').inputValue(), 'Searchable Wonder');
+  await page.keyboard.press('Escape');
+
+  step('title search: a result with no ISBN opens a pre-filled form and sends its cover URL');
+  await page.locator('.result', { hasText: 'Searchable Mystery' }).getByRole('button', { name: 'Add details' }).click();
+  await page.locator('#sheet').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#f-title').inputValue(), 'Searchable Mystery (no isbn)');
+  assert.equal(await page.locator('#f-auth').inputValue(), 'Bo Writer');
+  assert.equal(await page.locator('#f-pub').inputValue(), 'Old Press');
+  await page.locator('#sheet img[alt="Cover from the search result"]').waitFor();
+  const [post] = await Promise.all([
+    page.waitForRequest((r) => r.method() === 'POST' && r.url().endsWith('/api/books')),
+    page.locator('#sheet').getByRole('button', { name: 'Add book' }).click(),
+  ]);
+  assert.equal(JSON.parse(post.postData()).cover_url, 'https://covers.openlibrary.org/b/id/2-M.jpg');
+  await page.getByText('Added “Searchable Mystery (no isbn)”').first().waitFor();
+  await handler.idle();
+  const mystery = db.all().find((b) => b.title.startsWith('Searchable Mystery'));
+  assert.equal(mystery.isbn13, null); assert.equal(mystery.publisher, 'Old Press');
+
+  step('title search: nothing found is explained, with a way to add manually');
+  await page.locator('#title-in').fill('qqqqzzzz');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await page.getByText('No books found for “qqqqzzzz”.').waitFor();
+
+  step('entry points: Library "Find a book", and "Search online" from an empty library search');
+  await page.goto(`${base}/#/library`);
+  await page.getByRole('link', { name: 'Find a book' }).click();
+  await page.locator('#title-in').waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'title-in', 'the title box should be focused');
+  await page.goto(`${base}/#/library`);
+  await page.getByLabel('Search your library').fill('nothingmatches');
+  await page.getByRole('link', { name: /Search online for/ }).click();
+  assert.equal(await page.locator('#title-in').inputValue(), 'nothingmatches');
+  await page.getByText('No books found for “nothingmatches”.').waitFor();
+
   step('replace the cover of an existing book from its details');
+  await page.goto(`${base}/#/library`);
   await page.locator('.book', { hasText: 'Matilda' }).click();
   await page.locator('#sheet').waitFor({ state: 'visible' });
   const [chooser2] = await Promise.all([page.waitForEvent('filechooser'), page.locator('#sheet').getByRole('button', { name: 'Choose image' }).click()]);
@@ -204,6 +278,19 @@ try {
     const text = await page.locator('.page').innerText();
     assert.ok(!/\b(null|undefined|NaN)\b/.test(text), `"${route}" screen shows stray text: ${text.match(/.{0,30}\b(null|undefined|NaN)\b.{0,30}/)?.[0]}`);
   }
+
+  step('no stray text in the book dialog either (add mode and edit mode)');
+  await page.goto(`${base}/#/library`);
+  await page.getByRole('button', { name: '+ Add manually' }).click();
+  await page.locator('#sheet').waitFor({ state: 'visible' });
+  const addText = await page.locator('#sheet').innerText();
+  assert.ok(!/\b(null|undefined|NaN)\b/.test(addText), `add dialog shows stray text: ${addText.match(/.{0,30}\b(null|undefined|NaN)\b.{0,30}/)?.[0]}`);
+  await page.keyboard.press('Escape');
+  await page.locator('.book').first().click();
+  await page.locator('#sheet').waitFor({ state: 'visible' });
+  const editText = await page.locator('#sheet').innerText();
+  assert.ok(!/\b(null|undefined|NaN)\b/.test(editText), `edit dialog shows stray text: ${editText.match(/.{0,30}\b(null|undefined|NaN)\b.{0,30}/)?.[0]}`);
+  await page.keyboard.press('Escape');
 
   step('desktop layout');
   await page.setViewportSize({ width: 1280, height: 800 });

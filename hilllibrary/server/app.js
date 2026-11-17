@@ -6,7 +6,7 @@ import { join, resolve, extname, sep } from 'node:path';
 import { toIsbn13 } from './isbn.js';
 import { isStatus, cleanTag } from './db.js';
 import { classify, GENRE_NAMES, TAXONOMY, UNCATEGORIZED } from './genres.js';
-import { downloadCover, enrich, LookupError } from './metadata.js';
+import { downloadCover, enrich, LookupError, createSearch } from './metadata.js';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -25,13 +25,15 @@ class HttpError extends Error {
  * @param {object} o
  * @param {import('./db.js').LibraryDb} o.db
  * @param {(isbn13:string)=>Promise<object|null>} o.lookup
+ * @param {(q:string)=>Promise<{results:object[], provider_errors:object[]}>} [o.search]  title/author search; defaults to the real providers
  * @param {string} o.dataDir       where covers/ and .secret live
  * @param {string} o.publicDir
  * @param {string} [o.password]    empty/undefined = no auth (only safe on localhost)
  * @param {typeof fetch} [o.fetchImpl]  used for cover downloads
  * @param {string[]} [o.allowedOrigins]
  */
-export function createApp({ db, lookup, dataDir, publicDir, password = '', fetchImpl = fetch, allowedOrigins = [] }) {
+export function createApp({ db, lookup, search, dataDir, publicDir, password = '', fetchImpl = fetch, allowedOrigins = [] }) {
+  search ??= createSearch({ fetchImpl });
   const coversDir = join(dataDir, 'covers');
   const root = resolve(publicDir);
   let secretPromise;
@@ -235,6 +237,21 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
     send(res, 200, { isbn13, found: complete, book: complete ? meta : null, partial: meta && meta.incomplete ? meta : null, existing });
   });
 
+  route('GET', '/api/search', async (req, res) => {
+    const q = (req.url.searchParams.get('q') ?? '').replace(/\s+/g, ' ').trim();
+    if (q.length < 2) throw new HttpError(400, 'Type at least 2 characters.');
+    if (q.length > 200) throw new HttpError(400, 'That search is too long.');
+    let found;
+    try { found = await search(q); }
+    catch (e) {
+      if (e instanceof LookupError) throw new HttpError(502, 'Could not reach the book databases. Check the server\'s internet connection.', { providers: e.providers });
+      throw e;
+    }
+    // Tell the client which candidates are already on the shelf.
+    const results = found.results.map((r) => ({ ...r, in_library: (r.isbn13 && db.findByIsbn(r.isbn13)?.id) || null }));
+    send(res, 200, { query: q, results, provider_errors: found.provider_errors });
+  });
+
   route('GET', '/api/books', async (req, res) => {
     const q = req.url.searchParams;
     send(res, 200, db.list({
@@ -292,7 +309,10 @@ export function createApp({ db, lookup, dataDir, publicDir, password = '', fetch
       meta_raw: { subjects: base.subjects, categories: base.categories, dewey: base.dewey, sources: base.sources ?? [] },
     };
     const book = db.insert(row);
-    fetchCoverInBackground(book, base.cover_url); // the add must not wait on a slow image host
+    // A cover URL from a search result (books with no ISBN to look up). downloadCover only fetches https URLs on
+    // the allow-listed cover hosts, so a hand-made request can't point the server at anything else.
+    const pickedCover = typeof body.cover_url === 'string' ? body.cover_url.slice(0, 500) : '';
+    fetchCoverInBackground(book, base.cover_url || pickedCover); // the add must not wait on a slow image host
     send(res, 201, book);
   });
 

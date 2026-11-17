@@ -16,7 +16,7 @@ any phone, tablet or computer with a browser. Personal use, one library, no acco
 cd hilllibrary
 cp .env.example .env        # set LIBRARY_PASSWORD (8+ characters)
 npm start                   # http://localhost:3000
-npm test                    # 88 unit/API tests
+npm test                    # 100 unit/API tests
 ```
 
 Your data lives in `./data/` (`library.db` plus `covers/`). **Back that folder up.**
@@ -62,6 +62,22 @@ photos (tilt up to 15°, blur, noise, dimming, a small barcode, sideways); not y
 Scan tips: good light (there is a torch button where the device allows it), hold steady
 about 15–25 cm away, keep the whole barcode inside the box. Tick **Add automatically** and
 set a **location** to zip through a whole shelf; each add has an Undo.
+
+### Finding a book by title or author
+No barcode handy? On the **Scan** page, under the ISBN box, use **Or find it by title or author** (also reachable
+from the **Find a book** button on the Library page, and from **Search online for “…”** when a search of your own library
+finds nothing). Type words from the title and/or author (e.g. `dune herbert`) and press Search.
+
+- The server asks Open Library and Google Books at once and merges the lists: duplicates (same ISBN, or same title and
+  first author) become one row, gaps are filled from the other copy, and results are ranked by how well the title
+  matches what you typed (a leading "The/A/An" is ignored, so `great gatsby` finds *The Great Gatsby* first).
+- **Preview** (the result has an ISBN) runs the normal ISBN lookup, so you get full metadata, genre and tags, and
+  the usual Add / Edit first. **Add details** (no ISBN) opens the add form pre-filled with what the search knew, including
+  the cover. Books you already own are marked **In your library** and open instead of being added twice.
+- Search shares the throttling protection described under Metadata, and answers within moments of the first provider.
+  If only one provider answers you get a note that the list may be incomplete.
+- Results from Open Library are works, not editions, so the ISBN offered is just one edition of several; if it is not
+  the edition on your shelf, scan or type that edition's ISBN instead, or edit the details after adding.
 
 ### When a barcode has no match (cover photo)
 If the databases can't find a title, you aren't stuck:
@@ -171,6 +187,10 @@ barcode from a fake camera feed**, including a rotated/noisy/dim variant, via th
    book's details and use *needs review*. Mismatches are cheap to correct and the
    rules in `genres.js` are plain data.
 5. Installing to the home screen, and the HTTPS setups above.
+8. **Title search against the live services.** `/api/search` parses Open Library's `search.json` and Google Books'
+   `volumes?q=` responses as I remember their documented shapes, and was tested only against fixtures of that shape (the
+   hosts were unreachable). Malformed or missing fields are ignored, so a mismatch should show as fewer/emptier results,
+   not an error. Check one real search first. Ranking and de-duplication quality on real catalogue data is unproven.
 7. **Live scanning interrupting other apps.** Reported: video/audio playing in the background stops while the
    live camera scanner runs. The app never requests the microphone, audio focus or a media session (the only media
    call is `getUserMedia({ audio: false, video })`), and a web search found no documented cause, so this looks like

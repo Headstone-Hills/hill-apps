@@ -6,7 +6,7 @@ import { readFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { LibraryDb } from './db.js';
-import { createLookup } from './metadata.js';
+import { createLookup, createSearch } from './metadata.js';
 import { createApp } from './app.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -29,9 +29,11 @@ if (password && password.length < 8) {
 
 mkdirSync(dataDir, { recursive: true });
 const db = new LibraryDb(join(dataDir, 'library.db'));
-const lookup = createLookup({ googleApiKey: env.GOOGLE_BOOKS_API_KEY ?? '' });
+const googleApiKey = env.GOOGLE_BOOKS_API_KEY ?? '';
+const lookup = createLookup({ googleApiKey });
+const search = createSearch({ googleApiKey, breaker: lookup.breaker }); // one breaker: a provider that throttles lookups is skipped by search too
 const app = createApp({
-  db, lookup, dataDir, publicDir: join(here, '..', 'public'), password,
+  db, lookup, search, dataDir, publicDir: join(here, '..', 'public'), password,
   allowedOrigins: (env.ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
 });
 

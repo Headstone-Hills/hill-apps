@@ -14,7 +14,7 @@
 //   Open Library Covers API: https://openlibrary.org/dev/docs/api/covers
 //   Google Books API:        https://developers.google.com/books/docs/v1/using
 
-import { toIsbn10 } from './isbn.js';
+import { toIsbn10, toIsbn13 } from './isbn.js';
 import { classify } from './genres.js';
 import { stripHtml } from './text.js';
 
@@ -156,6 +156,22 @@ export function createBreaker({ now = Date.now, failuresToOpen = 2, baseMs = 15_
 }
 
 /**
+ * Run one provider call under the circuit breaker. Never rejects: resolves {name, value} or {name, error}.
+ * (Lookup and search share one breaker, so a provider that is throttling us is skipped by both.)
+ */
+async function guarded(breaker, name, fn) {
+  if (breaker.isOpen(name)) return { name, error: `paused for ${Math.ceil(breaker.remainingMs(name) / 1000)}s after repeated failures` };
+  try {
+    const value = await fn();
+    breaker.success(name); // "no results" is still a healthy answer
+    return { name, value };
+  } catch (e) {
+    breaker.failure(name, e);
+    return { name, error: String(e?.message ?? e) };
+  }
+}
+
+/**
  * Look an ISBN up. Resolves to enriched metadata, or null when no provider knows
  * anything about the book. A record with `incomplete: true` has no title but carries
  * whatever else was found (publisher, subjects, ...). Throws LookupError only when providers
@@ -179,17 +195,7 @@ export function createLookup({
     while (cache.size > maxCache) cache.delete(cache.keys().next().value);
   };
 
-  async function ask(name, isbn13) {
-    if (breaker.isOpen(name)) return { name, error: `paused for ${Math.ceil(breaker.remainingMs(name) / 1000)}s after repeated failures` };
-    try {
-      const value = await PROVIDERS[name](isbn13, fetchImpl, googleApiKey);
-      breaker.success(name); // "I don't know this ISBN" is still a healthy answer
-      return { name, value };
-    } catch (e) {
-      breaker.failure(name, e);
-      return { name, error: String(e?.message ?? e) };
-    }
-  }
+  const ask = (name, isbn13) => guarded(breaker, name, () => PROVIDERS[name](isbn13, fetchImpl, googleApiKey));
 
   const build = (isbn13, results) => ({
     merged: mergeProviders(isbn13, results.openlibrary?.value ?? null, results.googlebooks?.value ?? null),
@@ -239,6 +245,178 @@ export function createLookup({
   lookup.breaker = breaker;
   lookup.cacheSize = () => cache.size;
   return lookup;
+}
+
+// ------------------------------------------------------------------- title search
+//
+// Search both providers by free text (title, author, or both) and merge into one list of candidates.
+// Same caveat as above: response shapes follow the providers' public docs from memory and could not be
+// checked against the live APIs from the build sandbox, so every field is optional and shape-checked.
+//   Open Library Search API: https://openlibrary.org/dev/docs/api/search
+//   Google Books volumes:    https://developers.google.com/books/docs/v1/using#PerformingSearch
+
+/** Lowercase, accent-free, punctuation-free text for comparing titles. */
+export const normText = (s) => String(s ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+/** First entry of a list that is a valid ISBN, as ISBN-13. */
+const firstIsbn13 = (list) => {
+  for (const x of Array.isArray(list) ? list : []) {
+    const v = toIsbn13(typeof x === 'string' ? x : x?.identifier);
+    if (v) return v;
+  }
+  return null;
+};
+
+export async function searchOpenLibrary(q, fetchImpl = fetch) {
+  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=15&fields=key,title,author_name,first_publish_year,isbn,cover_i,publisher`;
+  const docs = (await getJson(url, fetchImpl))?.docs;
+  if (!Array.isArray(docs)) return [];
+  return docs.map((d) => ({
+    title: str(d?.title),
+    authors: strList(d?.author_name).slice(0, 4),
+    published: Number.isInteger(d?.first_publish_year) ? String(d.first_publish_year) : '',
+    publisher: strList(d?.publisher)[0] ?? '',
+    isbn13: firstIsbn13(d?.isbn),
+    cover_url: Number.isInteger(d?.cover_i) && d.cover_i > 0 ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : '',
+    source: 'openlibrary',
+  })).filter((r) => r.title);
+}
+
+export async function searchGoogleBooks(q, fetchImpl = fetch, apiKey = '') {
+  const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=15&printType=books${apiKey ? `&key=${encodeURIComponent(apiKey)}` : ''}`;
+  const items = (await getJson(url, fetchImpl))?.items;
+  if (!Array.isArray(items)) return [];
+  return items.map((it) => {
+    const v = it?.volumeInfo ?? {};
+    const ids = Array.isArray(v.industryIdentifiers) ? v.industryIdentifiers : [];
+    const thumb = str(v.imageLinks?.thumbnail || v.imageLinks?.smallThumbnail).replace(/^http:/, 'https:').replace(/&edge=curl/, '');
+    return {
+      title: str(v.title),
+      subtitle: str(v.subtitle),
+      authors: strList(v.authors).slice(0, 4),
+      published: str(v.publishedDate).slice(0, 10),
+      publisher: str(v.publisher),
+      isbn13: firstIsbn13([...ids.filter((x) => x?.type === 'ISBN_13'), ...ids]),
+      cover_url: thumb,
+      source: 'googlebooks',
+    };
+  }).filter((r) => r.title);
+}
+
+/** How well a candidate matches what was typed: 4 exact title ... 0 only loosely related. */
+function matchScore(r, qNorm, qTokens) {
+  // Compare without a leading "The/A/An": people type "great gatsby", the catalogue says "The Great Gatsby".
+  const core = (x) => x.replace(/^(the|a|an) /, '');
+  const t = normText(r.title);
+  const qc = core(qNorm);
+  if (core(t) === qc) return 4;
+  if (core(t).startsWith(qc)) return 3;
+  if (qTokens.every((tok) => t.includes(tok))) return 2;
+  const hay = normText(`${r.title} ${r.authors.join(' ')}`);
+  return qTokens.every((tok) => hay.includes(tok)) ? 1 : 0;
+}
+
+/**
+ * Merge candidate lists from several providers: interleave (so neither provider dominates), drop duplicates
+ * (same ISBN, or same title + first author), fill gaps in a duplicate from the other copy, then rank by how well
+ * the title matches the query (stable, so provider order breaks ties).
+ */
+export function mergeSearchResults(query, lists, limit = 20) {
+  const byIsbn = new Map();
+  const byWork = new Map();
+  const out = [];
+  const longest = Math.max(0, ...lists.map((l) => l.length));
+  for (let i = 0; i < longest; i++) {
+    for (const list of lists) {
+      const r = list[i];
+      if (!r) continue;
+      const workKey = `${normText(r.title)}|${normText(r.authors[0] ?? '')}`;
+      const dup = (r.isbn13 && byIsbn.get(r.isbn13)) || byWork.get(workKey);
+      if (dup) {
+        for (const k of ['isbn13', 'cover_url', 'publisher', 'published', 'subtitle']) if (!dup[k] && r[k]) dup[k] = r[k];
+        if (!dup.authors.length && r.authors.length) dup.authors = r.authors;
+        if (!dup.sources.includes(r.source)) dup.sources.push(r.source);
+        if (dup.isbn13) byIsbn.set(dup.isbn13, dup);
+        continue;
+      }
+      const { source, ...rest } = r;
+      const entry = { subtitle: '', ...rest, sources: [source] };
+      out.push(entry);
+      byWork.set(workKey, entry);
+      if (entry.isbn13) byIsbn.set(entry.isbn13, entry);
+    }
+  }
+  const qNorm = normText(query);
+  const qTokens = qNorm.split(' ').filter(Boolean);
+  return out
+    .map((r, i) => ({ r, i, s: matchScore(r, qNorm, qTokens) }))
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .slice(0, limit)
+    .map(({ r }) => r);
+}
+
+const SEARCHERS = {
+  openlibrary: (q, fetchImpl) => searchOpenLibrary(q, fetchImpl),
+  googlebooks: (q, fetchImpl, apiKey) => searchGoogleBooks(q, fetchImpl, apiKey),
+};
+
+/**
+ * Title/author search across both providers. Resolves {results, provider_errors}; throws LookupError only when
+ * every provider failed or is paused. Same speed rules as lookup: answer once one provider has results (0.8 s grace
+ * for the other), share the circuit breaker, de-duplicate in-flight queries, small bounded cache.
+ */
+export function createSearch({
+  fetchImpl = fetch, googleApiKey = '', breaker = createBreaker(), now = Date.now,
+  graceMs = 800, ttlMs = 2 * 60 * 1000, maxCache = 100, limit = 20,
+} = {}) {
+  const cache = new Map();
+  const inflight = new Map();
+  const names = Object.keys(SEARCHERS);
+
+  const remember = (key, value) => {
+    cache.delete(key);
+    cache.set(key, { at: now(), value });
+    while (cache.size > maxCache) cache.delete(cache.keys().next().value);
+  };
+  const build = (q, results) => ({
+    results: mergeSearchResults(q, names.map((n) => results[n]?.value ?? []), limit),
+    provider_errors: Object.values(results).filter((r) => r.error).map((r) => ({ provider: r.name, error: r.error })),
+  });
+
+  async function searchUncached(q, key) {
+    const results = {};
+    const tasks = names.map((n) => guarded(breaker, n, () => SEARCHERS[n](q, fetchImpl, googleApiKey)).then((r) => { results[n] = r; }));
+    const everyone = Promise.all(tasks);
+    await Promise.race(tasks);
+    if (Object.values(results).some((r) => r.value?.length)) {
+      let timer;
+      await Promise.race([everyone, new Promise((res) => { timer = setTimeout(res, graceMs); timer.unref?.(); })]);
+      clearTimeout(timer);
+    } else {
+      await everyone;
+    }
+    const value = build(q, results);
+    if (!value.results.length && value.provider_errors.length === names.length) throw new LookupError('Could not reach any book search provider', value.provider_errors);
+    remember(key, value);
+    if (names.some((n) => !results[n])) {
+      everyone.then(() => { if (cache.get(key)?.value === value) remember(key, build(q, results)); });
+    }
+    return value;
+  }
+
+  async function search(q) {
+    const key = normText(q);
+    const hit = cache.get(key);
+    if (hit && now() - hit.at < ttlMs) return hit.value;
+    if (hit) cache.delete(key);
+    if (inflight.has(key)) return inflight.get(key);
+    const p = searchUncached(q, key).finally(() => inflight.delete(key));
+    inflight.set(key, p);
+    return p;
+  }
+  search.breaker = breaker;
+  search.cacheSize = () => cache.size;
+  return search;
 }
 
 // ------------------------------------------------------------------- covers
